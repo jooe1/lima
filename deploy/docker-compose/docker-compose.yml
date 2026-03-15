@@ -1,0 +1,132 @@
+networks:
+  lima:
+    driver: bridge
+
+volumes:
+  pg_data:
+  redis_data:
+
+services:
+  # ---- Postgres 16 -----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lima
+      POSTGRES_PASSWORD: lima_dev_secret
+      POSTGRES_DB: lima
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5444:5432"
+    networks: [lima]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lima"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---- Redis 7 ---------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6380:6379"
+    networks: [lima]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---- golang-migrate (runs once, then exits) --------------------------------
+  migrate:
+    image: migrate/migrate:4
+    command: >
+      -path /migrations
+      -database "postgres://lima:lima_dev_secret@postgres:5432/lima?sslmode=disable"
+      up
+    volumes:
+      - ../services/api/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [lima]
+
+  # ---- API service (Go) ------------------------------------------------------
+  api:
+    build:
+      context: ../services/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ENV: development
+      PORT: "8080"
+      DATABASE_URL: postgres://lima:lima_dev_secret@postgres:5432/lima?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      OTEL_ENDPOINT: http://otel-collector:4318
+      JWT_SECRET: dev_jwt_secret_change_in_prod
+      ALLOW_ORIGINS: http://localhost:3000
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks: [lima]
+
+  # ---- Worker service (Go) ---------------------------------------------------
+  worker:
+    build:
+      context: ../services/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ENV: development
+      DATABASE_URL: postgres://lima:lima_dev_secret@postgres:5432/lima?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      OTEL_ENDPOINT: http://otel-collector:4318
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks: [lima]
+
+  # ---- Next.js web app -------------------------------------------------------
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://api:8080
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks: [lima]
+
+  # ---- OpenTelemetry Collector -----------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4318:4318" # OTLP HTTP
+      - "4317:4317" # OTLP gRPC
+    networks: [lima]
+
+  # ---- Jaeger (local trace UI) -----------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    restart: unless-stopped
+    ports:
+      - "16686:16686" # Jaeger UI
+    networks: [lima]

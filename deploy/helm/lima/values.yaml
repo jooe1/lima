@@ -1,0 +1,88 @@
+global:
+  imageRegistry: ""
+
+# ---- Images ----------------------------------------------------------------
+images:
+  api:
+    repository: ghcr.io/lima/api
+    tag: latest
+    pullPolicy: IfNotPresent
+  worker:
+    repository: ghcr.io/lima/worker
+    tag: latest
+    pullPolicy: IfNotPresent
+  web:
+    repository: ghcr.io/lima/web
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# ---- Replica counts --------------------------------------------------------
+replicaCount:
+  api: 2
+  worker: 2
+  web: 2
+
+# ---- Service ports ---------------------------------------------------------
+service:
+  api:
+    port: 8080
+  web:
+    port: 3000
+
+# ---- Ingress ---------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: lima.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: web
+        - path: /api
+          pathType: Prefix
+          service: api
+  tls: []
+
+# ---- Resource requests/limits (adjust per environment) --------------------
+resources:
+  api:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  worker:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { cpu: 1000m, memory: 1Gi }
+  web:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+# ---- Secrets (override via external secret manager in production) ----------
+secrets:
+  jwtSecret: ""        # Required: set via --set or external secrets
+  databaseURL: ""      # Required: postgres://...
+  redisURL: ""         # Required: redis://...
+
+# ---- Bitnami sub-chart toggles (disable if using external DB/Redis) --------
+postgresql:
+  enabled: true
+  auth:
+    username: lima
+    password: ""        # Set via --set postgresql.auth.password=...
+    database: lima
+
+redis:
+  enabled: true
+  auth:
+    enabled: false
+
+# ---- OTEL ------------------------------------------------------------------
+otel:
+  endpoint: ""         # e.g. http://otel-collector.monitoring.svc.cluster.local:4318
+
+# ---- Migration job ---------------------------------------------------------
+migration:
+  enabled: true
+  image:
+    repository: migrate/migrate
+    tag: "4"
