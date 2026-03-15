@@ -106,6 +106,34 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 									Post("/messages", handler.PostMessage(s, enq, log))
 							})
 						})
+
+						// Workflows (Phase 6)
+						r.Route("/workflows", func(r chi.Router) {
+							r.Get("/", handler.ListWorkflows(s, log))
+							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+								Post("/", handler.CreateWorkflow(s, log))
+							r.Route("/{workflowID}", func(r chi.Router) {
+								r.Get("/", handler.GetWorkflow(s, log))
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+									Patch("/", handler.PatchWorkflow(s, log))
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+									Delete("/", handler.DeleteWorkflow(s, log))
+								// Only admins may activate a workflow (FR-15 / FR-19)
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
+									Post("/activate", handler.ActivateWorkflow(s, log))
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+									Post("/archive", handler.ArchiveWorkflow(s, log))
+								// Manual trigger creates a run record
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+									Post("/trigger", handler.TriggerWorkflow(s, log))
+								r.Get("/runs", handler.ListWorkflowRuns(s, log))
+								// Step management
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+									Put("/steps", handler.PutWorkflowSteps(s, log))
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+									Post("/steps/{stepID}/review", handler.ReviewStep(s, log))
+							})
+						})
 					})
 				})
 

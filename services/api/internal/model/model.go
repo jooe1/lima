@@ -260,3 +260,103 @@ type ApprovalRecord struct {
 	Approval
 	EncryptedPayload []byte `json:"-"`
 }
+
+// ---- Workflows (Phase 6) ----------------------------------------------------
+
+// WorkflowTrigger mirrors the workflow_trigger DB enum.
+type WorkflowTrigger string
+
+const (
+	TriggerManual      WorkflowTrigger = "manual"
+	TriggerFormSubmit  WorkflowTrigger = "form_submit"
+	TriggerButtonClick WorkflowTrigger = "button_click"
+	TriggerSchedule    WorkflowTrigger = "schedule"
+	TriggerWebhook     WorkflowTrigger = "webhook"
+)
+
+// WorkflowStatus mirrors the workflow_status DB enum.
+type WorkflowStatus string
+
+const (
+	WorkflowStatusDraft    WorkflowStatus = "draft"
+	WorkflowStatusActive   WorkflowStatus = "active"
+	WorkflowStatusArchived WorkflowStatus = "archived"
+)
+
+// WorkflowStepType mirrors the workflow_step_type DB enum.
+type WorkflowStepType string
+
+const (
+	StepTypeQuery        WorkflowStepType = "query"
+	StepTypeMutation     WorkflowStepType = "mutation"
+	StepTypeCondition    WorkflowStepType = "condition"
+	StepTypeApprovalGate WorkflowStepType = "approval_gate"
+	StepTypeNotification WorkflowStepType = "notification"
+)
+
+// WorkflowRunStatus mirrors the workflow_run_status DB enum.
+type WorkflowRunStatus string
+
+const (
+	RunStatusPending          WorkflowRunStatus = "pending"
+	RunStatusRunning          WorkflowRunStatus = "running"
+	RunStatusAwaitingApproval WorkflowRunStatus = "awaiting_approval"
+	RunStatusCompleted        WorkflowRunStatus = "completed"
+	RunStatusFailed           WorkflowRunStatus = "failed"
+	RunStatusCancelled        WorkflowRunStatus = "cancelled"
+)
+
+// Workflow is the top-level workflow definition owned by an app.
+type Workflow struct {
+	ID               string          `json:"id"`
+	WorkspaceID      string          `json:"workspace_id"`
+	AppID            string          `json:"app_id"`
+	Name             string          `json:"name"`
+	Description      *string         `json:"description,omitempty"`
+	TriggerType      WorkflowTrigger `json:"trigger_type"`
+	TriggerConfig    map[string]any  `json:"trigger_config"`
+	Status           WorkflowStatus  `json:"status"`
+	RequiresApproval bool            `json:"requires_approval"`
+	CreatedBy        string          `json:"created_by"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+// WorkflowWithSteps embeds a Workflow together with its ordered steps.
+// Returned by GetWorkflow so callers get the full definition in one round-trip.
+type WorkflowWithSteps struct {
+	Workflow
+	Steps []WorkflowStep `json:"steps"`
+}
+
+// WorkflowStep is a single ordered action within a workflow.
+// ai_generated=true means the step config was written by the AI agent and
+// must be reviewed by a builder before the workflow can be activated.
+type WorkflowStep struct {
+	ID          string           `json:"id"`
+	WorkflowID  string           `json:"workflow_id"`
+	StepOrder   int              `json:"step_order"`
+	Name        string           `json:"name"`
+	StepType    WorkflowStepType `json:"step_type"`
+	Config      map[string]any   `json:"config"`
+	AIGenerated bool             `json:"ai_generated"`
+	ReviewedBy  *string          `json:"reviewed_by,omitempty"`
+	ReviewedAt  *time.Time       `json:"reviewed_at,omitempty"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+// WorkflowRun records a single execution of a workflow.
+type WorkflowRun struct {
+	ID           string            `json:"id"`
+	WorkflowID   string            `json:"workflow_id"`
+	WorkspaceID  string            `json:"workspace_id"`
+	Status       WorkflowRunStatus `json:"status"`
+	TriggeredBy  *string           `json:"triggered_by,omitempty"`
+	InputData    map[string]any    `json:"input_data"`
+	OutputData   map[string]any    `json:"output_data,omitempty"`
+	ErrorMessage *string           `json:"error_message,omitempty"`
+	ApprovalID   *string           `json:"approval_id,omitempty"`
+	StartedAt    time.Time         `json:"started_at"`
+	CompletedAt  *time.Time        `json:"completed_at,omitempty"`
+}

@@ -13,6 +13,7 @@ import { ChatPanel } from './ChatPanel'
 import { Inspector } from './Inspector'
 import { LayersPanel } from './LayersPanel'
 import { VersionHistory } from './VersionHistory'
+import { WorkflowEditor } from './WorkflowEditor'
 
 export default function AppEditorPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
@@ -23,8 +24,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [publishing, setPublishing] = useState(false)
   const [publishError, setPublishError] = useState('')
   const [showVersionHistory, setShowVersionHistory] = useState(false)
-  // 'inspector' | 'chat' — controls the right-hand panel
-  const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector')
+  // 'inspector' | 'chat' | 'workflows' — controls the right-hand panel
+  const [rightPanel, setRightPanel] = useState<'inspector' | 'chat' | 'workflows'>('inspector')
 
   const history = useDocumentHistory()
 
@@ -233,13 +234,27 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{publishError}</span>
         )}
 
-        {/* Right-panel toggle */}
+        {/* Right-panel toggles */}
         <button
-          onClick={() => setRightPanel(p => p === 'inspector' ? 'chat' : 'inspector')}
-          title={rightPanel === 'inspector' ? 'Open AI chat' : 'Open inspector'}
-          style={iconBtn(true)}
+          onClick={() => setRightPanel('inspector')}
+          title="Inspector"
+          style={{ ...iconBtn(true), background: rightPanel === 'inspector' ? '#161616' : 'transparent', borderColor: rightPanel === 'inspector' ? '#333' : '#1e1e1e' }}
         >
-          {rightPanel === 'inspector' ? '💬' : '⚙'}
+          ⚙
+        </button>
+        <button
+          onClick={() => setRightPanel('chat')}
+          title="AI Chat"
+          style={{ ...iconBtn(true), background: rightPanel === 'chat' ? '#161616' : 'transparent', borderColor: rightPanel === 'chat' ? '#333' : '#1e1e1e' }}
+        >
+          💬
+        </button>
+        <button
+          onClick={() => setRightPanel('workflows')}
+          title="Workflows"
+          style={{ ...iconBtn(true), background: rightPanel === 'workflows' ? '#161616' : 'transparent', borderColor: rightPanel === 'workflows' ? '#333' : '#1e1e1e' }}
+        >
+          ⚡
         </button>
 
         <button
@@ -275,7 +290,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           onChange={handleCanvasChange}
           onSelect={setSelectedId}
         />
-        {/* Right panel: Inspector or AI Chat */}
+        {/* Right panel: Inspector, AI Chat, or Workflows */}
         {rightPanel === 'inspector' ? (
           <Inspector
             node={selectedNode}
@@ -283,7 +298,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             onUpdate={handleUpdateNode}
             onDelete={handleDeleteWidget}
           />
-        ) : workspace ? (
+        ) : rightPanel === 'chat' && workspace ? (
           <div style={{ width: 280, flexShrink: 0 }}>
             <ChatPanel
               workspaceId={workspace.id}
@@ -292,6 +307,10 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
                 try { history.set(parse(src)) } catch { /* ignore invalid DSL */ }
               }}
             />
+          </div>
+        ) : rightPanel === 'workflows' ? (
+          <div style={{ width: 340, flexShrink: 0, borderLeft: '1px solid #1a1a1a', overflow: 'hidden' }}>
+            <WorkflowEditor appId={appId} />
           </div>
         ) : null}
       </div>

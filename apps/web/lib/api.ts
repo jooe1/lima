@@ -323,3 +323,186 @@ export function rejectAction(workspaceId: string, approvalId: string, reason?: s
 export function getPublishedApp(workspaceId: string, appId: string) {
   return request<AppVersion>(`/v1/workspaces/${workspaceId}/apps/${appId}/published`)
 }
+
+// ---- Workflows (Phase 6) ---------------------------------------------------
+
+export type WorkflowTrigger =
+  | 'manual'
+  | 'form_submit'
+  | 'button_click'
+  | 'schedule'
+  | 'webhook'
+
+export type WorkflowStatus = 'draft' | 'active' | 'archived'
+
+export type WorkflowStepType =
+  | 'query'
+  | 'mutation'
+  | 'condition'
+  | 'approval_gate'
+  | 'notification'
+
+export type WorkflowRunStatus =
+  | 'pending'
+  | 'running'
+  | 'awaiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface WorkflowStep {
+  id: string
+  workflow_id: string
+  step_order: number
+  name: string
+  step_type: WorkflowStepType
+  config: Record<string, unknown>
+  ai_generated: boolean
+  reviewed_by?: string
+  reviewed_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface Workflow {
+  id: string
+  workspace_id: string
+  app_id: string
+  name: string
+  description?: string
+  trigger_type: WorkflowTrigger
+  trigger_config: Record<string, unknown>
+  status: WorkflowStatus
+  requires_approval: boolean
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkflowWithSteps extends Workflow {
+  steps: WorkflowStep[]
+}
+
+export interface WorkflowRun {
+  id: string
+  workflow_id: string
+  workspace_id: string
+  status: WorkflowRunStatus
+  triggered_by?: string
+  input_data: Record<string, unknown>
+  output_data?: Record<string, unknown>
+  error_message?: string
+  approval_id?: string
+  started_at: string
+  completed_at?: string
+}
+
+export interface WorkflowStepInput {
+  name: string
+  step_type: WorkflowStepType
+  config: Record<string, unknown>
+  ai_generated: boolean
+}
+
+export interface CreateWorkflowInput {
+  name: string
+  description?: string
+  trigger_type?: WorkflowTrigger
+  trigger_config?: Record<string, unknown>
+  requires_approval?: boolean
+  steps?: WorkflowStepInput[]
+}
+
+export function listWorkflows(workspaceId: string, appId: string) {
+  return request<{ workflows: Workflow[] }>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows`,
+  )
+}
+
+export function getWorkflow(workspaceId: string, appId: string, workflowId: string) {
+  return request<WorkflowWithSteps>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}`,
+  )
+}
+
+export function createWorkflow(workspaceId: string, appId: string, input: CreateWorkflowInput) {
+  return request<WorkflowWithSteps>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows`,
+    { method: 'POST', body: JSON.stringify(input) },
+  )
+}
+
+export function patchWorkflow(
+  workspaceId: string,
+  appId: string,
+  workflowId: string,
+  patch: Partial<CreateWorkflowInput>,
+) {
+  return request<Workflow>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}`,
+    { method: 'PATCH', body: JSON.stringify(patch) },
+  )
+}
+
+export function deleteWorkflow(workspaceId: string, appId: string, workflowId: string) {
+  return request<{ status: string }>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function activateWorkflow(workspaceId: string, appId: string, workflowId: string) {
+  return request<Workflow>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}/activate`,
+    { method: 'POST' },
+  )
+}
+
+export function archiveWorkflow(workspaceId: string, appId: string, workflowId: string) {
+  return request<Workflow>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}/archive`,
+    { method: 'POST' },
+  )
+}
+
+export function triggerWorkflow(
+  workspaceId: string,
+  appId: string,
+  workflowId: string,
+  inputData?: Record<string, unknown>,
+) {
+  return request<WorkflowRun>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}/trigger`,
+    { method: 'POST', body: JSON.stringify({ input_data: inputData ?? {} }) },
+  )
+}
+
+export function listWorkflowRuns(workspaceId: string, appId: string, workflowId: string) {
+  return request<{ runs: WorkflowRun[] }>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}/runs`,
+  )
+}
+
+export function putWorkflowSteps(
+  workspaceId: string,
+  appId: string,
+  workflowId: string,
+  steps: WorkflowStepInput[],
+) {
+  return request<{ steps: WorkflowStep[] }>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}/steps`,
+    { method: 'PUT', body: JSON.stringify({ steps }) },
+  )
+}
+
+export function reviewStep(
+  workspaceId: string,
+  appId: string,
+  workflowId: string,
+  stepId: string,
+) {
+  return request<WorkflowStep>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}/steps/${stepId}/review`,
+    { method: 'POST' },
+  )
+}

@@ -26,6 +26,27 @@ export type WidgetType =
   | 'tabs'
   | 'markdown'
 
+// ---- Dashboard layout hints ------------------------------------------------
+// DashboardQueryHint annotates a widget with the query pattern that best feeds
+// it. The AI generation layer uses these hints to select and configure data
+// bindings when building dashboard-oriented apps.
+
+export type DashboardQueryPattern =
+  | 'aggregate'   // single-row aggregate (COUNT, SUM, AVG) — best for KPI
+  | 'time_series' // rows keyed by a date column — best for line/area charts
+  | 'categorical' // grouped counts or sums per category — best for bar/pie charts
+  | 'tabular'     // arbitrary rows — best for tables
+  | 'filter_set'  // distinct values for a column — best for filter dropdowns
+  | 'none'        // widget does not consume data directly
+
+export interface DashboardQueryHint {
+  pattern: DashboardQueryPattern
+  /** Describes what query shape produces useful output for this widget. */
+  description: string
+  /** Example SQL sketch for the AI to adapt. Uses {{connector}} placeholder. */
+  exampleSQL?: string
+}
+
 // ---- Prop schemas (JSON Schema–style, used for inspector and AI prompting) -
 
 export interface PropDef {
@@ -107,6 +128,8 @@ export interface WidgetMeta {
   icon: string // name of a Lucide icon
   defaultSize: { w: number; h: number } // grid units
   propSchema: PropSchema
+  /** Hints for dashboard-oriented query generation (Phase 6). */
+  dashboardHint: DashboardQueryHint
 }
 
 export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
@@ -117,6 +140,11 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'Table',
     defaultSize: { w: 12, h: 6 },
     propSchema: WidgetPropSchemas.table,
+    dashboardHint: {
+      pattern: 'tabular',
+      description: 'Feed with a SELECT query returning multiple rows.',
+      exampleSQL: 'SELECT * FROM {{table}} ORDER BY created_at DESC LIMIT 100',
+    },
   },
   form: {
     type: 'form',
@@ -125,6 +153,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'FileText',
     defaultSize: { w: 6, h: 8 },
     propSchema: WidgetPropSchemas.form,
+    dashboardHint: {
+      pattern: 'none',
+      description: 'Forms do not consume a query; they produce data on submit.',
+    },
   },
   text: {
     type: 'text',
@@ -133,6 +165,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'Type',
     defaultSize: { w: 6, h: 2 },
     propSchema: WidgetPropSchemas.text,
+    dashboardHint: {
+      pattern: 'none',
+      description: 'Text widgets display static or expression-bound content.',
+    },
   },
   button: {
     type: 'button',
@@ -141,6 +177,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'MousePointer',
     defaultSize: { w: 2, h: 1 },
     propSchema: WidgetPropSchemas.button,
+    dashboardHint: {
+      pattern: 'none',
+      description: 'Buttons trigger workflow actions; they do not consume queries.',
+    },
   },
   chart: {
     type: 'chart',
@@ -149,6 +189,11 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'BarChart2',
     defaultSize: { w: 8, h: 6 },
     propSchema: WidgetPropSchemas.chart,
+    dashboardHint: {
+      pattern: 'categorical',
+      description: 'Feed with a GROUP BY aggregate or time-series query. For line/area charts prefer time_series; for bar/pie charts prefer categorical.',
+      exampleSQL: 'SELECT {{xField}}, COUNT(*) AS {{yField}} FROM {{table}} GROUP BY {{xField}} ORDER BY {{xField}}',
+    },
   },
   kpi: {
     type: 'kpi',
@@ -157,6 +202,11 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'TrendingUp',
     defaultSize: { w: 3, h: 3 },
     propSchema: WidgetPropSchemas.kpi,
+    dashboardHint: {
+      pattern: 'aggregate',
+      description: 'Feed with a single-row aggregate query (COUNT, SUM, AVG, etc.).',
+      exampleSQL: 'SELECT COUNT(*) AS value FROM {{table}}',
+    },
   },
   filter: {
     type: 'filter',
@@ -165,6 +215,11 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'Filter',
     defaultSize: { w: 4, h: 2 },
     propSchema: WidgetPropSchemas.filter,
+    dashboardHint: {
+      pattern: 'filter_set',
+      description: 'Feed with a SELECT DISTINCT query to populate the options list.',
+      exampleSQL: 'SELECT DISTINCT {{column}} AS value FROM {{table}} ORDER BY value',
+    },
   },
   container: {
     type: 'container',
@@ -173,6 +228,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'Layout',
     defaultSize: { w: 12, h: 4 },
     propSchema: WidgetPropSchemas.container,
+    dashboardHint: {
+      pattern: 'none',
+      description: 'Containers are layout wrappers; data is bound to child widgets.',
+    },
   },
   modal: {
     type: 'modal',
@@ -181,6 +240,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'Layers',
     defaultSize: { w: 8, h: 10 },
     propSchema: WidgetPropSchemas.modal,
+    dashboardHint: {
+      pattern: 'none',
+      description: 'Modals are UI wrappers; bind data to the widgets inside them.',
+    },
   },
   tabs: {
     type: 'tabs',
@@ -189,6 +252,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'Columns',
     defaultSize: { w: 12, h: 8 },
     propSchema: WidgetPropSchemas.tabs,
+    dashboardHint: {
+      pattern: 'none',
+      description: 'Tabs are navigation wrappers; bind data to the widgets inside each tab.',
+    },
   },
   markdown: {
     type: 'markdown',
@@ -197,6 +264,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     icon: 'FileCode',
     defaultSize: { w: 6, h: 4 },
     propSchema: WidgetPropSchemas.markdown,
+    dashboardHint: {
+      pattern: 'none',
+      description: 'Markdown widgets display static documentation or instructions.',
+    },
   },
 }
 
