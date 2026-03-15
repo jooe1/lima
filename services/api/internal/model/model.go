@@ -63,15 +63,15 @@ const (
 )
 
 type App struct {
-	ID          string     `json:"id"`
-	WorkspaceID string     `json:"workspace_id"`
-	Name        string     `json:"name"`
-	Description *string    `json:"description,omitempty"`
-	Status      AppStatus  `json:"status"`
-	DSLSource   string     `json:"dsl_source"`
-	CreatedBy   string     `json:"created_by"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID          string    `json:"id"`
+	WorkspaceID string    `json:"workspace_id"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description,omitempty"`
+	Status      AppStatus `json:"status"`
+	DSLSource   string    `json:"dsl_source"`
+	CreatedBy   string    `json:"created_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type AppVersion struct {

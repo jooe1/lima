@@ -8,14 +8,14 @@ import (
 )
 
 type Config struct {
-	Env             string
-	Port            string
-	ServiceName     string
-	DatabaseURL     string
-	RedisURL        string
-	OTELEndpoint    string
-	JWTSecret       string
-	AllowOrigins    []string
+	Env          string
+	Port         string
+	ServiceName  string
+	DatabaseURL  string
+	RedisURL     string
+	OTELEndpoint string
+	JWTSecret    string
+	AllowOrigins []string
 	// OIDC / SSO
 	OIDCIssuerURL    string
 	OIDCClientID     string
