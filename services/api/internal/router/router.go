@@ -11,11 +11,12 @@ import (
 	"github.com/lima/api/internal/handler"
 	"github.com/lima/api/internal/middleware"
 	"github.com/lima/api/internal/model"
+	"github.com/lima/api/internal/queue"
 	"github.com/lima/api/internal/store"
 	"go.uber.org/zap"
 )
 
-func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, log *zap.Logger) http.Handler {
+func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(chimiddleware.RequestID)
@@ -48,6 +49,11 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, log *zap.Logger
 		// All routes below require a valid session JWT
 		r.Group(func(r chi.Router) {
 			r.Use(handler.Authenticate(cfg.JWTSecret))
+
+			r.Route("/me", func(r chi.Router) {
+				r.Get("/ai-settings", handler.GetMyAISettings(s, log))
+				r.Put("/ai-settings", handler.PutMyAISettings(cfg, s, log))
+			})
 
 			// Identity & tenancy — company claim is verified per-route
 			r.Route("/companies/{companyID}", func(r chi.Router) {
@@ -86,15 +92,16 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, log *zap.Logger
 							Post("/rollback", handler.RollbackApp(s, log))
 						r.Get("/versions", handler.ListAppVersions(s, log))
 
-						// Conversation threads
+						// Conversation threads (Phase 3)
 						r.Route("/threads", func(r chi.Router) {
 							r.Get("/", handler.ListThreads(s, log))
 							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 								Post("/", handler.CreateThread(s, log))
 							r.Route("/{threadID}", func(r chi.Router) {
 								r.Get("/", handler.GetThread(s, log))
+								r.Get("/messages", handler.ListMessages(s, log))
 								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
-									Post("/messages", handler.PostMessage(s, log))
+									Post("/messages", handler.PostMessage(s, enq, log))
 							})
 						})
 					})

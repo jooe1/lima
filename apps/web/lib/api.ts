@@ -9,7 +9,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(init.headers as Record<string, string> ?? {}),
+    ...((init.headers as Record<string, string>) ?? {}),
   }
   if (token) headers['Authorization'] = `Bearer ${token}`
 
@@ -22,7 +22,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
     super(message)
     this.name = 'ApiError'
   }
@@ -36,7 +40,12 @@ export interface DevLoginResponse {
   company: { id: string; name: string; slug: string }
 }
 
-export function devLogin(email: string, name: string, companySlug = 'dev', role = 'workspace_admin') {
+export function devLogin(
+  email: string,
+  name: string,
+  companySlug = 'dev',
+  role = 'workspace_admin',
+) {
   return request<DevLoginResponse>('/v1/auth/dev/login', {
     method: 'POST',
     body: JSON.stringify({ email, name, company_slug: companySlug, role }),
@@ -50,15 +59,29 @@ export function getSSOLoginURL() {
 // ---- Tenancy ---------------------------------------------------------------
 
 export interface Company {
-  id: string; name: string; slug: string; created_at: string; updated_at: string
+  id: string
+  name: string
+  slug: string
+  created_at: string
+  updated_at: string
 }
 
 export interface Workspace {
-  id: string; company_id: string; name: string; slug: string; created_at: string; updated_at: string
+  id: string
+  company_id: string
+  name: string
+  slug: string
+  created_at: string
+  updated_at: string
 }
 
 export interface Member {
-  user_id: string; workspace_id: string; email: string; name: string; role: string; joined_at: string
+  user_id: string
+  workspace_id: string
+  email: string
+  name: string
+  role: string
+  joined_at: string
 }
 
 export function getCompany(companyId: string) {
@@ -77,20 +100,66 @@ export function createWorkspace(companyId: string, name: string, slug: string) {
 }
 
 export function listMembers(companyId: string, workspaceId: string) {
-  return request<{ members: Member[] }>(`/v1/companies/${companyId}/workspaces/${workspaceId}/members`)
+  return request<{ members: Member[] }>(
+    `/v1/companies/${companyId}/workspaces/${workspaceId}/members`,
+  )
+}
+
+// ---- User AI settings -----------------------------------------------------
+
+export type AIProvider = 'openai' | 'github_copilot'
+
+export interface UserAISettings {
+  configured: boolean
+  user_id?: string
+  provider?: AIProvider
+  model?: string
+  openai_base_url?: string
+  has_secret: boolean
+  masked_secret_id?: string
+}
+
+export interface UpdateUserAISettingsInput {
+  provider: AIProvider
+  model: string
+  openai_base_url?: string
+  api_key?: string
+  github_token?: string
+  clear_stored_secret?: boolean
+}
+
+export function getMyAISettings() {
+  return request<UserAISettings>('/v1/me/ai-settings')
+}
+
+export function putMyAISettings(input: UpdateUserAISettingsInput) {
+  return request<UserAISettings>('/v1/me/ai-settings', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
 }
 
 // ---- Apps ------------------------------------------------------------------
 
 export interface App {
-  id: string; workspace_id: string; name: string; description?: string
-  status: 'draft' | 'published' | 'archived'; dsl_source: string
-  created_by: string; created_at: string; updated_at: string
+  id: string
+  workspace_id: string
+  name: string
+  description?: string
+  status: 'draft' | 'published' | 'archived'
+  dsl_source: string
+  created_by: string
+  created_at: string
+  updated_at: string
 }
 
 export interface AppVersion {
-  id: string; app_id: string; version_num: number; dsl_source: string
-  published_by: string; published_at: string
+  id: string
+  app_id: string
+  version_num: number
+  dsl_source: string
+  published_by: string
+  published_at: string
 }
 
 export function listApps(workspaceId: string) {
@@ -108,7 +177,11 @@ export function getApp(workspaceId: string, appId: string) {
   return request<App>(`/v1/workspaces/${workspaceId}/apps/${appId}/`)
 }
 
-export function patchApp(workspaceId: string, appId: string, patch: { name?: string; description?: string; dsl_source?: string }) {
+export function patchApp(
+  workspaceId: string,
+  appId: string,
+  patch: { name?: string; description?: string; dsl_source?: string },
+) {
   return request<App>(`/v1/workspaces/${workspaceId}/apps/${appId}/`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
@@ -116,11 +189,15 @@ export function patchApp(workspaceId: string, appId: string, patch: { name?: str
 }
 
 export function deleteApp(workspaceId: string, appId: string) {
-  return request<{ status: string }>(`/v1/workspaces/${workspaceId}/apps/${appId}/`, { method: 'DELETE' })
+  return request<{ status: string }>(`/v1/workspaces/${workspaceId}/apps/${appId}/`, {
+    method: 'DELETE',
+  })
 }
 
 export function publishApp(workspaceId: string, appId: string) {
-  return request<AppVersion>(`/v1/workspaces/${workspaceId}/apps/${appId}/publish`, { method: 'POST' })
+  return request<AppVersion>(`/v1/workspaces/${workspaceId}/apps/${appId}/publish`, {
+    method: 'POST',
+  })
 }
 
 export function rollbackApp(workspaceId: string, appId: string, versionNum: number) {
@@ -132,4 +209,59 @@ export function rollbackApp(workspaceId: string, appId: string, versionNum: numb
 
 export function listAppVersions(workspaceId: string, appId: string) {
   return request<{ versions: AppVersion[] }>(`/v1/workspaces/${workspaceId}/apps/${appId}/versions`)
+}
+
+// ---- Conversation threads (Phase 3) ----------------------------------------
+
+export interface ConversationThread {
+  id: string
+  app_id: string
+  workspace_id: string
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DSLPatch {
+  new_source: string
+}
+
+export interface ThreadMessage {
+  id: string
+  thread_id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  dsl_patch?: DSLPatch
+  created_at: string
+}
+
+export interface PostMessageResponse {
+  message: ThreadMessage
+  queued: boolean
+  queue_error?: string
+}
+
+export function listThreads(workspaceId: string, appId: string) {
+  return request<{ threads: ConversationThread[] }>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/threads`,
+  )
+}
+
+export function createThread(workspaceId: string, appId: string) {
+  return request<ConversationThread>(`/v1/workspaces/${workspaceId}/apps/${appId}/threads`, {
+    method: 'POST',
+  })
+}
+
+export function listMessages(workspaceId: string, appId: string, threadId: string) {
+  return request<{ messages: ThreadMessage[] }>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/threads/${threadId}/messages`,
+  )
+}
+
+export function postMessage(workspaceId: string, appId: string, threadId: string, content: string) {
+  return request<PostMessageResponse>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/threads/${threadId}/messages`,
+    { method: 'POST', body: JSON.stringify({ content }) },
+  )
 }

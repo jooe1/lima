@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/lima/worker/internal/config"
+	"github.com/lima/worker/internal/db"
 	"github.com/lima/worker/internal/observability"
 	"github.com/lima/worker/internal/queue"
 	"go.uber.org/zap"
@@ -27,7 +28,15 @@ func main() {
 	}
 	defer shutdown(context.Background())
 
-	dispatcher := queue.NewDispatcher(cfg, log)
+	// DB is optional: worker starts without it but LLM generation is disabled.
+	pool, dbErr := db.Connect(cfg.DatabaseURL)
+	if dbErr != nil {
+		log.Warn("db connect failed — generation jobs will be skipped", zap.Error(dbErr))
+	} else {
+		defer pool.Close()
+	}
+
+	dispatcher := queue.NewDispatcher(cfg, pool, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

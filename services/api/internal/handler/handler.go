@@ -79,13 +79,6 @@ func GetConnectorSchema(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	return stub("GetConnectorSchema")
 }
 
-// ---- Threads (Phase 3 stubs) -----------------------------------------------
-
-func ListThreads(s *store.Store, log *zap.Logger) http.HandlerFunc  { return stub("ListThreads") }
-func CreateThread(s *store.Store, log *zap.Logger) http.HandlerFunc { return stub("CreateThread") }
-func GetThread(s *store.Store, log *zap.Logger) http.HandlerFunc    { return stub("GetThread") }
-func PostMessage(s *store.Store, log *zap.Logger) http.HandlerFunc  { return stub("PostMessage") }
-
 // ---- Approvals (Phase 5 stubs) ---------------------------------------------
 
 func ListApprovals(s *store.Store, log *zap.Logger) http.HandlerFunc { return stub("ListApprovals") }

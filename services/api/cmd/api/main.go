@@ -12,6 +12,7 @@ import (
 	"github.com/lima/api/internal/config"
 	"github.com/lima/api/internal/db"
 	"github.com/lima/api/internal/observability"
+	"github.com/lima/api/internal/queue"
 	"github.com/lima/api/internal/router"
 	"github.com/lima/api/internal/store"
 	"go.uber.org/zap"
@@ -39,7 +40,20 @@ func main() {
 	defer pool.Close()
 
 	s := store.New(pool)
-	r := router.New(cfg, pool, s, log)
+
+	// Enqueuer is optional — if Redis is not configured the API still serves
+	// HTTP but generation jobs are not dispatched.
+	var enq *queue.Enqueuer
+	if cfg.RedisURL != "" {
+		enq, err = queue.NewEnqueuer(context.Background(), cfg.RedisURL)
+		if err != nil {
+			log.Warn("redis enqueuer unavailable — generation jobs disabled", zap.Error(err))
+		} else {
+			defer enq.Close()
+		}
+	}
+
+	r := router.New(cfg, pool, s, enq, log)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

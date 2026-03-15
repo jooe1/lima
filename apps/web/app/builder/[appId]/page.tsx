@@ -8,6 +8,7 @@ import { getApp, patchApp, publishApp, type App } from '../../../lib/api'
 import { useDocumentHistory } from './hooks/useDocumentHistory'
 import { useAutosave } from './hooks/useAutosave'
 import { CanvasEditor } from './CanvasEditor'
+import { ChatPanel } from './ChatPanel'
 import { Inspector } from './Inspector'
 import { LayersPanel } from './LayersPanel'
 
@@ -19,6 +20,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [publishError, setPublishError] = useState('')
+  // 'inspector' | 'chat' — controls the right-hand panel
+  const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector')
 
   const history = useDocumentHistory()
 
@@ -198,6 +201,16 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         {publishError && (
           <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{publishError}</span>
         )}
+
+        {/* Right-panel toggle */}
+        <button
+          onClick={() => setRightPanel(p => p === 'inspector' ? 'chat' : 'inspector')}
+          title={rightPanel === 'inspector' ? 'Open AI chat' : 'Open inspector'}
+          style={iconBtn(true)}
+        >
+          {rightPanel === 'inspector' ? '💬' : '⚙'}
+        </button>
+
         <button
           onClick={handlePublish}
           disabled={publishing}
@@ -231,12 +244,25 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           onChange={handleCanvasChange}
           onSelect={setSelectedId}
         />
-        <Inspector
-          node={selectedNode}
-          doc={history.doc}
-          onUpdate={handleUpdateNode}
-          onDelete={handleDeleteWidget}
-        />
+        {/* Right panel: Inspector or AI Chat */}
+        {rightPanel === 'inspector' ? (
+          <Inspector
+            node={selectedNode}
+            doc={history.doc}
+            onUpdate={handleUpdateNode}
+            onDelete={handleDeleteWidget}
+          />
+        ) : workspace ? (
+          <div style={{ width: 280, flexShrink: 0 }}>
+            <ChatPanel
+              workspaceId={workspace.id}
+              appId={appId}
+              onDSLUpdate={src => {
+                try { history.set(parse(src)) } catch { /* ignore invalid DSL */ }
+              }}
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   )

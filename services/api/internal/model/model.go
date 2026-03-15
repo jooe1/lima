@@ -95,3 +95,71 @@ type AuditEvent struct {
 	Metadata     map[string]any `json:"metadata,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 }
+
+// ---- Conversation threads (Phase 3) -----------------------------------------
+
+// MessageRole mirrors the message_role DB enum.
+type MessageRole string
+
+const (
+	RoleUser      MessageRole = "user"
+	RoleAssistant MessageRole = "assistant"
+	RoleSystem    MessageRole = "system"
+)
+
+type ConversationThread struct {
+	ID          string    `json:"id"`
+	AppID       string    `json:"app_id"`
+	WorkspaceID string    `json:"workspace_id"`
+	CreatedBy   string    `json:"created_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// DSLPatch is the JSONB payload stored alongside an assistant message.
+// new_source contains the full updated Aura DSL produced by the generation job.
+type DSLPatch struct {
+	NewSource string `json:"new_source"`
+}
+
+type ThreadMessage struct {
+	ID        string      `json:"id"`
+	ThreadID  string      `json:"thread_id"`
+	Role      MessageRole `json:"role"`
+	Content   string      `json:"content"`
+	DSLPatch  *DSLPatch   `json:"dsl_patch,omitempty"`
+	CreatedAt time.Time   `json:"created_at"`
+}
+
+// ---- User AI settings ------------------------------------------------------
+
+type AIProvider string
+
+const (
+	AIProviderOpenAI        AIProvider = "openai"
+	AIProviderGitHubCopilot AIProvider = "github_copilot"
+)
+
+type UserAISettings struct {
+	Configured     bool       `json:"configured"`
+	UserID         string     `json:"user_id,omitempty"`
+	Provider       AIProvider `json:"provider,omitempty"`
+	Model          string     `json:"model,omitempty"`
+	OpenAIBaseURL  *string    `json:"openai_base_url,omitempty"`
+	HasSecret      bool       `json:"has_secret"`
+	MaskedSecretID string     `json:"masked_secret_id,omitempty"`
+}
+
+type UserAISettingsRecord struct {
+	UserAISettings
+	EncryptedCredentials []byte `json:"-"`
+}
+
+// GenerationJobPayload is the JSON sent to the generation Redis queue.
+type GenerationJobPayload struct {
+	ThreadID    string `json:"thread_id"`
+	MessageID   string `json:"message_id"`
+	AppID       string `json:"app_id"`
+	WorkspaceID string `json:"workspace_id"`
+	UserID      string `json:"user_id"`
+}

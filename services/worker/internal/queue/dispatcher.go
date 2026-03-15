@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/worker/internal/config"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -29,14 +30,15 @@ const (
 // Dispatcher starts per-type worker pools and routes jobs to them.
 type Dispatcher struct {
 	cfg    *config.Config
+	pool   *pgxpool.Pool // may be nil; generation handler gracefully degrades
 	log    *zap.Logger
 	client *redis.Client
 }
 
 // NewDispatcher creates a Dispatcher. The Redis connection is established
 // lazily on Run so that startup failures are loud.
-func NewDispatcher(cfg *config.Config, log *zap.Logger) *Dispatcher {
-	return &Dispatcher{cfg: cfg, log: log}
+func NewDispatcher(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) *Dispatcher {
+	return &Dispatcher{cfg: cfg, pool: pool, log: log}
 }
 
 // Run starts all worker pools and blocks until ctx is cancelled.
@@ -64,7 +66,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		}
 	}
 
-	startPool(JobGeneration, d.cfg.GenerationWorkers, handleGeneration(d.log))
+	startPool(JobGeneration, d.cfg.GenerationWorkers, handleGeneration(d.cfg, d.pool, d.log))
 	startPool(JobSchema, d.cfg.SchemaWorkers, handleSchema(d.log))
 	startPool(JobImport, d.cfg.ImportWorkers, handleImport(d.log))
 	startPool(JobWorkflow, 1, handleWorkflow(d.log)) // single-threaded for safety
@@ -105,14 +107,7 @@ func (d *Dispatcher) runLoop(ctx context.Context, jobType JobType, handler jobHa
 	}
 }
 
-// --- Job handler stubs (to be replaced in Phase 3/4/6) --------------------
-
-func handleGeneration(log *zap.Logger) jobHandler {
-	return func(ctx context.Context, payload []byte) error {
-		log.Info("generation job received (stub)", zap.ByteString("payload", payload))
-		return nil
-	}
-}
+// --- Remaining job handler stubs (Phase 4/6) --------------------------------
 
 func handleSchema(log *zap.Logger) jobHandler {
 	return func(ctx context.Context, payload []byte) error {
