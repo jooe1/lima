@@ -9,3 +9,10 @@ type GenerationPayload struct {
 	WorkspaceID string `json:"workspace_id"`
 	UserID      string `json:"user_id"`
 }
+
+// SchemaPayload is the JSON envelope popped from the schema queue.
+// It mirrors model.SchemaJobPayload in the API service.
+type SchemaPayload struct {
+	ConnectorID string `json:"connector_id"`
+	WorkspaceID string `json:"workspace_id"`
+}

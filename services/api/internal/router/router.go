@@ -111,15 +111,16 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 				r.Route("/connectors", func(r chi.Router) {
 					r.Get("/", handler.ListConnectors(s, log))
 					r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
-						Post("/", handler.CreateConnector(s, log))
+						Post("/", handler.CreateConnector(cfg, s, enq, log))
 					r.Route("/{connectorID}", func(r chi.Router) {
 						r.Get("/", handler.GetConnector(s, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
-							Patch("/", handler.PatchConnector(s, log))
+							Patch("/", handler.PatchConnector(cfg, s, enq, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Delete("/", handler.DeleteConnector(s, log))
-						r.Post("/test", handler.TestConnector(s, log))
-						r.Get("/schema", handler.GetConnectorSchema(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
+							Post("/test", handler.TestConnector(cfg, s, log))
+						r.Get("/schema", handler.GetConnectorSchema(s, enq, log))
 					})
 				})
 

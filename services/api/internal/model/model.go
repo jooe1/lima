@@ -163,3 +163,65 @@ type GenerationJobPayload struct {
 	WorkspaceID string `json:"workspace_id"`
 	UserID      string `json:"user_id"`
 }
+
+// ---- Connectors (Phase 4) ---------------------------------------------------
+
+// ConnectorType mirrors the connector_type DB enum.
+type ConnectorType string
+
+const (
+	ConnectorTypePostgres ConnectorType = "postgres"
+	ConnectorTypeMySQL    ConnectorType = "mysql"
+	ConnectorTypeMSSQL    ConnectorType = "mssql"
+	ConnectorTypeREST     ConnectorType = "rest"
+	ConnectorTypeGraphQL  ConnectorType = "graphql"
+	ConnectorTypeCSV      ConnectorType = "csv"
+)
+
+// RelationalCredentials holds connection parameters for SQL connectors.
+type RelationalCredentials struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Database string `json:"database"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	SSL      bool   `json:"ssl"`
+}
+
+// RestCredentials holds connection parameters for REST API connectors.
+type RestCredentials struct {
+	BaseURL      string `json:"base_url"`
+	AuthType     string `json:"auth_type"` // none | bearer | basic | api_key
+	Token        string `json:"token,omitempty"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	APIKeyHeader string `json:"api_key_header,omitempty"` // default: X-API-Key
+}
+
+// Connector is the safe public view of a connector record.
+// Credentials are never included in this struct.
+type Connector struct {
+	ID             string         `json:"id"`
+	WorkspaceID    string         `json:"workspace_id"`
+	Name           string         `json:"name"`
+	Type           ConnectorType  `json:"type"`
+	SchemaCache    map[string]any `json:"schema_cache,omitempty"`
+	SchemaCachedAt *time.Time     `json:"schema_cached_at,omitempty"`
+	CreatedBy      string         `json:"created_by"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+// ConnectorRecord extends Connector with the raw encrypted credentials for
+// internal use only. The json:"-" tag prevents accidental serialisation.
+type ConnectorRecord struct {
+	Connector
+	EncryptedCredentials []byte `json:"-"`
+}
+
+// SchemaJobPayload is the JSON envelope sent to the schema Redis queue.
+type SchemaJobPayload struct {
+	ConnectorID string `json:"connector_id"`
+	WorkspaceID string `json:"workspace_id"`
+}

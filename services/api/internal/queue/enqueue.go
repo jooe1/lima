@@ -12,7 +12,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const jobGeneration = "lima:jobs:generation"
+const (
+	jobGeneration = "lima:jobs:generation"
+	jobSchema     = "lima:jobs:schema"
+)
 
 // Enqueuer pushes serialised job payloads onto Redis lists.
 type Enqueuer struct {
@@ -45,6 +48,18 @@ func (e *Enqueuer) EnqueueGeneration(ctx context.Context, p model.GenerationJobP
 	}
 	if err := e.client.RPush(ctx, jobGeneration, b).Err(); err != nil {
 		return fmt.Errorf("rpush generation: %w", err)
+	}
+	return nil
+}
+
+// EnqueueSchema pushes a schema discovery job onto the worker queue.
+func (e *Enqueuer) EnqueueSchema(ctx context.Context, p model.SchemaJobPayload) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal schema payload: %w", err)
+	}
+	if err := e.client.RPush(ctx, jobSchema, b).Err(); err != nil {
+		return fmt.Errorf("rpush schema: %w", err)
 	}
 	return nil
 }

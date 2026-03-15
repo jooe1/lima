@@ -63,22 +63,6 @@ func Healthz(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// ---- Connectors (Phase 4 stubs) --------------------------------------------
-
-func ListConnectors(s *store.Store, log *zap.Logger) http.HandlerFunc { return stub("ListConnectors") }
-func CreateConnector(s *store.Store, log *zap.Logger) http.HandlerFunc {
-	return stub("CreateConnector")
-}
-func GetConnector(s *store.Store, log *zap.Logger) http.HandlerFunc   { return stub("GetConnector") }
-func PatchConnector(s *store.Store, log *zap.Logger) http.HandlerFunc { return stub("PatchConnector") }
-func DeleteConnector(s *store.Store, log *zap.Logger) http.HandlerFunc {
-	return stub("DeleteConnector")
-}
-func TestConnector(s *store.Store, log *zap.Logger) http.HandlerFunc { return stub("TestConnector") }
-func GetConnectorSchema(s *store.Store, log *zap.Logger) http.HandlerFunc {
-	return stub("GetConnectorSchema")
-}
-
 // ---- Approvals (Phase 5 stubs) ---------------------------------------------
 
 func ListApprovals(s *store.Store, log *zap.Logger) http.HandlerFunc { return stub("ListApprovals") }
