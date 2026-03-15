@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/api/internal/store"
-	"go.uber.org/zap"
 )
 
 // respond writes a JSON body with the given status code.
@@ -63,8 +62,4 @@ func Healthz(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// ---- Approvals (Phase 5 stubs) ---------------------------------------------
-
-func ListApprovals(s *store.Store, log *zap.Logger) http.HandlerFunc { return stub("ListApprovals") }
-func ApproveAction(s *store.Store, log *zap.Logger) http.HandlerFunc { return stub("ApproveAction") }
-func RejectAction(s *store.Store, log *zap.Logger) http.HandlerFunc  { return stub("RejectAction") }
+// Approvals are implemented in approvals.go.

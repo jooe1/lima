@@ -225,3 +225,38 @@ type SchemaJobPayload struct {
 	ConnectorID string `json:"connector_id"`
 	WorkspaceID string `json:"workspace_id"`
 }
+
+// ---- Approvals (Phase 5) ----------------------------------------------------
+
+// ApprovalStatus mirrors the approval_status DB enum.
+type ApprovalStatus string
+
+const (
+	ApprovalPending  ApprovalStatus = "pending"
+	ApprovalApproved ApprovalStatus = "approved"
+	ApprovalRejected ApprovalStatus = "rejected"
+)
+
+// Approval is the safe public view of an approval record.
+// The encrypted_payload is never included in API responses.
+type Approval struct {
+	ID              string         `json:"id"`
+	WorkspaceID     string         `json:"workspace_id"`
+	AppID           *string        `json:"app_id,omitempty"`
+	ConnectorID     *string        `json:"connector_id,omitempty"`
+	Description     string         `json:"description"`
+	Status          ApprovalStatus `json:"status"`
+	RequestedBy     string         `json:"requested_by"`
+	ReviewedBy      *string        `json:"reviewed_by,omitempty"`
+	ReviewedAt      *time.Time     `json:"reviewed_at,omitempty"`
+	RejectionReason *string        `json:"rejection_reason,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+}
+
+// ApprovalRecord extends Approval with the raw encrypted payload for internal use.
+// The json:"-" tag prevents accidental serialisation.
+type ApprovalRecord struct {
+	Approval
+	EncryptedPayload []byte `json:"-"`
+}

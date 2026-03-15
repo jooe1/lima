@@ -265,3 +265,61 @@ export function postMessage(workspaceId: string, appId: string, threadId: string
     { method: 'POST', body: JSON.stringify({ content }) },
   )
 }
+
+// ---- Approvals (Phase 5) ---------------------------------------------------
+
+export interface Approval {
+  id: string
+  workspace_id: string
+  app_id?: string
+  connector_id?: string
+  description: string
+  status: 'pending' | 'approved' | 'rejected'
+  requested_by: string
+  reviewed_by?: string
+  reviewed_at?: string
+  rejection_reason?: string
+  created_at: string
+  updated_at: string
+}
+
+export function listApprovals(workspaceId: string, status?: 'pending' | 'approved' | 'rejected') {
+  const q = status ? `?status=${status}` : ''
+  return request<{ approvals: Approval[] }>(`/v1/workspaces/${workspaceId}/approvals/${q}`)
+}
+
+export function createApproval(
+  workspaceId: string,
+  data: {
+    app_id?: string
+    connector_id?: string
+    description: string
+    payload: Record<string, unknown>
+  },
+) {
+  return request<Approval>(`/v1/workspaces/${workspaceId}/approvals/`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export function approveAction(workspaceId: string, approvalId: string) {
+  return request<Approval>(`/v1/workspaces/${workspaceId}/approvals/${approvalId}/approve`, {
+    method: 'POST',
+  })
+}
+
+export function rejectAction(workspaceId: string, approvalId: string, reason?: string) {
+  return request<Approval>(`/v1/workspaces/${workspaceId}/approvals/${approvalId}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ rejection_reason: reason ?? null }),
+  })
+}
+
+// ---- Runtime (Phase 5) -----------------------------------------------------
+
+// getPublishedApp fetches the latest published AppVersion for use in the runtime shell.
+// Returns a 404 ApiError if the app is not in 'published' status (hard enforcement).
+export function getPublishedApp(workspaceId: string, appId: string) {
+  return request<AppVersion>(`/v1/workspaces/${workspaceId}/apps/${appId}/published`)
+}

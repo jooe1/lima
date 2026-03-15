@@ -91,6 +91,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Post("/rollback", handler.RollbackApp(s, log))
 						r.Get("/versions", handler.ListAppVersions(s, log))
+						// Runtime: published DSL — only returns data for published apps (enforces isolation)
+						r.Get("/published", handler.GetPublishedApp(s, log))
 
 						// Conversation threads (Phase 3)
 						r.Route("/threads", func(r chi.Router) {
@@ -127,6 +129,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 				// Write-approval queue (FR-15)
 				r.Route("/approvals", func(r chi.Router) {
 					r.Get("/", handler.ListApprovals(s, log))
+					r.Post("/", handler.CreateApproval(cfg, s, log))
 					r.Route("/{approvalID}", func(r chi.Router) {
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Post("/approve", handler.ApproveAction(s, log))

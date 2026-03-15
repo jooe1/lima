@@ -219,3 +219,39 @@ func (s *Store) ListAppVersions(ctx context.Context, appID string) ([]model.AppV
 	}
 	return versions, rows.Err()
 }
+
+// GetLatestPublishedVersion returns the most recent AppVersion for an app that is
+// currently in 'published' status. Returns ErrNotFound if the app is not published
+// or does not belong to the workspace — enforcing the runtime isolation requirement.
+func (s *Store) GetLatestPublishedVersion(ctx context.Context, workspaceID, appID string) (*model.AppVersion, error) {
+	// Verify the app belongs to the workspace and is currently published.
+	var status string
+	err := s.pool.QueryRow(ctx,
+		`SELECT status FROM apps WHERE id = $1 AND workspace_id = $2`,
+		appID, workspaceID,
+	).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get published app check: %w", err)
+	}
+	if status != string(model.StatusPublished) {
+		return nil, ErrNotFound
+	}
+
+	v := &model.AppVersion{}
+	err = s.pool.QueryRow(ctx,
+		`SELECT id, app_id, version_num, dsl_source, published_by, published_at
+		 FROM app_versions WHERE app_id = $1
+		 ORDER BY version_num DESC LIMIT 1`,
+		appID,
+	).Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &v.PublishedBy, &v.PublishedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get published version: %w", err)
+	}
+	return v, nil
+}

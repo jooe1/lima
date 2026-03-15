@@ -1,6 +1,7 @@
 'use client'
 
 import React, { use, useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { parse, serialize, type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { useAuth } from '../../../lib/auth'
@@ -11,6 +12,7 @@ import { CanvasEditor } from './CanvasEditor'
 import { ChatPanel } from './ChatPanel'
 import { Inspector } from './Inspector'
 import { LayersPanel } from './LayersPanel'
+import { VersionHistory } from './VersionHistory'
 
 export default function AppEditorPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
@@ -20,6 +22,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [publishError, setPublishError] = useState('')
+  const [showVersionHistory, setShowVersionHistory] = useState(false)
   // 'inspector' | 'chat' — controls the right-hand panel
   const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector')
 
@@ -197,6 +200,34 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               : ''}
         </span>
 
+        {/* Version history */}
+        <button
+          onClick={() => setShowVersionHistory(true)}
+          title="Version history"
+          style={iconBtn(true)}
+        >
+          ⏱
+        </button>
+
+        {/* Preview link — only available once published */}
+        {app?.status === 'published' && (
+          <Link
+            href={`/app/${appId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open published app"
+            style={{
+              ...iconBtn(true),
+              textDecoration: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            ↗
+          </Link>
+        )}
+
         {/* Publish */}
         {publishError && (
           <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{publishError}</span>
@@ -264,6 +295,23 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           </div>
         ) : null}
       </div>
+
+      {/* Version history drawer */}
+      {showVersionHistory && workspace && (
+        <VersionHistory
+          workspaceId={workspace.id}
+          appId={appId}
+          currentStatus={app?.status ?? 'draft'}
+          onRollback={() => {
+            // Reload the app so the DSL is refreshed after rollback
+            getApp(workspace.id, appId).then(a => {
+              setApp(a)
+              try { history.reset(a.dsl_source ? parse(a.dsl_source) : []) } catch { history.reset([]) }
+            }).catch(() => {})
+          }}
+          onClose={() => setShowVersionHistory(false)}
+        />
+      )}
     </div>
   )
 }

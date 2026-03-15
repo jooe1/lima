@@ -204,6 +204,22 @@ func ListAuditEvents(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	}
 }
 
+// GetPublishedApp returns the latest published AppVersion for an app.
+// Returns 404 if the app is not in 'published' status, enforcing that the
+// runtime shell can only render published apps — not drafts.
+func GetPublishedApp(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID := chi.URLParam(r, "workspaceID")
+		appID := chi.URLParam(r, "appID")
+		version, err := s.GetLatestPublishedVersion(r.Context(), workspaceID, appID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		respond(w, http.StatusOK, version)
+	}
+}
+
 // auditAppEvent writes a non-fatal audit event for app operations.
 func auditAppEvent(ctx context.Context, s *store.Store, log *zap.Logger, claims *Claims, workspaceID, eventType string, resourceID *string) {
 	resType := "app"
