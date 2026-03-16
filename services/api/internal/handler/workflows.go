@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lima/api/internal/model"
+	"github.com/lima/api/internal/queue"
 	"github.com/lima/api/internal/store"
 	"go.uber.org/zap"
 )
@@ -56,12 +57,12 @@ func CreateWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 		claims, _ := ClaimsFromContext(r.Context())
 
 		var req struct {
-			Name             string                 `json:"name"`
-			Description      *string                `json:"description"`
-			TriggerType      model.WorkflowTrigger  `json:"trigger_type"`
-			TriggerConfig    map[string]any         `json:"trigger_config"`
-			RequiresApproval *bool                  `json:"requires_approval"`
-			Steps            []workflowStepInput    `json:"steps"`
+			Name             string                `json:"name"`
+			Description      *string               `json:"description"`
+			TriggerType      model.WorkflowTrigger `json:"trigger_type"`
+			TriggerConfig    map[string]any        `json:"trigger_config"`
+			RequiresApproval *bool                 `json:"requires_approval"`
+			Steps            []workflowStepInput   `json:"steps"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
@@ -236,7 +237,7 @@ func ReviewStep(s *store.Store, log *zap.Logger) http.HandlerFunc {
 // TriggerWorkflow creates a new run record for a workflow. For active workflows
 // this creates a run with status=pending that the worker will pick up. For draft
 // workflows the run is still created so builders can test the flow manually.
-func TriggerWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
+func TriggerWorkflow(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		workspaceID := chi.URLParam(r, "workspaceID")
 		workflowID := chi.URLParam(r, "workflowID")
@@ -256,6 +257,19 @@ func TriggerWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			respondErr(w, http.StatusInternalServerError, "db_error", "failed to create workflow run")
 			return
 		}
+
+		// Enqueue the execution job. Non-fatal if Redis is unavailable; the run
+		// record is persisted and can be retried via a separate sweep.
+		if enq != nil {
+			if err := enq.EnqueueWorkflow(r.Context(), model.WorkflowJobPayload{
+				RunID:       run.ID,
+				WorkflowID:  workflowID,
+				WorkspaceID: workspaceID,
+			}); err != nil {
+				log.Warn("workflow job enqueue failed", zap.String("run_id", run.ID), zap.Error(err))
+			}
+		}
+
 		respond(w, http.StatusCreated, run)
 	}
 }

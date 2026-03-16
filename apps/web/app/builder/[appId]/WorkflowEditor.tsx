@@ -19,6 +19,7 @@ import {
   listWorkflowRuns,
   putWorkflowSteps,
   reviewStep,
+  patchWorkflow,
   ApiError,
 } from '../../../lib/api'
 import { useAuth } from '../../../lib/auth'
@@ -216,6 +217,29 @@ export function WorkflowEditor({ appId }: Props) {
     }
   }, [workspace, appId, selected])
 
+  // Save updated step list (replace-all)
+  const handleSaveSteps = useCallback(async (steps: WorkflowStepInput[]) => {
+    if (!workspace || !selected) return
+    try {
+      const res = await putWorkflowSteps(workspace.id, appId, selected.id, steps)
+      setSelected(prev => prev ? { ...prev, steps: res.steps } : null)
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : 'Failed to save steps')
+    }
+  }, [workspace, appId, selected])
+
+  // Patch workflow metadata (name, trigger, requires_approval)
+  const handlePatchWorkflow = useCallback(async (patch: Parameters<typeof patchWorkflow>[3]) => {
+    if (!workspace || !selected) return
+    try {
+      const updated = await patchWorkflow(workspace.id, appId, selected.id, patch)
+      setSelected(prev => prev ? { ...prev, ...updated } : null)
+      await reload()
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : 'Failed to update workflow')
+    }
+  }, [workspace, appId, selected, reload])
+
   // ---- render ---------------------------------------------------------------
   return (
     <div style={{ display: 'flex', height: '100%', background: C.bg, color: C.text, fontSize: '0.75rem', overflow: 'hidden' }}>
@@ -288,6 +312,7 @@ export function WorkflowEditor({ appId }: Props) {
           onTrigger={handleTrigger}
           onDelete={() => handleDelete(selected.id)}
           onReviewStep={handleReviewStep}
+          onSaveSteps={handleSaveSteps}
         />
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted }}>
@@ -312,10 +337,87 @@ interface DetailProps {
   onTrigger: () => void
   onDelete: () => void
   onReviewStep: (stepId: string) => void
+  onSaveSteps: (steps: WorkflowStepInput[]) => Promise<void>
 }
 
-function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, onArchive, onTrigger, onDelete, onReviewStep }: DetailProps) {
+const STEP_TYPES: WorkflowStepType[] = ['query', 'mutation', 'condition', 'approval_gate', 'notification']
+
+function blankDraftStep(): DraftStep {
+  return { _key: crypto.randomUUID(), name: '', step_type: 'query', config: '{}', ai_generated: false }
+}
+
+interface DraftStep {
+  _key: string
+  name: string
+  step_type: WorkflowStepType
+  config: string       // JSON text edited inline
+  ai_generated: boolean
+}
+
+function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, onArchive, onTrigger, onDelete, onReviewStep, onSaveSteps }: DetailProps) {
   const unreviewedCount = wf.steps.filter(s => s.ai_generated && !s.reviewed_by).length
+
+  const [editingSteps, setEditingSteps] = useState(false)
+  const [draftSteps, setDraftSteps]     = useState<DraftStep[]>([])
+  const [savingSteps, setSavingSteps]   = useState(false)
+  const [stepsErr, setStepsErr]         = useState('')
+
+  const startEditing = () => {
+    setDraftSteps(wf.steps.map(s => ({
+      _key:         s.id,
+      name:         s.name,
+      step_type:    s.step_type,
+      config:       JSON.stringify(s.config ?? {}, null, 2),
+      ai_generated: s.ai_generated ?? false,
+    })))
+    setStepsErr('')
+    setEditingSteps(true)
+  }
+
+  const cancelEditing = () => {
+    setEditingSteps(false)
+    setDraftSteps([])
+    setStepsErr('')
+  }
+
+  const saveSteps = async () => {
+    // Validate JSON configs
+    const inputs: WorkflowStepInput[] = []
+    for (const d of draftSteps) {
+      if (!d.name.trim()) { setStepsErr('All steps must have a name.'); return }
+      let cfg: Record<string, unknown> = {}
+      try { cfg = JSON.parse(d.config || '{}') } catch { setStepsErr(`Step "${d.name}": config is not valid JSON`); return }
+      inputs.push({ name: d.name.trim(), step_type: d.step_type, config: cfg, ai_generated: d.ai_generated })
+    }
+    setSavingSteps(true)
+    try {
+      await onSaveSteps(inputs)
+      setEditingSteps(false)
+      setDraftSteps([])
+      setStepsErr('')
+    } catch (e) {
+      setStepsErr(e instanceof Error ? e.message : 'Failed to save steps')
+    } finally {
+      setSavingSteps(false)
+    }
+  }
+
+  const updateDraft = (key: string, patch: Partial<DraftStep>) =>
+    setDraftSteps(prev => prev.map(d => d._key === key ? { ...d, ...patch } : d))
+
+  const deleteDraft = (key: string) =>
+    setDraftSteps(prev => prev.filter(d => d._key !== key))
+
+  const moveDraft = (key: string, dir: -1 | 1) =>
+    setDraftSteps(prev => {
+      const idx = prev.findIndex(d => d._key === key)
+      if (idx < 0) return prev
+      const next = idx + dir
+      if (next < 0 || next >= prev.length) return prev
+      const arr = [...prev]
+      ;[arr[idx], arr[next]] = [arr[next], arr[idx]]
+      return arr
+    })
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -354,7 +456,7 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
         </div>
       )}
 
-      {unreviewedCount > 0 && (
+      {unreviewedCount > 0 && !editingSteps && (
         <div style={{ padding: '6px 14px', background: '#92400e33', color: '#fcd34d', borderBottom: `1px solid ${C.border}`, flexShrink: 0, fontSize: '0.7rem' }}>
           {unreviewedCount} AI-generated step{unreviewedCount !== 1 ? 's' : ''} need{unreviewedCount === 1 ? 's' : ''} builder review before this workflow can be activated.
         </div>
@@ -363,13 +465,54 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0 }}>
 
         {/* Steps */}
-        <Section title={`Steps (${wf.steps.length})`}>
-          {wf.steps.length === 0 && (
-            <div style={{ color: C.muted, padding: '4px 0' }}>No steps defined.</div>
+        <Section
+          title={`Steps (${editingSteps ? draftSteps.length : wf.steps.length})`}
+          action={isBuilder && !editingSteps
+            ? <button style={btn()} onClick={startEditing}>Edit Steps</button>
+            : undefined}
+        >
+          {editingSteps ? (
+            <>
+              {stepsErr && (
+                <div style={{ color: C.dangerFg, fontSize: '0.7rem', marginBottom: 8 }}>{stepsErr}</div>
+              )}
+
+              {draftSteps.length === 0 && (
+                <div style={{ color: C.muted, padding: '4px 0', marginBottom: 8 }}>No steps — add one below.</div>
+              )}
+
+              {draftSteps.map((d, idx) => (
+                <DraftStepRow
+                  key={d._key}
+                  draft={d}
+                  index={idx}
+                  total={draftSteps.length}
+                  onChange={patch => updateDraft(d._key, patch)}
+                  onDelete={() => deleteDraft(d._key)}
+                  onMove={dir => moveDraft(d._key, dir)}
+                />
+              ))}
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button style={btn()} onClick={() => setDraftSteps(prev => [...prev, blankDraftStep()])}>
+                  + Add Step
+                </button>
+                <button style={btn(true)} onClick={saveSteps} disabled={savingSteps}>
+                  {savingSteps ? 'Saving…' : 'Save Steps'}
+                </button>
+                <button style={btn()} onClick={cancelEditing} disabled={savingSteps}>Cancel</button>
+              </div>
+            </>
+          ) : (
+            <>
+              {wf.steps.length === 0 && (
+                <div style={{ color: C.muted, padding: '4px 0' }}>No steps defined.</div>
+              )}
+              {wf.steps.map((step, idx) => (
+                <StepRow key={step.id} step={step} index={idx} isBuilder={isBuilder} onReview={() => onReviewStep(step.id)} />
+              ))}
+            </>
           )}
-          {wf.steps.map((step, idx) => (
-            <StepRow key={step.id} step={step} index={idx} isBuilder={isBuilder} onReview={() => onReviewStep(step.id)} />
-          ))}
         </Section>
 
         {/* Requires approval notice */}
@@ -387,6 +530,68 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
           ))}
         </Section>
       </div>
+    </div>
+  )
+}
+
+// ---- DraftStepRow ----------------------------------------------------------
+interface DraftStepRowProps {
+  draft: DraftStep
+  index: number
+  total: number
+  onChange: (patch: Partial<DraftStep>) => void
+  onDelete: () => void
+  onMove: (dir: -1 | 1) => void
+}
+
+function DraftStepRow({ draft, index, total, onChange, onDelete, onMove }: DraftStepRowProps) {
+  const inputStyle: React.CSSProperties = {
+    background: '#1a1a1a',
+    border: `1px solid ${C.border}`,
+    borderRadius: 3,
+    color: C.text,
+    fontSize: '0.72rem',
+    padding: '3px 7px',
+  }
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 4, padding: 10, marginBottom: 8, background: '#0d0d0d' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <span style={{ color: C.muted, fontSize: '0.65rem', width: 16, textAlign: 'right', flexShrink: 0 }}>{index + 1}</span>
+        <input
+          style={{ ...inputStyle, flex: 1 }}
+          placeholder="Step name…"
+          value={draft.name}
+          onChange={e => onChange({ name: e.target.value })}
+        />
+        <select
+          style={{ ...inputStyle, background: '#1a1a1a' }}
+          value={draft.step_type}
+          onChange={e => onChange({ step_type: e.target.value as WorkflowStepType })}
+        >
+          {STEP_TYPES.map(t => (
+            <option key={t} value={t}>{STEP_TYPE_LABELS[t]}</option>
+          ))}
+        </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted, fontSize: '0.65rem', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={draft.ai_generated}
+            onChange={e => onChange({ ai_generated: e.target.checked })}
+            style={{ accentColor: C.accent }}
+          />
+          AI
+        </label>
+        <button style={{ ...btn(), padding: '2px 7px' }} onClick={() => onMove(-1)} disabled={index === 0} title="Move up">↑</button>
+        <button style={{ ...btn(), padding: '2px 7px' }} onClick={() => onMove(1)} disabled={index === total - 1} title="Move down">↓</button>
+        <button style={{ ...btn(false, true), padding: '2px 7px' }} onClick={onDelete} title="Delete step">×</button>
+      </div>
+      <textarea
+        style={{ ...inputStyle, width: '100%', boxSizing: 'border-box', minHeight: 60, fontFamily: 'monospace', resize: 'vertical', whiteSpace: 'pre' }}
+        placeholder="{}"
+        value={draft.config}
+        onChange={e => onChange({ config: e.target.value })}
+        spellCheck={false}
+      />
     </div>
   )
 }
@@ -457,11 +662,14 @@ function RunRow({ run }: { run: WorkflowRun }) {
 }
 
 // ---- helpers ---------------------------------------------------------------
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}` }}>
-      <div style={{ fontWeight: 600, color: C.muted, fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
-        {title}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <div style={{ fontWeight: 600, color: C.muted, fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          {title}
+        </div>
+        {action}
       </div>
       {children}
     </div>

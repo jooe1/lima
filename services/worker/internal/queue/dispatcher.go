@@ -69,7 +69,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	startPool(JobGeneration, d.cfg.GenerationWorkers, handleGeneration(d.cfg, d.pool, d.log))
 	startPool(JobSchema, d.cfg.SchemaWorkers, handleSchema(d.cfg, d.pool, d.log))
 	startPool(JobImport, d.cfg.ImportWorkers, handleImport(d.log))
-	startPool(JobWorkflow, 1, handleWorkflow(d.log)) // single-threaded for safety
+	startPool(JobWorkflow, 1, handleWorkflow(d.cfg, d.pool, d.log)) // single-threaded for safety
 
 	<-ctx.Done()
 	d.log.Info("draining workers")
@@ -112,13 +112,6 @@ func (d *Dispatcher) runLoop(ctx context.Context, jobType JobType, handler jobHa
 func handleImport(log *zap.Logger) jobHandler {
 	return func(ctx context.Context, payload []byte) error {
 		log.Info("import job received (stub)", zap.ByteString("payload", payload))
-		return nil
-	}
-}
-
-func handleWorkflow(log *zap.Logger) jobHandler {
-	return func(ctx context.Context, payload []byte) error {
-		log.Info("workflow job received (stub)", zap.ByteString("payload", payload))
 		return nil
 	}
 }

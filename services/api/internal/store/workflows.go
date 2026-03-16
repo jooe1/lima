@@ -434,6 +434,69 @@ func (s *Store) ListWorkflowRuns(ctx context.Context, workspaceID, workflowID st
 	return runs, rows.Err()
 }
 
+// GetWorkflowRun returns a single workflow run.
+func (s *Store) GetWorkflowRun(ctx context.Context, workspaceID, runID string) (*model.WorkflowRun, error) {
+	var run model.WorkflowRun
+	var inputJSON, outputJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, workflow_id, workspace_id, status, triggered_by,
+		       input_data, output_data, error_message, approval_id,
+		       started_at, completed_at
+		FROM workflow_runs
+		WHERE id=$1 AND workspace_id=$2`,
+		runID, workspaceID,
+	).Scan(
+		&run.ID, &run.WorkflowID, &run.WorkspaceID, &run.Status, &run.TriggeredBy,
+		&inputJSON, &outputJSON, &run.ErrorMessage, &run.ApprovalID,
+		&run.StartedAt, &run.CompletedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get run: %w", err)
+	}
+	if inputJSON != nil {
+		_ = json.Unmarshal(inputJSON, &run.InputData)
+	}
+	if outputJSON != nil {
+		_ = json.Unmarshal(outputJSON, &run.OutputData)
+	}
+	return &run, nil
+}
+
+// GetWorkflowRunByApproval returns the workflow run blocked on the given approval_id.
+// Returns ErrNotFound if no run is awaiting that approval.
+func (s *Store) GetWorkflowRunByApproval(ctx context.Context, approvalID string) (*model.WorkflowRun, error) {
+	var run model.WorkflowRun
+	var inputJSON, outputJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, workflow_id, workspace_id, status, triggered_by,
+		       input_data, output_data, error_message, approval_id,
+		       started_at, completed_at
+		FROM workflow_runs
+		WHERE approval_id=$1 AND status='awaiting_approval'`,
+		approvalID,
+	).Scan(
+		&run.ID, &run.WorkflowID, &run.WorkspaceID, &run.Status, &run.TriggeredBy,
+		&inputJSON, &outputJSON, &run.ErrorMessage, &run.ApprovalID,
+		&run.StartedAt, &run.CompletedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get run by approval: %w", err)
+	}
+	if inputJSON != nil {
+		_ = json.Unmarshal(inputJSON, &run.InputData)
+	}
+	if outputJSON != nil {
+		_ = json.Unmarshal(outputJSON, &run.OutputData)
+	}
+	return &run, nil
+}
+
 // ---- internal helpers -------------------------------------------------------
 
 type execer interface {

@@ -15,6 +15,7 @@ import (
 const (
 	jobGeneration = "lima:jobs:generation"
 	jobSchema     = "lima:jobs:schema"
+	jobWorkflow   = "lima:jobs:workflow"
 )
 
 // Enqueuer pushes serialised job payloads onto Redis lists.
@@ -60,6 +61,32 @@ func (e *Enqueuer) EnqueueSchema(ctx context.Context, p model.SchemaJobPayload) 
 	}
 	if err := e.client.RPush(ctx, jobSchema, b).Err(); err != nil {
 		return fmt.Errorf("rpush schema: %w", err)
+	}
+	return nil
+}
+
+// EnqueueWorkflow pushes a workflow execution job onto the worker queue.
+// Called after a workflow run record is created by TriggerWorkflow.
+func (e *Enqueuer) EnqueueWorkflow(ctx context.Context, p model.WorkflowJobPayload) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal workflow payload: %w", err)
+	}
+	if err := e.client.RPush(ctx, jobWorkflow, b).Err(); err != nil {
+		return fmt.Errorf("rpush workflow: %w", err)
+	}
+	return nil
+}
+
+// EnqueueWorkflowResume pushes a workflow resume job after an approval decision.
+// The worker uses this to continue or fail a run that was awaiting_approval.
+func (e *Enqueuer) EnqueueWorkflowResume(ctx context.Context, p model.WorkflowResumePayload) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal workflow resume payload: %w", err)
+	}
+	if err := e.client.RPush(ctx, jobWorkflow, b).Err(); err != nil {
+		return fmt.Errorf("rpush workflow resume: %w", err)
 	}
 	return nil
 }

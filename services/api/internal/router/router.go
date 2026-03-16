@@ -123,9 +123,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 									Post("/activate", handler.ActivateWorkflow(s, log))
 								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 									Post("/archive", handler.ArchiveWorkflow(s, log))
-								// Manual trigger creates a run record
+								// Manual trigger creates a run record and enqueues an execution job
 								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
-									Post("/trigger", handler.TriggerWorkflow(s, log))
+									Post("/trigger", handler.TriggerWorkflow(s, enq, log))
 								r.Get("/runs", handler.ListWorkflowRuns(s, log))
 								// Step management
 								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
@@ -151,6 +151,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Post("/test", handler.TestConnector(cfg, s, log))
 						r.Get("/schema", handler.GetConnectorSchema(s, enq, log))
+						// Dashboard read-only query (Phase 6) — any workspace member may query
+						r.Post("/query", handler.RunQuery(cfg, s, log))
 					})
 				})
 
@@ -160,9 +162,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 					r.Post("/", handler.CreateApproval(cfg, s, log))
 					r.Route("/{approvalID}", func(r chi.Router) {
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
-							Post("/approve", handler.ApproveAction(s, log))
+							Post("/approve", handler.ApproveAction(s, enq, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
-							Post("/reject", handler.RejectAction(s, log))
+							Post("/reject", handler.RejectAction(s, enq, log))
 					})
 				})
 

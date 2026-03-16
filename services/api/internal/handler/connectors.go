@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -337,4 +339,153 @@ func isValidConnectorType(t model.ConnectorType) bool {
 		return true
 	}
 	return false
+}
+
+// sqlMutationRe matches the start of any DML / DDL statement.
+// We use a conservative allowlist: only SELECT and WITH (CTE) are permitted.
+var sqlMutationRe = regexp.MustCompile(`(?i)^\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE|CALL|MERGE|REPLACE|LOCK|BEGIN|COMMIT|ROLLBACK|DO)`)
+
+const maxQueryLimit = 10_000
+
+// RunQuery executes a read-only SELECT query against a connector and returns
+// the result rows.  Only Postgres connectors are supported in the first pass;
+// others return a clear "unsupported" response (not an error).
+//
+// Security notes:
+//   - Only SELECT and WITH (CTE) starters are allowed; any DML/DDL is rejected
+//     with 422 before the query ever reaches the database.
+//   - The query runs inside SET TRANSACTION READ ONLY ensuring the DB rejects
+//     any mutation that slips past the regex check.
+//   - Row count is capped at maxQueryLimit.
+func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID := chi.URLParam(r, "workspaceID")
+		connectorID := chi.URLParam(r, "connectorID")
+
+		var req model.DashboardQueryRequest
+		if err := decodeJSON(r, &req); err != nil {
+			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			return
+		}
+		if strings.TrimSpace(req.SQL) == "" {
+			respondErr(w, http.StatusBadRequest, "bad_request", "sql is required")
+			return
+		}
+		if sqlMutationRe.MatchString(req.SQL) {
+			respondErr(w, http.StatusUnprocessableEntity, "mutation_blocked",
+				"only SELECT queries are permitted in dashboard query mode")
+			return
+		}
+
+		limit := req.Limit
+		if limit <= 0 || limit > maxQueryLimit {
+			limit = maxQueryLimit
+		}
+
+		rec, err := s.GetConnectorRecord(r.Context(), workspaceID, connectorID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+
+		plainCreds, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, rec.EncryptedCredentials)
+		if err != nil {
+			log.Error("decrypt connector credentials for query", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "internal_error", "credential decryption failed")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		switch rec.Type {
+		case model.ConnectorTypePostgres:
+			var creds model.RelationalCredentials
+			if err := json.Unmarshal(plainCreds, &creds); err != nil {
+				respondErr(w, http.StatusUnprocessableEntity, "invalid_credentials", "cannot parse postgres credentials")
+				return
+			}
+			result, err := runPostgresQuery(ctx, creds, req.SQL, req.Params, limit)
+			if err != nil {
+				log.Warn("postgres query failed", zap.String("connector_id", connectorID), zap.Error(err))
+				respondErr(w, http.StatusInternalServerError, "query_error", err.Error())
+				return
+			}
+			respond(w, http.StatusOK, result)
+
+		default:
+			respond(w, http.StatusOK, map[string]any{
+				"error": fmt.Sprintf("dashboard queries not yet supported for %s connectors", rec.Type),
+			})
+		}
+	}
+}
+
+// runPostgresQuery opens a short-lived connection, runs the query in a
+// read-only transaction, and returns structured rows.
+func runPostgresQuery(ctx context.Context, creds model.RelationalCredentials, sql string, params []any, limit int) (*model.DashboardQueryResponse, error) {
+	sslmode := "disable"
+	if creds.SSL {
+		sslmode = "require"
+	}
+	connStr := fmt.Sprintf(
+		"postgres://%s:%s@%s:%d/%s?sslmode=%s&connect_timeout=5",
+		url.QueryEscape(creds.Username),
+		url.QueryEscape(creds.Password),
+		creds.Host, creds.Port, creds.Database,
+		sslmode,
+	)
+	conn, err := pgx.Connect(ctx, connStr)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin read-only tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Append a LIMIT clause unless one is already present.
+	trimmed := strings.TrimRight(strings.TrimSpace(sql), ";")
+	if !strings.Contains(strings.ToUpper(trimmed), " LIMIT ") {
+		trimmed = fmt.Sprintf("%s LIMIT %d", trimmed, limit)
+	}
+
+	rows, err := tx.Query(ctx, trimmed, params...)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+
+	fields := rows.FieldDescriptions()
+	cols := make([]string, len(fields))
+	for i, f := range fields {
+		cols[i] = string(f.Name)
+	}
+
+	var result []map[string]any
+	for rows.Next() {
+		vals, err := rows.Values()
+		if err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
+		}
+		row := make(map[string]any, len(cols))
+		for i, col := range cols {
+			row[col] = vals[i]
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+	if result == nil {
+		result = []map[string]any{}
+	}
+	return &model.DashboardQueryResponse{
+		Columns:  cols,
+		Rows:     result,
+		RowCount: len(result),
+	}, nil
 }

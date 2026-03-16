@@ -360,3 +360,35 @@ type WorkflowRun struct {
 	StartedAt    time.Time         `json:"started_at"`
 	CompletedAt  *time.Time        `json:"completed_at,omitempty"`
 }
+
+// WorkflowJobPayload is the JSON sent to the workflow Redis queue when a run is triggered.
+type WorkflowJobPayload struct {
+	RunID       string `json:"run_id"`
+	WorkflowID  string `json:"workflow_id"`
+	WorkspaceID string `json:"workspace_id"`
+}
+
+// WorkflowResumePayload is sent to the workflow queue after an approval
+// decision so the worker can continue or fail the paused run.
+type WorkflowResumePayload struct {
+	RunID      string `json:"run_id"`
+	ApprovalID string `json:"approval_id"`
+	Approved   bool   `json:"approved"`
+}
+
+// ---- Dashboard queries (Phase 6) --------------------------------------------
+
+// DashboardQueryRequest is the payload for the read-only connector query endpoint.
+// Only SELECT-class queries are permitted; mutations are rejected by the handler.
+type DashboardQueryRequest struct {
+	SQL    string `json:"sql"`
+	Params []any  `json:"params,omitempty"`
+	Limit  int    `json:"limit,omitempty"` // max rows; capped at 10000
+}
+
+// DashboardQueryResponse carries the rows returned from a connector query.
+type DashboardQueryResponse struct {
+	Columns  []string         `json:"columns"`
+	Rows     []map[string]any `json:"rows"`
+	RowCount int              `json:"row_count"`
+}

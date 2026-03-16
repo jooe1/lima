@@ -9,6 +9,7 @@ import (
 	"github.com/lima/api/internal/config"
 	"github.com/lima/api/internal/cryptoutil"
 	"github.com/lima/api/internal/model"
+	"github.com/lima/api/internal/queue"
 	"github.com/lima/api/internal/store"
 	"go.uber.org/zap"
 )
@@ -87,7 +88,8 @@ func CreateApproval(cfg *config.Config, s *store.Store, log *zap.Logger) http.Ha
 
 // ApproveAction marks a pending approval as approved.
 // Requires workspace_admin role (enforced via RBAC middleware).
-func ApproveAction(s *store.Store, log *zap.Logger) http.HandlerFunc {
+// If the approval is linked to a paused workflow run, a resume job is enqueued.
+func ApproveAction(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		workspaceID := chi.URLParam(r, "workspaceID")
 		approvalID := chi.URLParam(r, "approvalID")
@@ -100,13 +102,30 @@ func ApproveAction(s *store.Store, log *zap.Logger) http.HandlerFunc {
 		}
 
 		auditApprovalEvent(r.Context(), s, log, claims, workspaceID, "approval.approved", &approval.ID)
+
+		// If a workflow run is blocked on this approval, enqueue a resume job.
+		if enq != nil {
+			if run, err := s.GetWorkflowRunByApproval(r.Context(), approvalID); err == nil {
+				if err := enq.EnqueueWorkflowResume(r.Context(), model.WorkflowResumePayload{
+					RunID:      run.ID,
+					ApprovalID: approvalID,
+					Approved:   true,
+				}); err != nil {
+					log.Warn("workflow resume enqueue failed on approve",
+						zap.String("run_id", run.ID), zap.Error(err))
+				}
+			}
+		}
+
 		respond(w, http.StatusOK, approval)
 	}
 }
 
 // RejectAction marks a pending approval as rejected with an optional reason.
 // Requires workspace_admin role (enforced via RBAC middleware).
-func RejectAction(s *store.Store, log *zap.Logger) http.HandlerFunc {
+// If the approval is linked to a paused workflow run, a resume job is enqueued
+// with approved=false so the worker can fail the run cleanly.
+func RejectAction(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		workspaceID := chi.URLParam(r, "workspaceID")
 		approvalID := chi.URLParam(r, "approvalID")
@@ -125,6 +144,21 @@ func RejectAction(s *store.Store, log *zap.Logger) http.HandlerFunc {
 		}
 
 		auditApprovalEvent(r.Context(), s, log, claims, workspaceID, "approval.rejected", &approval.ID)
+
+		// Notify the worker so it can fail the blocked run.
+		if enq != nil {
+			if run, err := s.GetWorkflowRunByApproval(r.Context(), approvalID); err == nil {
+				if err := enq.EnqueueWorkflowResume(r.Context(), model.WorkflowResumePayload{
+					RunID:      run.ID,
+					ApprovalID: approvalID,
+					Approved:   false,
+				}); err != nil {
+					log.Warn("workflow resume enqueue failed on reject",
+						zap.String("run_id", run.ID), zap.Error(err))
+				}
+			}
+		}
+
 		respond(w, http.StatusOK, approval)
 	}
 }

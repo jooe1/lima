@@ -506,3 +506,32 @@ export function reviewStep(
     { method: 'POST' },
   )
 }
+
+// ---- Dashboard queries (Phase 6) -------------------------------------------
+
+export interface DashboardQueryRequest {
+  sql: string
+  params?: unknown[]
+  limit?: number
+}
+
+export interface DashboardQueryResponse {
+  columns: string[]
+  rows: Record<string, unknown>[]
+  row_count: number
+  /** Present when the connector type is not yet supported for queries. */
+  error?: string
+}
+
+/** Execute a read-only SELECT query against a connector.
+ *  Only SELECT queries are permitted; mutations are rejected by the API. */
+export function runConnectorQuery(
+  workspaceId: string,
+  connectorId: string,
+  req: DashboardQueryRequest,
+) {
+  return request<DashboardQueryResponse>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/query`,
+    { method: 'POST', body: JSON.stringify(req) },
+  )
+}
