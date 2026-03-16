@@ -307,6 +307,74 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect }: Props) {
           </div>
         )}
       </div>
+
+      {/* Minimap — scaled thumbnail of all widgets in bottom-right corner */}
+      {doc.length > 0 && (
+        <MinimapOverlay doc={doc} canvasHeight={canvasHeight} selectedId={selectedId} />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Minimap
+// ---------------------------------------------------------------------------
+
+interface MinimapProps {
+  doc: AuraDocument
+  canvasHeight: number
+  selectedId: string | null
+}
+
+const MINIMAP_W = 140
+const MINIMAP_H = 88
+
+function MinimapOverlay({ doc, canvasHeight, selectedId }: MinimapProps) {
+  const canvasW = COLS * CELL
+  const scaleX = MINIMAP_W / canvasW
+  const scaleY = MINIMAP_H / canvasHeight
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        bottom: 14,
+        right: 14,
+        width: MINIMAP_W,
+        height: MINIMAP_H,
+        background: '#0c0c0c',
+        border: '1px solid #1e1e1e',
+        borderRadius: 4,
+        overflow: 'hidden',
+        pointerEvents: 'none',
+        zIndex: 20,
+      }}
+      aria-hidden="true"
+    >
+      <svg width={MINIMAP_W} height={MINIMAP_H} style={{ display: 'block' }}>
+        {doc.map(node => {
+          const g = getGrid(node)
+          const x = g.x * CELL * scaleX
+          const y = g.y * CELL * scaleY
+          const w = Math.max(2, g.w * CELL * scaleX)
+          const h = Math.max(1, g.h * CELL * scaleY)
+          const isSelected = node.id === selectedId
+          return (
+            <rect
+              key={node.id}
+              x={x}
+              y={y}
+              width={w}
+              height={h}
+              rx={1}
+              fill={isSelected ? '#3b82f6' : '#1e3a5f'}
+              stroke={isSelected ? '#60a5fa' : '#2a4a6a'}
+              strokeWidth={0.5}
+              opacity={0.9}
+            />
+          )
+        })}
+      </svg>
     </div>
   )
 }

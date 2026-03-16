@@ -22,6 +22,8 @@ RUN pnpm --filter "@lima/sdk-connectors" build
 
 # Build the web app
 FROM build-packages AS build-web
+ARG NEXT_PUBLIC_DEV_LOGIN
+ENV NEXT_PUBLIC_DEV_LOGIN=$NEXT_PUBLIC_DEV_LOGIN
 COPY apps/web/ ./apps/web/
 RUN pnpm --filter "@lima/web" build
 
@@ -34,7 +36,6 @@ RUN adduser --system --uid 1001 nextjs
 
 COPY --from=build-web --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
 COPY --from=build-web --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=build-web --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
 
 USER nextjs
 EXPOSE 3000

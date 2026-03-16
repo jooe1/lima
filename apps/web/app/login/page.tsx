@@ -14,7 +14,7 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const isDev = process.env.NODE_ENV === 'development'
+  const isDev = process.env.NEXT_PUBLIC_DEV_LOGIN === 'true'
 
   async function handleDevLogin(e: React.FormEvent) {
     e.preventDefault()

@@ -1,8 +1,9 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
+import { runConnectorQuery, type DashboardQueryResponse } from '../../../lib/api'
 
 const CELL = 40
 const COLS = 24
@@ -101,10 +102,10 @@ function RuntimeWidget({ node, workspaceId, appId }: WidgetProps) {
   switch (node.element) {
     case 'text':     return <RuntimeText node={node} />
     case 'button':   return <RuntimeButton node={node} workspaceId={workspaceId} appId={appId} />
-    case 'table':    return <RuntimeTable node={node} />
+    case 'table':    return <RuntimeTable node={node} workspaceId={workspaceId} appId={appId} />
     case 'form':     return <RuntimeForm node={node} workspaceId={workspaceId} appId={appId} />
     case 'kpi':      return <RuntimeKPI node={node} />
-    case 'chart':    return <RuntimeChart node={node} />
+    case 'chart':    return <RuntimeChart node={node} workspaceId={workspaceId} appId={appId} />
     case 'filter':   return <RuntimeFilter node={node} />
     case 'markdown': return <RuntimeMarkdown node={node} />
     case 'container':
@@ -180,39 +181,82 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
   )
 }
 
-function RuntimeTable({ node }: { node: AuraNode }) {
+function RuntimeTable({ node, workspaceId }: WidgetProps) {
+  const connectorId: string | undefined = node.with?.connector
+  const sql: string | undefined = node.with?.sql
   const rawCols = node.style?.columns ?? node.with?.columns ?? 'id, name, status'
-  const cols = rawCols.split(',').map((c: string) => c.trim()).filter(Boolean)
-  const mockRows = [1, 2, 3]
+  const staticCols = rawCols.split(',').map((c: string) => c.trim()).filter(Boolean)
+
+  const [data, setData] = useState<DashboardQueryResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!connectorId || !sql) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    runConnectorQuery(workspaceId, connectorId, { sql })
+      .then(res => { if (!cancelled) setData(res) })
+      .catch(err => { if (!cancelled) setError(String(err?.message ?? err)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId, connectorId, sql])
+
+  const cols = data?.columns ?? staticCols
+  const rows = data?.rows ?? []
+  const hasLiveData = Boolean(connectorId && sql)
+
   return (
     <div style={{ height: '100%', overflow: 'auto', padding: '0.5rem' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
-        <thead>
-          <tr>
-            {cols.map((col: string) => (
-              <th key={col} style={{
-                textAlign: 'left', padding: '4px 8px', color: '#666',
-                borderBottom: '1px solid #1e1e1e', fontWeight: 500,
-                textTransform: 'uppercase', letterSpacing: '0.04em', fontSize: '0.7rem',
-              }}>{col}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {mockRows.map(r => (
-            <tr key={r} style={{ borderBottom: '1px solid #111' }}>
+      {loading && (
+        <p style={{ margin: '0.5rem', color: '#555', fontSize: '0.75rem' }}>Loading…</p>
+      )}
+      {error && (
+        <p style={{ margin: '0.5rem', color: '#f87171', fontSize: '0.75rem' }}>{error}</p>
+      )}
+      {!loading && (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+          <thead>
+            <tr>
               {cols.map((col: string) => (
-                <td key={col} style={{ padding: '6px 8px' }}>
-                  <div style={{ height: 12, background: '#181818', borderRadius: 2, width: '70%' }} />
-                </td>
+                <th key={col} style={{
+                  textAlign: 'left', padding: '4px 8px', color: '#666',
+                  borderBottom: '1px solid #1e1e1e', fontWeight: 500,
+                  textTransform: 'uppercase', letterSpacing: '0.04em', fontSize: '0.7rem',
+                }}>{col}</th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-      <p style={{ margin: '0.5rem 0 0', color: '#333', fontSize: '0.65rem' }}>
-        Connect a data source to display live data.
-      </p>
+          </thead>
+          <tbody>
+            {hasLiveData
+              ? rows.map((row, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid #111' }}>
+                    {cols.map((col: string) => (
+                      <td key={col} style={{ padding: '6px 8px', color: '#ccc', fontSize: '0.78rem' }}>
+                        {String(row[col] ?? '')}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              : [1, 2, 3].map(r => (
+                  <tr key={r} style={{ borderBottom: '1px solid #111' }}>
+                    {cols.map((col: string) => (
+                      <td key={col} style={{ padding: '6px 8px' }}>
+                        <div style={{ height: 12, background: '#181818', borderRadius: 2, width: '70%' }} />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+            }
+          </tbody>
+        </table>
+      )}
+      {!hasLiveData && !loading && (
+        <p style={{ margin: '0.5rem 0 0', color: '#333', fontSize: '0.65rem' }}>
+          Connect a data source to display live data.
+        </p>
+      )}
     </div>
   )
 }
@@ -305,18 +349,57 @@ function RuntimeKPI({ node }: { node: AuraNode }) {
   )
 }
 
-function RuntimeChart({ node }: { node: AuraNode }) {
+function RuntimeChart({ node, workspaceId }: WidgetProps) {
   const chartType = node.style?.type ?? 'bar'
-  const heights = [40, 65, 50, 80, 55, 75, 45]
+  const connectorId: string | undefined = node.with?.connector
+  const sql: string | undefined = node.with?.sql
+  const labelCol: string = node.with?.labelCol ?? node.style?.labelCol ?? ''
+  const valueCol: string = node.with?.valueCol ?? node.style?.valueCol ?? ''
+
+  const [data, setData] = useState<DashboardQueryResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!connectorId || !sql) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    runConnectorQuery(workspaceId, connectorId, { sql, limit: 50 })
+      .then(res => { if (!cancelled) setData(res) })
+      .catch(err => { if (!cancelled) setError(String(err?.message ?? err)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId, connectorId, sql])
+
+  // Resolve bar data: use live rows if available, otherwise placeholder heights
+  const hasLiveData = Boolean(connectorId && sql && data && !error)
+  const barData: { label: string; value: number }[] = React.useMemo(() => {
+    if (!hasLiveData || !data) return [40, 65, 50, 80, 55, 75, 45].map((v, i) => ({ label: String(i), value: v }))
+    const vc = valueCol || data.columns[1] || data.columns[0] || ''
+    const lc = labelCol || data.columns[0] || ''
+    const maxVal = Math.max(...data.rows.map(r => Number(r[vc]) || 0), 1)
+    return data.rows.slice(0, 20).map(r => ({
+      label: String(r[lc] ?? ''),
+      value: Math.round(((Number(r[vc]) || 0) / maxVal) * 100),
+    }))
+  }, [hasLiveData, data, labelCol, valueCol])
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
       <p style={{ margin: '0 0 0.5rem', color: '#555', fontSize: '0.7rem' }}>{chartType} chart</p>
-      <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: 4 }}>
-        {heights.map((h, i) => (
-          <div key={i} style={{ flex: 1, height: `${h}%`, background: '#1e40af', borderRadius: '2px 2px 0 0', opacity: 0.8 }} />
-        ))}
-      </div>
-      <p style={{ margin: '0.5rem 0 0', color: '#333', fontSize: '0.65rem' }}>Connect a data source to display live data.</p>
+      {loading && <p style={{ color: '#555', fontSize: '0.7rem' }}>Loading…</p>}
+      {error && <p style={{ color: '#f87171', fontSize: '0.7rem' }}>{error}</p>}
+      {!loading && (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: 4 }}>
+          {barData.map((bar, i) => (
+            <div key={i} title={`${bar.label}: ${bar.value}`} style={{ flex: 1, height: `${Math.max(bar.value, 4)}%`, background: '#1e40af', borderRadius: '2px 2px 0 0', opacity: 0.8 }} />
+          ))}
+        </div>
+      )}
+      {!connectorId && !loading && (
+        <p style={{ margin: '0.5rem 0 0', color: '#333', fontSize: '0.65rem' }}>Connect a data source to display live data.</p>
+      )}
     </div>
   )
 }

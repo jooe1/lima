@@ -1,0 +1,24 @@
+# Dependencies — let Docker install these fresh
+**/node_modules
+
+# Build artifacts
+**/.next
+**/dist
+**/*.tsbuildinfo
+
+# Dev tools / OS
+.git
+.gitignore
+**/.DS_Store
+**/Thumbs.db
+
+# Local env files
+**/.env
+**/.env.local
+**/.env.*.local
+
+# Docker files themselves
+**/Dockerfile*
+**/.dockerignore
+deploy/
+docs/

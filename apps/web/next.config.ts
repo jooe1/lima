@@ -1,6 +1,7 @@
 import type { NextConfig } from 'next'
 
 const config: NextConfig = {
+  output: 'standalone',
   // Allow the builder to make API calls to the Go control-plane
   async rewrites() {
     return [

@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -333,6 +334,20 @@ func executeQueryStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Poo
 		}
 		return runPostgresQueryStep(ctx, creds, sql, log)
 
+	case "mysql":
+		var creds relationalCreds
+		if err := json.Unmarshal(plainCreds, &creds); err != nil {
+			return nil, fmt.Errorf("parse mysql credentials: %w", err)
+		}
+		return runMySQLQueryStep(ctx, creds, sql, log)
+
+	case "mssql":
+		var creds relationalCreds
+		if err := json.Unmarshal(plainCreds, &creds); err != nil {
+			return nil, fmt.Errorf("parse mssql credentials: %w", err)
+		}
+		return runMSSQLQueryStep(ctx, creds, sql, log)
+
 	default:
 		log.Warn("query step connector type not yet supported",
 			zap.String("type", rec.connectorType))
@@ -406,6 +421,146 @@ func runPostgresQueryStep(ctx context.Context, creds relationalCreds, sql string
 	log.Debug("workflow query step completed",
 		zap.Int("rows", len(result)),
 		zap.Strings("columns", cols),
+	)
+	return map[string]any{"columns": cols, "rows": result, "row_count": len(result)}, nil
+}
+
+// runMySQLQueryStep connects to a MySQL/MariaDB instance via database/sql,
+// executes a read-only query (guarded by wfMutationRe), and returns rows.
+func runMySQLQueryStep(ctx context.Context, creds relationalCreds, query string, log *zap.Logger) (any, error) {
+	tls := "false"
+	if creds.SSL {
+		tls = "skip-verify"
+	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=%s&timeout=10s&parseTime=true",
+		creds.Username, creds.Password, creds.Host, creds.Port, creds.Database, tls,
+	)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open mysql: %w", err)
+	}
+	defer db.Close()
+	db.SetConnMaxLifetime(15 * time.Second)
+
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin read-only mysql tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
+	if !strings.Contains(strings.ToUpper(trimmed), " LIMIT ") {
+		trimmed += " LIMIT 10000"
+	}
+
+	rows, err := tx.QueryContext(ctx, trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("mysql query: %w", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("mysql columns: %w", err)
+	}
+
+	var result []map[string]any
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("mysql scan: %w", err)
+		}
+		row := make(map[string]any, len(cols))
+		for i, col := range cols {
+			b, ok := vals[i].([]byte)
+			if ok {
+				row[col] = string(b)
+			} else {
+				row[col] = vals[i]
+			}
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mysql rows error: %w", err)
+	}
+	if result == nil {
+		result = []map[string]any{}
+	}
+	log.Debug("mysql workflow query step completed",
+		zap.Int("rows", len(result)),
+	)
+	return map[string]any{"columns": cols, "rows": result, "row_count": len(result)}, nil
+}
+
+// runMSSQLQueryStep connects to a SQL Server instance via database/sql,
+// executes a read-only query, and returns rows.
+func runMSSQLQueryStep(ctx context.Context, creds relationalCreds, query string, log *zap.Logger) (any, error) {
+	u := &url.URL{
+		Scheme: "sqlserver",
+		User:   url.UserPassword(creds.Username, creds.Password),
+		Host:   fmt.Sprintf("%s:%d", creds.Host, creds.Port),
+	}
+	q := u.Query()
+	q.Set("database", creds.Database)
+	q.Set("connection timeout", "10")
+	if !creds.SSL {
+		q.Set("encrypt", "disable")
+	}
+	u.RawQuery = q.Encode()
+
+	db, err := sql.Open("sqlserver", u.String())
+	if err != nil {
+		return nil, fmt.Errorf("open mssql: %w", err)
+	}
+	defer db.Close()
+	db.SetConnMaxLifetime(15 * time.Second)
+
+	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
+	if !strings.Contains(strings.ToUpper(trimmed), "TOP ") && !strings.Contains(strings.ToUpper(trimmed), " FETCH ") {
+		// Wrap in SELECT TOP to cap rows; MSSQL uses TOP rather than LIMIT.
+		trimmed = fmt.Sprintf("SELECT TOP 10000 * FROM (%s) AS _lq", trimmed)
+	}
+
+	rows, err := db.QueryContext(ctx, trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("mssql query: %w", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("mssql columns: %w", err)
+	}
+
+	var result []map[string]any
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("mssql scan: %w", err)
+		}
+		row := make(map[string]any, len(cols))
+		for i, col := range cols {
+			row[col] = vals[i]
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mssql rows error: %w", err)
+	}
+	if result == nil {
+		result = []map[string]any{}
+	}
+	log.Debug("mssql workflow query step completed",
+		zap.Int("rows", len(result)),
 	)
 	return map[string]any{"columns": cols, "rows": result, "row_count": len(result)}, nil
 }
