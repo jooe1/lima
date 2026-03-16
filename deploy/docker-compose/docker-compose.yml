@@ -5,6 +5,8 @@ networks:
 volumes:
   pg_data:
   redis_data:
+  prometheus_data:
+  grafana_data:
 
 services:
   # ---- Postgres 16 -----------------------------------------------------------
@@ -129,4 +131,39 @@ services:
     restart: unless-stopped
     ports:
       - "16686:16686" # Jaeger UI
+    networks: [lima]
+
+  # ---- Prometheus (monitoring profile) ---------------------------------------
+  # Start with: docker compose --profile monitoring up
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on: [otel-collector]
+    networks: [lima]
+
+  # ---- Grafana (monitoring profile) ------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:3001
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on: [prometheus]
     networks: [lima]

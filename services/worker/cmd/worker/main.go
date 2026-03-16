@@ -29,7 +29,11 @@ func main() {
 	defer shutdown(context.Background())
 
 	// DB is optional: worker starts without it but LLM generation is disabled.
-	pool, dbErr := db.Connect(cfg.DatabaseURL)
+	pool, dbErr := db.Connect(db.ConnConfig{
+		URL:      cfg.DatabaseURL,
+		MaxConns: cfg.DBMaxConns,
+		MinConns: cfg.DBMinConns,
+	})
 	if dbErr != nil {
 		log.Warn("db connect failed — generation jobs will be skipped", zap.Error(dbErr))
 	} else {

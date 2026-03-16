@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS app_versions;
+DROP TABLE IF EXISTS apps;
+DROP TYPE IF EXISTS app_status;

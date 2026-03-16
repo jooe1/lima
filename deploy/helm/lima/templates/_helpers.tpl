@@ -31,3 +31,40 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
+
+{{/*
+Selector labels for a given component (api | worker | web)
+*/}}
+{{- define "lima.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "lima.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{/*
+ServiceAccount name to use
+*/}}
+{{- define "lima.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "lima.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Image reference for a component: registry/repo:tag
+*/}}
+{{- define "lima.image" -}}
+{{- $reg := .global.imageRegistry -}}
+{{- $repo := .image.repository -}}
+{{- $tag := .image.tag | default "latest" -}}
+{{- if $reg -}}{{ $reg }}/{{ $repo }}:{{ $tag }}{{- else -}}{{ $repo }}:{{ $tag }}{{- end }}
+{{- end }}
+
+{{/*
+Name of the Secrets object
+*/}}
+{{- define "lima.secretName" -}}
+{{ include "lima.fullname" . }}-secrets
+{{- end }}

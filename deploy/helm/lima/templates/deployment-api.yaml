@@ -1,0 +1,128 @@
+{{- $component := "api" }}
+{{- $values := .Values }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lima.fullname" . }}-api
+  labels:
+    {{- include "lima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.replicaCount.api }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "lima.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "lima.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: api
+      {{- if .Values.metrics.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.service.api.port | quote }}
+        prometheus.io/path: "/metrics"
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "lima.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: {{ include "lima.image" (dict "global" .Values.global "image" .Values.images.api) }}
+          imagePullPolicy: {{ .Values.images.api.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.api.port }}
+              protocol: TCP
+          env:
+            - name: ENV
+              value: {{ .Values.env | default "production" | quote }}
+            - name: PORT
+              value: {{ .Values.service.api.port | quote }}
+            - name: SERVICE_NAME
+              value: "lima-api"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: databaseURL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: redisURL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: jwtSecret
+            - name: CREDENTIALS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: credentialsEncryptionKey
+                  optional: true
+            - name: CREDENTIALS_ENCRYPTION_KEY_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: credentialsEncryptionKeyPrevious
+                  optional: true
+            - name: OTEL_ENDPOINT
+              value: {{ .Values.otel.endpoint | default "" | quote }}
+            - name: ALLOW_ORIGINS
+              value: {{ .Values.api.allowOrigins | default "" | quote }}
+            - name: FRONTEND_URL
+              value: {{ .Values.api.frontendURL | default "" | quote }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.oidc.issuerURL | default "" | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientID | default "" | quote }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: oidcClientSecret
+                  optional: true
+            - name: OIDC_REDIRECT_URL
+              value: {{ .Values.oidc.redirectURL | default "" | quote }}
+            - name: DB_MAX_CONNS
+              value: {{ .Values.db.maxConns | default 25 | quote }}
+            - name: DB_MIN_CONNS
+              value: {{ .Values.db.minConns | default 2 | quote }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+          resources: {{ toYaml .Values.resources.api | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}

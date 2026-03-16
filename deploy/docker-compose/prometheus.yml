@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    env: local
+
+scrape_configs:
+  # Scrape metrics exported by the OTel Collector's Prometheus exporter.
+  # This includes both service metrics forwarded via OTLP and scraped
+  # Prometheus targets (api, worker) configured in otel-collector-config.yaml.
+  - job_name: otel-collector-metrics
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # OTel Collector self-metrics (pipeline latency, dropped spans, etc.)
+  - job_name: otel-collector-self
+    static_configs:
+      - targets: ["otel-collector:8888"]

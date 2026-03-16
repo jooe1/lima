@@ -8,12 +8,15 @@ import (
 )
 
 type Config struct {
-	Env                      string
-	ServiceName              string
-	DatabaseURL              string
-	RedisURL                 string
-	OTELEndpoint             string
-	CredentialsEncryptionKey string
+	Env                              string
+	ServiceName                      string
+	DatabaseURL                      string
+	DBMaxConns                       int32
+	DBMinConns                       int32
+	RedisURL                         string
+	OTELEndpoint                     string
+	CredentialsEncryptionKey         string
+	CredentialsEncryptionKeyPrevious string
 	// Concurrency controls
 	GenerationWorkers int
 	SchemaWorkers     int
@@ -40,14 +43,17 @@ func Load() *Config {
 	_ = godotenv.Load()
 
 	return &Config{
-		Env:                      getEnv("ENV", "development"),
-		ServiceName:              getEnv("SERVICE_NAME", "lima-worker"),
-		DatabaseURL:              getEnv("DATABASE_URL", ""),
-		RedisURL:                 getEnv("REDIS_URL", ""),
-		OTELEndpoint:             getEnv("OTEL_ENDPOINT", "http://otel-collector:4318"),
-		GenerationWorkers:        getInt("GENERATION_WORKERS", 4),
-		SchemaWorkers:            getInt("SCHEMA_WORKERS", 2),
-		ImportWorkers:            getInt("IMPORT_WORKERS", 2),
-		CredentialsEncryptionKey: getEnv("CREDENTIALS_ENCRYPTION_KEY", getEnv("JWT_SECRET", "")),
+		Env:                              getEnv("ENV", "development"),
+		ServiceName:                      getEnv("SERVICE_NAME", "lima-worker"),
+		DatabaseURL:                      getEnv("DATABASE_URL", ""),
+		DBMaxConns:                       int32(getInt("DB_MAX_CONNS", 10)),
+		DBMinConns:                       int32(getInt("DB_MIN_CONNS", 1)),
+		RedisURL:                         getEnv("REDIS_URL", ""),
+		OTELEndpoint:                     getEnv("OTEL_ENDPOINT", "http://otel-collector:4318"),
+		GenerationWorkers:                getInt("GENERATION_WORKERS", 4),
+		SchemaWorkers:                    getInt("SCHEMA_WORKERS", 2),
+		ImportWorkers:                    getInt("IMPORT_WORKERS", 2),
+		CredentialsEncryptionKey:         getEnv("CREDENTIALS_ENCRYPTION_KEY", getEnv("JWT_SECRET", "")),
+		CredentialsEncryptionKeyPrevious: getEnv("CREDENTIALS_ENCRYPTION_KEY_PREVIOUS", ""),
 	}
 }

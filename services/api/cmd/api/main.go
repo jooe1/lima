@@ -33,7 +33,11 @@ func main() {
 	}
 	defer shutdown(context.Background())
 
-	pool, err := db.Connect(cfg.DatabaseURL)
+	pool, err := db.Connect(db.ConnConfig{
+		URL:      cfg.DatabaseURL,
+		MaxConns: cfg.DBMaxConns,
+		MinConns: cfg.DBMinConns,
+	})
 	if err != nil {
 		log.Fatal("db connect failed", zap.Error(err))
 	}

@@ -1,6 +1,8 @@
 global:
   imageRegistry: ""
 
+env: production   # production | staging | development
+
 # ---- Images ----------------------------------------------------------------
 images:
   api:
@@ -16,7 +18,7 @@ images:
     tag: latest
     pullPolicy: IfNotPresent
 
-# ---- Replica counts --------------------------------------------------------
+# ---- Replica counts (overridden by HPA when autoscaling is enabled) --------
 replicaCount:
   api: 2
   worker: 2
@@ -59,9 +61,75 @@ resources:
 
 # ---- Secrets (override via external secret manager in production) ----------
 secrets:
-  jwtSecret: ""        # Required: set via --set or external secrets
-  databaseURL: ""      # Required: postgres://...
-  redisURL: ""         # Required: redis://...
+  jwtSecret: ""                       # Required: set via --set or external secrets
+  databaseURL: ""                     # Required: postgres://...
+  redisURL: ""                        # Required: redis://...
+  credentialsEncryptionKey: ""        # AES-256 key for connector secrets at rest
+  credentialsEncryptionKeyPrevious: "" # Previous key — set during rotation, then clear after re-encrypt
+  oidcClientSecret: ""                # OIDC / SSO client secret
+  extra: {}                           # Additional key/value pairs injected into the Secret
+
+# ---- ServiceAccount --------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""          # defaults to chart fullname
+  annotations: {}   # e.g. for IRSA on EKS: eks.amazonaws.com/role-arn: arn:aws:iam::...
+
+# ---- Horizontal Pod Autoscaler ---------------------------------------------
+autoscaling:
+  api:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  worker:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  web:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+# ---- Pod Disruption Budgets (HA: keep at least 1 pod during rolling updates) --
+podDisruptionBudget:
+  api:
+    enabled: true
+    minAvailable: 1
+  worker:
+    enabled: true
+    minAvailable: 1
+  web:
+    enabled: true
+    minAvailable: 1
+
+# ---- Database connection pool tuning --------------------------------------
+db:
+  maxConns: 25   # per API pod; tune based on Postgres max_connections
+  minConns: 2
+
+# ---- API configuration -----------------------------------------------------
+api:
+  allowOrigins: ""    # comma-separated; defaults to FRONTEND_URL
+  frontendURL: ""     # e.g. https://lima.example.com
+
+# ---- Web configuration -----------------------------------------------------
+web:
+  apiBaseURL: ""      # internal API URL seen by web server; defaults to http://<release>-api:8080
+  nextauthURL: ""     # public-facing URL for NextAuth callbacks
+
+# ---- OIDC / SSO ------------------------------------------------------------
+oidc:
+  issuerURL: ""
+  clientID: ""
+  redirectURL: ""     # e.g. https://lima.example.com/v1/auth/sso/callback
+
+# ---- Metrics / Prometheus --------------------------------------------------
+metrics:
+  enabled: false      # enable prometheus.io annotations on the API pod
 
 # ---- Bitnami sub-chart toggles (disable if using external DB/Redis) --------
 postgresql:
@@ -86,3 +154,20 @@ migration:
   image:
     repository: migrate/migrate
     tag: "4"
+
+# ---- Backup CronJob --------------------------------------------------------
+backup:
+  enabled: false
+  schedule: "0 2 * * *"    # daily at 02:00 UTC
+  image: postgres:16-alpine
+  s3:
+    enabled: false
+    bucket: ""              # e.g. my-lima-backups
+    region: us-east-1
+    endpoint: ""            # leave blank for AWS S3; set for MinIO / Ceph
+    credentialsSecret: ""   # K8s Secret name with keys: accessKeyId, secretAccessKey
+
+# ---- Node scheduling -------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lima.fullname" . }}-worker
+  labels:
+    {{- include "lima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.replicaCount.worker }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "lima.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "lima.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "lima.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: {{ include "lima.image" (dict "global" .Values.global "image" .Values.images.worker) }}
+          imagePullPolicy: {{ .Values.images.worker.pullPolicy }}
+          env:
+            - name: ENV
+              value: {{ .Values.env | default "production" | quote }}
+            - name: SERVICE_NAME
+              value: "lima-worker"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: databaseURL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: redisURL
+            - name: CREDENTIALS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: credentialsEncryptionKey
+                  optional: true
+            - name: CREDENTIALS_ENCRYPTION_KEY_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: credentialsEncryptionKeyPrevious
+                  optional: true
+            - name: OTEL_ENDPOINT
+              value: {{ .Values.otel.endpoint | default "" | quote }}
+            - name: DB_MAX_CONNS
+              value: {{ .Values.db.maxConns | default 10 | quote }}
+            - name: DB_MIN_CONNS
+              value: {{ .Values.db.minConns | default 1 | quote }}
+          resources: {{ toYaml .Values.resources.worker | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}

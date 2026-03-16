@@ -61,3 +61,25 @@ func Decrypt(secret string, ciphertext []byte) ([]byte, error) {
 	}
 	return plaintext, nil
 }
+
+// DecryptWithRotation tries the current key first; if decryption fails it
+// falls back to previousSecret (the key that was active before rotation).
+// Use this during the transition window when both old and new keys are valid.
+// Once all ciphertexts have been re-encrypted with the new key, remove
+// CREDENTIALS_ENCRYPTION_KEY_PREVIOUS from the environment.
+func DecryptWithRotation(currentSecret, previousSecret string, ciphertext []byte) ([]byte, error) {
+	pt, err := Decrypt(currentSecret, ciphertext)
+	if err == nil {
+		return pt, nil
+	}
+	if previousSecret == "" {
+		return nil, err // no fallback available
+	}
+	pt, err2 := Decrypt(previousSecret, ciphertext)
+	if err2 != nil {
+		// Return the original error so callers see "decrypt failed", not the
+		// fallback error which might be confusing.
+		return nil, fmt.Errorf("decrypt with current key: %w; decrypt with previous key: %v", err, err2)
+	}
+	return pt, nil
+}

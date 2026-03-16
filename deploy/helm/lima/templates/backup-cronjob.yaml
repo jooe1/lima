@@ -1,0 +1,71 @@
+{{- if .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "lima.fullname" . }}-backup
+  labels:
+    {{- include "lima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: pg-backup
+              image: {{ .Values.backup.image | default "postgres:16-alpine" | quote }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  FILENAME="lima-backup-$(date +%Y%m%dT%H%M%S).sql.gz"
+                  pg_dump "$DATABASE_URL" | gzip > /tmp/$FILENAME
+                  {{- if .Values.backup.s3.enabled }}
+                  # Upload to S3-compatible storage
+                  apk add --no-cache aws-cli 2>/dev/null || true
+                  aws s3 cp /tmp/$FILENAME s3://{{ .Values.backup.s3.bucket }}/$FILENAME \
+                    --endpoint-url {{ .Values.backup.s3.endpoint | default "" }} \
+                    --region {{ .Values.backup.s3.region | default "us-east-1" }}
+                  echo "Uploaded $FILENAME to s3://{{ .Values.backup.s3.bucket }}/$FILENAME"
+                  {{- else }}
+                  echo "Backup written to /tmp/$FILENAME (no S3 target configured)"
+                  cat /tmp/$FILENAME | base64 | head -c 100
+                  {{- end }}
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lima.secretName" . }}
+                      key: databaseURL
+                {{- if .Values.backup.s3.enabled }}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.s3.credentialsSecret }}
+                      key: accessKeyId
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.s3.credentialsSecret }}
+                      key: secretAccessKey
+                {{- end }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { cpu: 500m, memory: 512Mi }
+{{- end }}

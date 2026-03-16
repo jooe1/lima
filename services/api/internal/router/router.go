@@ -171,6 +171,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 				// Audit log
 				r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 					Get("/audit", handler.ListAuditEvents(s, log))
+				r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
+					Get("/audit/export", handler.ExportAuditEventsCSV(s, log))
 			})
 		})
 	})
