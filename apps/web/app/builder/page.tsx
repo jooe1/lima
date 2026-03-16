@@ -3,17 +3,20 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '../../lib/auth'
-import { listApps, createApp, type App } from '../../lib/api'
+import { listApps, createApp, createWorkspace, type App } from '../../lib/api'
 
 export default function BuilderHome() {
   const router = useRouter()
-  const { workspace } = useAuth()
+  const { workspace, user } = useAuth()
   const [apps, setApps] = useState<App[]>([])
   const [loading, setLoading] = useState(true)
+  const { selectWorkspace } = useAuth()
   const [creating, setCreating] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [newName, setNewName] = useState('')
   const [error, setError] = useState('')
+  const [wsCreating, setWsCreating] = useState(false)
+  const [wsName, setWsName] = useState('default')
 
   const load = useCallback(async () => {
     if (!workspace) return
@@ -43,10 +46,40 @@ export default function BuilderHome() {
     }
   }
 
+  async function handleCreateWorkspace(e: React.FormEvent) {
+    e.preventDefault()
+    if (!user || !wsName.trim()) return
+    setWsCreating(true)
+    setError('')
+    try {
+      const ws = await createWorkspace(user.companyId, wsName.trim(), wsName.trim().toLowerCase().replace(/\s+/g, '-'))
+      selectWorkspace(ws)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to create workspace')
+    } finally {
+      setWsCreating(false)
+    }
+  }
+
   if (!workspace) {
     return (
       <div style={pageStyle}>
-        <p style={{ color: '#555' }}>No workspace selected. Create one to get started.</p>
+        <h2 style={{ fontWeight: 700, fontSize: '1.25rem', color: '#fff', marginBottom: '0.5rem' }}>Create your first workspace</h2>
+        <p style={{ color: '#555', marginBottom: '1.5rem', fontSize: '0.875rem' }}>A workspace groups your apps and members.</p>
+        {error && <p style={{ color: '#f87171', marginBottom: 12, fontSize: '0.8rem' }}>{error}</p>}
+        <form onSubmit={handleCreateWorkspace} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <input
+            autoFocus
+            type="text"
+            placeholder="Workspace name"
+            value={wsName}
+            onChange={e => setWsName(e.target.value)}
+            style={{ ...inputStyle, width: 240 }}
+          />
+          <button type="submit" disabled={wsCreating} style={primaryBtn}>
+            {wsCreating ? 'Creating…' : 'Create workspace'}
+          </button>
+        </form>
       </div>
     )
   }

@@ -12,6 +12,12 @@ interface Props {
   onDelete: (id: string) => void
 }
 
+function useSearch(doc: AuraDocument, query: string) {
+  if (!query.trim()) return doc
+  const q = query.toLowerCase()
+  return doc.filter(n => n.id.toLowerCase().includes(q) || n.element.toLowerCase().includes(q))
+}
+
 // Minimal unicode stand-ins for each widget type
 const WIDGET_ICONS: Record<string, string> = {
   table: '⊞',
@@ -29,7 +35,9 @@ const WIDGET_ICONS: Record<string, string> = {
 
 export function LayersPanel({ doc, selectedId, onSelect, onAdd, onDelete }: Props) {
   const [showAdd, setShowAdd] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const allWidgets = listWidgets()
+  const filteredDoc = useSearch(doc, searchQuery)
 
   return (
     <aside style={panelStyle}>
@@ -65,6 +73,27 @@ export function LayersPanel({ doc, selectedId, onSelect, onAdd, onDelete }: Prop
         >
           +
         </button>
+      </div>
+
+      {/* Layer search */}
+      <div style={{ padding: '0.4rem 0.75rem', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
+        <input
+          type="text"
+          placeholder="Search widgets…"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          style={{
+            width: '100%',
+            boxSizing: 'border-box',
+            background: '#111',
+            border: '1px solid #1e1e1e',
+            borderRadius: 4,
+            color: '#888',
+            fontSize: '0.65rem',
+            outline: 'none',
+            padding: '3px 7px',
+          }}
+        />
       </div>
 
       {/* Add widget palette */}
@@ -116,9 +145,13 @@ export function LayersPanel({ doc, selectedId, onSelect, onAdd, onDelete }: Prop
           <div style={{ padding: '1rem 0.75rem', fontSize: '0.7rem', color: '#2a2a2a', textAlign: 'center' }}>
             No widgets yet
           </div>
+        ) : filteredDoc.length === 0 ? (
+          <div style={{ padding: '1rem 0.75rem', fontSize: '0.7rem', color: '#2a2a2a', textAlign: 'center' }}>
+            No matches
+          </div>
         ) : (
           <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {doc.map(node => {
+            {filteredDoc.map(node => {
               const meta = WIDGET_REGISTRY[node.element as WidgetType]
               const isSelected = node.id === selectedId
               return (
