@@ -62,25 +62,32 @@ const (
 	StatusArchived  AppStatus = "archived"
 )
 
+// NodeMeta holds per-node metadata persisted alongside the DSL source.
+type NodeMeta struct {
+	ManuallyEdited bool `json:"manuallyEdited"`
+}
+
 type App struct {
-	ID          string    `json:"id"`
-	WorkspaceID string    `json:"workspace_id"`
-	Name        string    `json:"name"`
-	Description *string   `json:"description,omitempty"`
-	Status      AppStatus `json:"status"`
-	DSLSource   string    `json:"dsl_source"`
-	CreatedBy   string    `json:"created_by"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string              `json:"id"`
+	WorkspaceID  string              `json:"workspace_id"`
+	Name         string              `json:"name"`
+	Description  *string             `json:"description,omitempty"`
+	Status       AppStatus           `json:"status"`
+	DSLSource    string              `json:"dsl_source"`
+	NodeMetadata map[string]NodeMeta `json:"node_metadata,omitempty"`
+	CreatedBy    string              `json:"created_by"`
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
 }
 
 type AppVersion struct {
-	ID          string    `json:"id"`
-	AppID       string    `json:"app_id"`
-	VersionNum  int       `json:"version_num"`
-	DSLSource   string    `json:"dsl_source"`
-	PublishedBy string    `json:"published_by"`
-	PublishedAt time.Time `json:"published_at"`
+	ID           string              `json:"id"`
+	AppID        string              `json:"app_id"`
+	VersionNum   int                 `json:"version_num"`
+	DSLSource    string              `json:"dsl_source"`
+	NodeMetadata map[string]NodeMeta `json:"node_metadata,omitempty"`
+	PublishedBy  string              `json:"published_by"`
+	PublishedAt  time.Time           `json:"published_at"`
 }
 
 // ---- Audit ------------------------------------------------------------------
@@ -162,6 +169,9 @@ type GenerationJobPayload struct {
 	AppID       string `json:"app_id"`
 	WorkspaceID string `json:"workspace_id"`
 	UserID      string `json:"user_id"`
+	// ForceOverwrite bypasses the manuallyEdited protection in the generation
+	// worker, allowing the LLM to overwrite all nodes regardless of metadata.
+	ForceOverwrite bool `json:"force_overwrite,omitempty"`
 }
 
 // ---- Connectors (Phase 4) ---------------------------------------------------

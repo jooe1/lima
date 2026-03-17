@@ -6,7 +6,7 @@ import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { runConnectorQuery, type DashboardQueryResponse } from '../../../lib/api'
 
 const CELL = 40
-const COLS = 24
+// COLS removed — canvas width is computed dynamically from content
 
 interface Props {
   doc: AuraDocument
@@ -29,6 +29,15 @@ function getGrid(node: AuraNode) {
 }
 
 export function RuntimeRenderer({ doc, workspaceId, appId }: Props) {
+  const canvasWidth = React.useMemo(() => {
+    let maxRight = 10
+    for (const n of doc) {
+      const g = getGrid(n)
+      maxRight = Math.max(maxRight, g.x + g.w)
+    }
+    return maxRight * CELL + 120
+  }, [doc])
+
   const canvasHeight = React.useMemo(() => {
     let maxBottom = 10
     for (const n of doc) {
@@ -57,7 +66,7 @@ export function RuntimeRenderer({ doc, workspaceId, appId }: Props) {
       <div
         style={{
           position: 'relative',
-          width: COLS * CELL,
+          width: canvasWidth,
           minHeight: canvasHeight,
           margin: '0 auto',
         }}

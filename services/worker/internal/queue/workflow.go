@@ -156,17 +156,16 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 		stepResults = map[string]any{}
 	}
 
-	// Mark the approval_gate step that was waiting as completed.
-	for _, step := range def.steps {
-		if sr, ok := stepResults[step.id]; ok {
-			if m, ok := sr.(map[string]any); ok {
-				if m["status"] == "awaiting_approval" {
-					m["status"] = "completed"
-					m["approved"] = true
-					stepResults[step.id] = m
-				}
-			}
-		}
+	// Verify the approval record and execute (mutation) or complete (approval_gate)
+	// the step that was waiting. Never marks a mutation completed without first
+	// running it; never trusts the caller's approved=true without a DB check.
+	if err := resolveApprovedStep(ctx, cfg, pool, log, run, def, approvalID, stepResults); err != nil {
+		errMsg := err.Error()
+		output["steps"] = stepResults
+		_ = setRunStatus(ctx, pool, runID, runStatusFailed, output, &errMsg, nil)
+		log.Error("failed to resolve approved step — run failed",
+			zap.String("run_id", runID), zap.String("approval_id", approvalID), zap.Error(err))
+		return nil
 	}
 
 	if err := setRunStatus(ctx, pool, runID, runStatusRunning, output, nil, nil); err != nil {
@@ -232,29 +231,30 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 		results[step.id] = map[string]any{"status": "completed", "result": result}
 
 	case stepTypeMutation:
-		// Mutations that require approval create an approval gate and pause.
-		if def.requiresApproval {
-			approvalPayload, _ := json.Marshal(map[string]any{
-				"run_id":       run.id,
-				"step_id":      step.id,
-				"step_name":    step.name,
-				"config":       step.config,
-				"workspace_id": def.workspaceID,
-			})
-			approvalID, gateErr := createApprovalForRun(stepCtx, pool,
-				def.workspaceID, def.appID, run.id, step.name, approvalPayload)
-			if gateErr != nil {
-				return false, fmt.Errorf("create approval gate for mutation %q: %w", step.name, gateErr)
-			}
-			results[step.id] = map[string]any{"status": "awaiting_approval", "approval_id": approvalID}
-			log.Info("mutation step paused for approval",
-				zap.String("run_id", run.id), zap.String("approval_id", approvalID))
-			return true, nil // paused
+		// Every mutation step MUST go through an approval gate, regardless of
+		// the workflow-level requires_approval flag. Fail closed: a mutation
+		// that has not been explicitly approved MUST NOT be marked completed.
+		approvalPayload, _ := json.Marshal(map[string]any{
+			"run_id":       run.id,
+			"step_id":      step.id,
+			"step_name":    step.name,
+			"config":       step.config,
+			"workspace_id": def.workspaceID,
+		})
+		encryptedPayload, encErr := cryptoutil.Encrypt(cfg.CredentialsEncryptionKey, approvalPayload)
+		if encErr != nil {
+			return false, fmt.Errorf("encrypt mutation payload for step %q: %w", step.name, encErr)
 		}
-		// Mutations without approval gate are logged but not executed autonomously.
-		log.Warn("mutation step executed without approval gate (requires_approval=false)",
-			zap.String("run_id", run.id), zap.String("step", step.name))
-		results[step.id] = map[string]any{"status": "completed", "note": "executed without approval gate"}
+		approvalID, gateErr := createApprovalForRun(stepCtx, pool,
+			def.workspaceID, def.appID, run.id, step.name, encryptedPayload)
+		if gateErr != nil {
+			return false, fmt.Errorf("create approval gate for mutation %q: %w", step.name, gateErr)
+		}
+		results[step.id] = map[string]any{"status": "awaiting_approval", "approval_id": approvalID}
+		log.Info("mutation step paused for approval",
+			zap.String("run_id", run.id), zap.String("approval_id", approvalID),
+			zap.Bool("workflow_requires_approval", def.requiresApproval))
+		return true, nil // always pause — mutations require explicit approval
 
 	case stepTypeApprovalGate:
 		// Explicit approval gate step — always pauses regardless of requires_approval.
@@ -263,8 +263,12 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 			"step_id":   step.id,
 			"step_name": step.name,
 		})
+		encryptedGatePayload, encGateErr := cryptoutil.Encrypt(cfg.CredentialsEncryptionKey, approvalPayload)
+		if encGateErr != nil {
+			return false, fmt.Errorf("encrypt approval gate payload for %q: %w", step.name, encGateErr)
+		}
 		approvalID, gateErr := createApprovalForRun(stepCtx, pool,
-			def.workspaceID, def.appID, run.id, step.name, approvalPayload)
+			def.workspaceID, def.appID, run.id, step.name, encryptedGatePayload)
 		if gateErr != nil {
 			return false, fmt.Errorf("create approval gate %q: %w", step.name, gateErr)
 		}
@@ -603,4 +607,127 @@ func resolveInputRef(expr string, inputData map[string]any) any {
 		}
 	}
 	return expr
+}
+
+// ---- approval resolution ----------------------------------------------------
+
+// resolveApprovedStep verifies the approval record, then either executes the
+// approved mutation step or marks the approval_gate step as passed.
+//
+// Safety contract:
+//   - Fetches and decrypts the approval from DB (defense-in-depth, not just trusting the job payload).
+//   - Verifies approval.status == "approved".
+//   - Verifies the approval was created for this exact run (run_id in payload).
+//   - Verifies the approval was created for the correct step (step_id in payload).
+//   - For mutation steps: calls executeMutationStep and marks completed only on success.
+//   - For approval_gate steps: marks completed (gate passed, no further action needed).
+//   - Any other case: returns an error so the caller marks the run failed (fail closed).
+func resolveApprovedStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger,
+	run *wfRun, def *wfDefinition, approvalID string, stepResults map[string]any,
+) error {
+	// Fetch and verify the approval record from the DB.
+	approval, err := getApprovalRecord(ctx, pool, approvalID)
+	if err != nil {
+		return fmt.Errorf("fetch approval %s: %w", approvalID, err)
+	}
+	if approval.status != "approved" {
+		return fmt.Errorf("approval %s has status %q — expected approved: fail closed", approvalID, approval.status)
+	}
+
+	// Decrypt and parse the approval payload to verify run_id + step_id.
+	payloadBytes, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, approval.encryptedPayload)
+	if err != nil {
+		return fmt.Errorf("decrypt approval payload for approval %s: %w", approvalID, err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return fmt.Errorf("parse approval payload for approval %s: %w", approvalID, err)
+	}
+	payloadRunID, _ := payload["run_id"].(string)
+	if payloadRunID != run.id {
+		return fmt.Errorf("approval %s was created for run %s, not %s — fail closed",
+			approvalID, payloadRunID, run.id)
+	}
+	payloadStepID, _ := payload["step_id"].(string)
+
+	// Find the step with status="awaiting_approval" and execute/complete it.
+	for _, step := range def.steps {
+		sr, hasSR := stepResults[step.id]
+		if !hasSR {
+			continue
+		}
+		m, ok := sr.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["status"] != "awaiting_approval" {
+			continue
+		}
+		// If the payload encoded a specific step_id, verify it matches.
+		if payloadStepID != "" && step.id != payloadStepID {
+			continue
+		}
+
+		switch step.stepType {
+		case stepTypeMutation:
+			// Execute the actual mutation now that approval is verified.
+			mutResult, execErr := executeMutationStep(ctx, cfg, pool, log, step, run.inputData)
+			if execErr != nil {
+				return fmt.Errorf("execute approved mutation step %q: %w", step.name, execErr)
+			}
+			m["status"] = "completed"
+			m["approved"] = true
+			m["approval_id"] = approvalID
+			m["result"] = mutResult
+
+		case stepTypeApprovalGate:
+			// Approval gate just needs the gate to be marked passed.
+			m["status"] = "completed"
+			m["approved"] = true
+			m["approval_id"] = approvalID
+
+		default:
+			// Unexpected: a non-mutation, non-gate step was awaiting approval.
+			return fmt.Errorf("awaiting_approval on unexpected step type %q (step %q) — fail closed",
+				step.stepType, step.name)
+		}
+
+		stepResults[step.id] = m
+		log.Info("approved step resolved",
+			zap.String("run_id", run.id),
+			zap.String("step_id", step.id),
+			zap.String("step_type", string(step.stepType)),
+			zap.String("approval_id", approvalID),
+		)
+		return nil
+	}
+
+	return fmt.Errorf("no awaiting_approval step found matching approval %s in run %s — fail closed",
+		approvalID, run.id)
+}
+
+// executeMutationStep executes an approved mutation step against a connector.
+//
+// NOTE (Phase 6 stub): The connector-based mutation executor is not yet
+// implemented. This function records that the mutation was approved and
+// triggered, but does not perform the actual DML/API call.
+//
+// TODO (Phase 7+): dispatch to connector-specific mutation executors:
+//   - postgres/mysql/mssql: execute step.config["sql"] in a read-write transaction
+//   - rest/graphql: send step.config["method"] + step.config["path"] request
+//
+// The step config should contain connector_id + sql (relational) or
+// method/path/body (REST/GraphQL). Input variables resolved via resolveInputRef.
+func executeMutationStep(_ context.Context, _ *config.Config, _ *pgxpool.Pool, log *zap.Logger,
+	step wfStep, _ map[string]any,
+) (any, error) {
+	log.Info("executing approved mutation step (stub — connector executor not yet implemented)",
+		zap.String("step_id", step.id),
+		zap.String("step_name", step.name),
+	)
+	return map[string]any{
+		"note":      "mutation executed (stub — connector mutation executor not yet implemented)",
+		"step_id":   step.id,
+		"step_name": step.name,
+	}, nil
 }

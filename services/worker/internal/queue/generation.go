@@ -44,8 +44,9 @@ type chatResponse struct {
 }
 
 type appRow struct {
-	id        string
-	dslSource string
+	id           string
+	dslSource    string
+	nodeMetadata map[string]nodeMeta
 }
 
 type msgRow struct {
@@ -246,12 +247,16 @@ Each widget declaration looks like:
 
 func fetchAppAndMessages(ctx context.Context, pool *pgxpool.Pool, payload GenerationPayload) (appRow, []msgRow, error) {
 	var app appRow
-	err := pool.QueryRow(ctx, `SELECT id, dsl_source FROM apps WHERE id = $1`, payload.AppID).Scan(&app.id, &app.dslSource)
+	var nodeMetaRaw []byte
+	err := pool.QueryRow(ctx, `SELECT id, dsl_source, node_metadata FROM apps WHERE id = $1`, payload.AppID).Scan(&app.id, &app.dslSource, &nodeMetaRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return appRow{}, nil, fmt.Errorf("app %s not found", payload.AppID)
 	}
 	if err != nil {
 		return appRow{}, nil, fmt.Errorf("fetch app: %w", err)
+	}
+	if nodeMetaRaw != nil {
+		_ = json.Unmarshal(nodeMetaRaw, &app.nodeMetadata)
 	}
 
 	rows, err := pool.Query(ctx, `SELECT role, content FROM thread_messages WHERE thread_id = $1 ORDER BY created_at ASC`, payload.ThreadID)
@@ -404,7 +409,25 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			return nil
 		}
 
-		if err := updateAppDSL(ctx, pool, payload.AppID, newDSL); err != nil {
+		// Validation gate: refuse to persist structurally malformed DSL.
+		if err := validateDSL(newDSL); err != nil {
+			log.Warn("candidate DSL is malformed; refusing to persist",
+				zap.String("thread_id", payload.ThreadID),
+				zap.Error(err))
+			writeErrorMessage(ctx, pool, payload.ThreadID, "generated DSL was malformed and could not be applied")
+			return err
+		}
+
+		// Protected diff: preserve manually-edited nodes from the current document
+		// unless the caller set force_overwrite.
+		resultDSL, err := applyProtectedDiff(app.dslSource, newDSL, app.nodeMetadata, payload.ForceOverwrite)
+		if err != nil {
+			log.Error("apply protected diff", zap.Error(err))
+			writeErrorMessage(ctx, pool, payload.ThreadID, "failed to apply revision safely")
+			return err
+		}
+
+		if err := updateAppDSL(ctx, pool, payload.AppID, resultDSL); err != nil {
 			log.Error("update app dsl", zap.Error(err))
 			writeErrorMessage(ctx, pool, payload.ThreadID, "failed to save generated layout")
 			return err
@@ -415,7 +438,7 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			explanation = "Updated the app layout."
 		}
 
-		if err := writeAssistantMessage(ctx, pool, payload.ThreadID, explanation, newDSL); err != nil {
+		if err := writeAssistantMessage(ctx, pool, payload.ThreadID, explanation, resultDSL); err != nil {
 			log.Error("write assistant message", zap.Error(err))
 			return err
 		}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,7 +13,7 @@ import (
 // ListApps returns all apps in a workspace, ordered by update time descending.
 func (s *Store) ListApps(ctx context.Context, workspaceID string) ([]model.App, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, workspace_id, name, description, status, dsl_source, created_by, created_at, updated_at
+		`SELECT id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at
 		 FROM apps WHERE workspace_id = $1 ORDER BY updated_at DESC`,
 		workspaceID,
 	)
@@ -23,8 +24,12 @@ func (s *Store) ListApps(ctx context.Context, workspaceID string) ([]model.App, 
 	var apps []model.App
 	for rows.Next() {
 		var a model.App
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var nodeMetaRaw []byte
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("list apps scan: %w", err)
+		}
+		if nodeMetaRaw != nil {
+			_ = json.Unmarshal(nodeMetaRaw, &a.NodeMetadata)
 		}
 		apps = append(apps, a)
 	}
@@ -34,16 +39,20 @@ func (s *Store) ListApps(ctx context.Context, workspaceID string) ([]model.App, 
 // GetApp fetches a single app by ID, scoped to a workspace.
 func (s *Store) GetApp(ctx context.Context, workspaceID, appID string) (*model.App, error) {
 	a := &model.App{}
+	var nodeMetaRaw []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, workspace_id, name, description, status, dsl_source, created_by, created_at, updated_at
+		`SELECT id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at
 		 FROM apps WHERE id = $1 AND workspace_id = $2`,
 		appID, workspaceID,
-	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get app: %w", err)
+	}
+	if nodeMetaRaw != nil {
+		_ = json.Unmarshal(nodeMetaRaw, &a.NodeMetadata)
 	}
 	return a, nil
 }
@@ -51,36 +60,55 @@ func (s *Store) GetApp(ctx context.Context, workspaceID, appID string) (*model.A
 // CreateApp inserts a new draft app and returns it.
 func (s *Store) CreateApp(ctx context.Context, workspaceID, name string, description *string, createdBy string) (*model.App, error) {
 	a := &model.App{}
+	var nodeMetaRaw []byte
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO apps (workspace_id, name, description, created_by)
 		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, workspace_id, name, description, status, dsl_source, created_by, created_at, updated_at`,
+		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at`,
 		workspaceID, name, description, createdBy,
-	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create app: %w", err)
+	}
+	if nodeMetaRaw != nil {
+		_ = json.Unmarshal(nodeMetaRaw, &a.NodeMetadata)
 	}
 	return a, nil
 }
 
-// PatchApp applies partial updates to name, description, and/or dsl_source.
-func (s *Store) PatchApp(ctx context.Context, workspaceID, appID string, name *string, description *string, dslSource *string) (*model.App, error) {
+// PatchApp applies partial updates to name, description, dsl_source, and/or node_metadata.
+// node_metadata is merged into (not replaced) the existing value: only keys present in the
+// incoming map are updated; other nodes' metadata are left intact.
+func (s *Store) PatchApp(ctx context.Context, workspaceID, appID string, name *string, description *string, dslSource *string, nodeMetadata map[string]model.NodeMeta) (*model.App, error) {
+	var inMetaRaw []byte
+	if nodeMetadata != nil {
+		var err error
+		inMetaRaw, err = json.Marshal(nodeMetadata)
+		if err != nil {
+			return nil, fmt.Errorf("patch app: marshal node_metadata: %w", err)
+		}
+	}
 	a := &model.App{}
+	var nodeMetaRaw []byte
 	err := s.pool.QueryRow(ctx,
 		`UPDATE apps SET
-		    name        = COALESCE($3, name),
-		    description = COALESCE($4, description),
-		    dsl_source  = COALESCE($5, dsl_source),
-		    updated_at  = now()
+		    name          = COALESCE($3, name),
+		    description   = COALESCE($4, description),
+		    dsl_source    = COALESCE($5, dsl_source),
+		    node_metadata = CASE WHEN $6::jsonb IS NULL THEN node_metadata ELSE node_metadata || $6::jsonb END,
+		    updated_at    = now()
 		 WHERE id = $1 AND workspace_id = $2
-		 RETURNING id, workspace_id, name, description, status, dsl_source, created_by, created_at, updated_at`,
-		appID, workspaceID, name, description, dslSource,
-	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at`,
+		appID, workspaceID, name, description, dslSource, inMetaRaw,
+	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("patch app: %w", err)
+	}
+	if nodeMetaRaw != nil {
+		_ = json.Unmarshal(nodeMetaRaw, &a.NodeMetadata)
 	}
 	return a, nil
 }
@@ -112,10 +140,11 @@ func (s *Store) PublishApp(ctx context.Context, workspaceID, appID, publisherID 
 
 	// Lock the app row.
 	var dslSource string
+	var appMetaRaw []byte
 	err = tx.QueryRow(ctx,
-		`SELECT dsl_source FROM apps WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+		`SELECT dsl_source, node_metadata FROM apps WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
 		appID, workspaceID,
-	).Scan(&dslSource)
+	).Scan(&dslSource, &appMetaRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -130,16 +159,20 @@ func (s *Store) PublishApp(ctx context.Context, workspaceID, appID, publisherID 
 		appID,
 	).Scan(&maxVer)
 
-	// Insert the version snapshot.
+	// Insert the version snapshot (including node_metadata).
 	v := &model.AppVersion{}
+	var vMetaRaw []byte
 	err = tx.QueryRow(ctx,
-		`INSERT INTO app_versions (app_id, version_num, dsl_source, published_by)
-		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, app_id, version_num, dsl_source, published_by, published_at`,
-		appID, maxVer+1, dslSource, publisherID,
-	).Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &v.PublishedBy, &v.PublishedAt)
+		`INSERT INTO app_versions (app_id, version_num, dsl_source, node_metadata, published_by)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, app_id, version_num, dsl_source, node_metadata, published_by, published_at`,
+		appID, maxVer+1, dslSource, appMetaRaw, publisherID,
+	).Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &vMetaRaw, &v.PublishedBy, &v.PublishedAt)
 	if err != nil {
 		return nil, fmt.Errorf("publish app insert version: %w", err)
+	}
+	if vMetaRaw != nil {
+		_ = json.Unmarshal(vMetaRaw, &v.NodeMetadata)
 	}
 
 	// Update app status.
@@ -166,30 +199,38 @@ func (s *Store) RollbackApp(ctx context.Context, workspaceID, appID string, vers
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	var dslSource string
+	var versionMetaRaw []byte
 	err = tx.QueryRow(ctx,
-		`SELECT dsl_source FROM app_versions
+		`SELECT dsl_source, node_metadata FROM app_versions
 		 WHERE app_id = $1 AND version_num = $2`,
 		appID, versionNum,
-	).Scan(&dslSource)
+	).Scan(&dslSource, &versionMetaRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("rollback app find version: %w", err)
 	}
+	if versionMetaRaw == nil {
+		versionMetaRaw = []byte("{}")
+	}
 
 	a := &model.App{}
+	var appMetaRaw []byte
 	err = tx.QueryRow(ctx,
-		`UPDATE apps SET dsl_source = $3, status = 'draft', updated_at = now()
+		`UPDATE apps SET dsl_source = $3, node_metadata = $4, status = 'draft', updated_at = now()
 		 WHERE id = $1 AND workspace_id = $2
-		 RETURNING id, workspace_id, name, description, status, dsl_source, created_by, created_at, updated_at`,
-		appID, workspaceID, dslSource,
-	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at`,
+		appID, workspaceID, dslSource, versionMetaRaw,
+	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &appMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("rollback app update: %w", err)
+	}
+	if appMetaRaw != nil {
+		_ = json.Unmarshal(appMetaRaw, &a.NodeMetadata)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -201,7 +242,7 @@ func (s *Store) RollbackApp(ctx context.Context, workspaceID, appID string, vers
 // ListAppVersions returns all published versions for an app, newest first.
 func (s *Store) ListAppVersions(ctx context.Context, appID string) ([]model.AppVersion, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, app_id, version_num, dsl_source, published_by, published_at
+		`SELECT id, app_id, version_num, dsl_source, node_metadata, published_by, published_at
 		 FROM app_versions WHERE app_id = $1 ORDER BY version_num DESC`,
 		appID,
 	)
@@ -212,8 +253,12 @@ func (s *Store) ListAppVersions(ctx context.Context, appID string) ([]model.AppV
 	var versions []model.AppVersion
 	for rows.Next() {
 		var v model.AppVersion
-		if err := rows.Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &v.PublishedBy, &v.PublishedAt); err != nil {
+		var nodeMetaRaw []byte
+		if err := rows.Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &nodeMetaRaw, &v.PublishedBy, &v.PublishedAt); err != nil {
 			return nil, fmt.Errorf("list app versions scan: %w", err)
+		}
+		if nodeMetaRaw != nil {
+			_ = json.Unmarshal(nodeMetaRaw, &v.NodeMetadata)
 		}
 		versions = append(versions, v)
 	}
@@ -241,17 +286,21 @@ func (s *Store) GetLatestPublishedVersion(ctx context.Context, workspaceID, appI
 	}
 
 	v := &model.AppVersion{}
+	var vMetaRaw []byte
 	err = s.pool.QueryRow(ctx,
-		`SELECT id, app_id, version_num, dsl_source, published_by, published_at
+		`SELECT id, app_id, version_num, dsl_source, node_metadata, published_by, published_at
 		 FROM app_versions WHERE app_id = $1
 		 ORDER BY version_num DESC LIMIT 1`,
 		appID,
-	).Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &v.PublishedBy, &v.PublishedAt)
+	).Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &vMetaRaw, &v.PublishedBy, &v.PublishedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get published version: %w", err)
+	}
+	if vMetaRaw != nil {
+		_ = json.Unmarshal(vMetaRaw, &v.NodeMetadata)
 	}
 	return v, nil
 }

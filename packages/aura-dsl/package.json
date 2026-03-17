@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts",
     "test": "vitest run",
-    "lint": "eslint src --ext .ts"
+    "lint": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "tsup": "^8.3.5",

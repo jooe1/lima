@@ -77,9 +77,9 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete }: Props) {
     const v = parseInt(raw, 10)
     if (isNaN(v)) return
     let clamped = Math.max(0, v)
-    if (field === 'gridW') clamped = Math.max(2, Math.min(COLS, clamped))
+    if (field === 'gridW') clamped = Math.max(2, clamped)
     if (field === 'gridH') clamped = Math.max(1, clamped)
-    if (field === 'gridX') clamped = Math.max(0, Math.min(COLS - g.w, clamped))
+    if (field === 'gridX') clamped = Math.max(0, clamped)
 
     onUpdate({
       ...n,

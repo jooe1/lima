@@ -3,13 +3,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { serialize, type AuraDocument } from '@lima/aura-dsl'
 
+type NodeMetadataMap = Record<string, { manuallyEdited: boolean }>
+
 /**
- * Autosaves the document after a debounce delay whenever it changes.
- * Pass onSave=undefined to disable (e.g. before the app data has loaded).
+ * Autosaves the document and node metadata after a debounce delay whenever
+ * either changes. Pass onSave=undefined to disable (e.g. before the app has
+ * loaded).
  */
 export function useAutosave(
   doc: AuraDocument,
-  onSave: ((source: string) => Promise<void>) | undefined,
+  nodeMetadata: NodeMetadataMap,
+  onSave: ((source: string, nodeMetadata: NodeMetadataMap) => Promise<void>) | undefined,
   delay = 1500,
 ): { saving: boolean; savedAt: Date | null } {
   const [saving, setSaving] = useState(false)
@@ -19,20 +23,26 @@ export function useAutosave(
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
 
+  // Keep a stable ref to latest nodeMetadata so the debounce callback captures current value
+  const nodeMetadataRef = useRef(nodeMetadata)
+  nodeMetadataRef.current = nodeMetadata
+
   useEffect(() => {
     if (!onSaveRef.current) return
     const source = serialize(doc)
-    if (source === lastSavedRef.current) return
+    const combined = source + '\x00' + JSON.stringify(nodeMetadata)
+    if (combined === lastSavedRef.current) return
 
     if (timerRef.current) clearTimeout(timerRef.current)
 
     timerRef.current = setTimeout(async () => {
       const currentSource = serialize(doc)
-      if (currentSource === lastSavedRef.current || !onSaveRef.current) return
+      const currentCombined = currentSource + '\x00' + JSON.stringify(nodeMetadataRef.current)
+      if (currentCombined === lastSavedRef.current || !onSaveRef.current) return
       setSaving(true)
       try {
-        await onSaveRef.current(currentSource)
-        lastSavedRef.current = currentSource
+        await onSaveRef.current(currentSource, nodeMetadataRef.current)
+        lastSavedRef.current = currentCombined
         setSavedAt(new Date())
       } catch {
         // silent — the header shows "unsaved" state
@@ -44,7 +54,7 @@ export function useAutosave(
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
     }
-  }, [doc, delay])
+  }, [doc, nodeMetadata, delay])
 
   return { saving, savedAt }
 }

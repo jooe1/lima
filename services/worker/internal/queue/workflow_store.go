@@ -213,3 +213,27 @@ func fetchConnectorForRun(ctx context.Context, pool *pgxpool.Pool, connectorID s
 	}
 	return &rec, nil
 }
+
+// ---- approval verification --------------------------------------------------
+
+// approvalVerification holds the minimal approval fields needed to verify an
+// approval before executing an approved mutation or gate step.
+type approvalVerification struct {
+	id               string
+	status           string
+	encryptedPayload []byte
+}
+
+// getApprovalRecord fetches status + encrypted_payload for a single approval.
+// Used in resumeWorkflowRun to verify the approval before executing a mutation.
+func getApprovalRecord(ctx context.Context, pool *pgxpool.Pool, approvalID string) (*approvalVerification, error) {
+	var a approvalVerification
+	err := pool.QueryRow(ctx,
+		`SELECT id, status, encrypted_payload FROM approvals WHERE id = $1`,
+		approvalID,
+	).Scan(&a.id, &a.status, &a.encryptedPayload)
+	if err != nil {
+		return nil, fmt.Errorf("fetch approval %s: %w", approvalID, err)
+	}
+	return &a, nil
+}

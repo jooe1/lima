@@ -148,6 +148,7 @@ export interface App {
   description?: string
   status: 'draft' | 'published' | 'archived'
   dsl_source: string
+  node_metadata?: Record<string, { manuallyEdited: boolean }>
   created_by: string
   created_at: string
   updated_at: string
@@ -158,6 +159,7 @@ export interface AppVersion {
   app_id: string
   version_num: number
   dsl_source: string
+  node_metadata?: Record<string, { manuallyEdited: boolean }>
   published_by: string
   published_at: string
 }
@@ -180,7 +182,7 @@ export function getApp(workspaceId: string, appId: string) {
 export function patchApp(
   workspaceId: string,
   appId: string,
-  patch: { name?: string; description?: string; dsl_source?: string },
+  patch: { name?: string; description?: string; dsl_source?: string; node_metadata?: Record<string, { manuallyEdited: boolean }> },
 ) {
   return request<App>(`/v1/workspaces/${workspaceId}/apps/${appId}/`, {
     method: 'PATCH',
@@ -322,6 +324,12 @@ export function rejectAction(workspaceId: string, approvalId: string, reason?: s
 // Returns a 404 ApiError if the app is not in 'published' status (hard enforcement).
 export function getPublishedApp(workspaceId: string, appId: string) {
   return request<AppVersion>(`/v1/workspaces/${workspaceId}/apps/${appId}/published`)
+}
+
+// previewDraftApp fetches the current draft App (DSL + node_metadata) for builder preview.
+// Requires app_builder or workspace_admin role — end_user receives 403.
+export function previewDraftApp(workspaceId: string, appId: string) {
+  return request<App>(`/v1/workspaces/${workspaceId}/apps/${appId}/preview`)
 }
 
 // ---- Workflows (Phase 6) ---------------------------------------------------
@@ -534,4 +542,38 @@ export function runConnectorQuery(
     `/v1/workspaces/${workspaceId}/connectors/${connectorId}/query`,
     { method: 'POST', body: JSON.stringify(req) },
   )
+}
+
+// ---- CSV import (Phase 4) --------------------------------------------------
+
+export interface CSVImportResponse {
+  columns: string[]
+  rows: string[][]
+  row_count: number
+}
+
+/**
+ * Upload a CSV file to a CSV-type connector via multipart form.
+ * The first row of the CSV is treated as column headers.
+ * The server stores the parsed data in the connector's schema_cache so it can
+ * be served by runConnectorQuery.
+ */
+export function importCSV(workspaceId: string, connectorId: string, file: File) {
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const body = new FormData()
+  body.append('file', file)
+
+  return fetch(
+    `${API_BASE}/v1/workspaces/${workspaceId}/connectors/${connectorId}/import`,
+    { method: 'POST', headers, body },
+  ).then(async (res) => {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: res.statusText }))
+      throw new ApiError(res.status, err.error ?? 'unknown_error', err.message ?? res.statusText)
+    }
+    return res.json() as Promise<CSVImportResponse>
+  })
 }

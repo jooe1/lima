@@ -63,13 +63,21 @@ Traces are visible at http://localhost:16686 (Jaeger UI).
 
 ## Running tests
 
+> **Note:** The primary development and CI environment is **Linux/macOS** (CI runs
+> on `ubuntu-latest`). The `-race` detector requires CGO and is only supported on
+> Linux/macOS. Local development on Windows works but omit the `-race` flag.
+
 ```bash
 # TypeScript tests (aura-dsl)
 pnpm --filter "@lima/aura-dsl" test
 
-# Go tests
-cd services/api && go test ./... -race
-cd services/worker && go test ./... -race
+# Go tests (Linux/macOS — matches CI)
+cd services/api && go test ./... -race -timeout 120s
+cd services/worker && go test ./... -race -timeout 120s
+
+# Go tests (Windows — omit -race)
+# cd services/api && go test ./... -timeout 120s
+# cd services/worker && go test ./... -timeout 120s
 ```
 
 ## Build all

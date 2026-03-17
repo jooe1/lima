@@ -310,8 +310,12 @@ function parseStyleBlock(
   expect('{')
   const map: StyleMap = {}
   while (peek() !== '}') {
-    const prop = consume() // e.g. "width"
-    expect(':')
+    let prop = consume() // e.g. "width" or "width:" (tokeniser may fuse key+colon)
+    if (prop.endsWith(':')) {
+      prop = prop.slice(0, -1)
+    } else {
+      expect(':')
+    }
     const val = consume() // e.g. "\"100%\""
     const cleanVal =
       val.startsWith('"') || val.startsWith("'") ? val.slice(1, val.length - 1) : val

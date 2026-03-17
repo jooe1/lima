@@ -87,7 +87,8 @@ func PostMessage(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.Hand
 		claims, _ := ClaimsFromContext(r.Context())
 
 		var req struct {
-			Content string `json:"content"`
+			Content        string `json:"content"`
+			ForceOverwrite bool   `json:"force_overwrite,omitempty"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
@@ -115,11 +116,12 @@ func PostMessage(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.Hand
 		// Enqueue the generation job. Failure to enqueue is non-fatal for the
 		// stored message but is surfaced to the caller so the UI can retry.
 		payload := model.GenerationJobPayload{
-			ThreadID:    threadID,
-			MessageID:   msg.ID,
-			AppID:       appID,
-			WorkspaceID: workspaceID,
-			UserID:      claims.UserID,
+			ThreadID:       threadID,
+			MessageID:      msg.ID,
+			AppID:          appID,
+			WorkspaceID:    workspaceID,
+			UserID:         claims.UserID,
+			ForceOverwrite: req.ForceOverwrite,
 		}
 		if enq != nil {
 			if err := enq.EnqueueGeneration(r.Context(), payload); err != nil {

@@ -26,6 +26,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [showVersionHistory, setShowVersionHistory] = useState(false)
   // 'inspector' | 'chat' | 'workflows' — controls the right-hand panel
   const [rightPanel, setRightPanel] = useState<'inspector' | 'chat' | 'workflows'>('inspector')
+  // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
+  const [nodeMetadata, setNodeMetadata] = useState<Record<string, { manuallyEdited: boolean }>>({})
 
   const history = useDocumentHistory()
 
@@ -38,6 +40,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
       .then(a => {
         if (cancelled) return
         setApp(a)
+        setNodeMetadata(a.node_metadata ?? {})
         try {
           history.reset(a.dsl_source ? parse(a.dsl_source) : [])
         } catch {
@@ -50,15 +53,24 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   }, [workspace, appId]) // eslint-disable-line react-hooks/exhaustive-deps
   // (history.reset is stable — omitting to avoid loop)
 
+  // Helper: mark a set of node IDs as manually edited in local metadata state
+  const markManual = useCallback((ids: string[]) => {
+    setNodeMetadata(prev => {
+      const next = { ...prev }
+      for (const id of ids) next[id] = { manuallyEdited: true }
+      return next
+    })
+  }, [])
+
   // Autosave — only fires once workspace + app are loaded
   const saveFn = useCallback(
-    async (source: string) => {
+    async (source: string, meta: Record<string, { manuallyEdited: boolean }>) => {
       if (!workspace) return
-      await patchApp(workspace.id, appId, { dsl_source: source })
+      await patchApp(workspace.id, appId, { dsl_source: source, node_metadata: meta })
     },
     [workspace, appId],
   )
-  const { saving, savedAt } = useAutosave(history.doc, app ? saveFn : undefined)
+  const { saving, savedAt } = useAutosave(history.doc, nodeMetadata, app ? saveFn : undefined)
 
   // Keyboard shortcuts: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z / Ctrl+Y
   useEffect(() => {
@@ -103,23 +115,45 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     }
     history.set([...history.doc, newNode])
     setSelectedId(newId)
-  }, [history])
+    markManual([newId])
+  }, [history, markManual])
 
   // Delete widget
   const handleDeleteWidget = useCallback((id: string) => {
     history.set(history.doc.filter(n => n.id !== id))
     if (selectedId === id) setSelectedId(null)
+    setNodeMetadata(prev => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
   }, [history, selectedId])
 
   // Update node props (from inspector)
   const handleUpdateNode = useCallback((updated: AuraNode) => {
     history.set(history.doc.map(n => n.id === updated.id ? updated : n))
-  }, [history])
+    markManual([updated.id])
+  }, [history, markManual])
 
-  // Canvas drag/resize changes
+  // Canvas drag/resize changes — detect which nodes moved/resized and mark them
   const handleCanvasChange = useCallback((newDoc: AuraDocument) => {
+    const oldDoc = history.doc
+    const changedIds: string[] = []
+    for (const newNode of newDoc) {
+      const oldNode = oldDoc.find(n => n.id === newNode.id)
+      if (
+        !oldNode ||
+        oldNode.style?.gridX !== newNode.style?.gridX ||
+        oldNode.style?.gridY !== newNode.style?.gridY ||
+        oldNode.style?.gridW !== newNode.style?.gridW ||
+        oldNode.style?.gridH !== newNode.style?.gridH
+      ) {
+        changedIds.push(newNode.id)
+      }
+    }
+    if (changedIds.length > 0) markManual(changedIds)
     history.set(newDoc)
-  }, [history])
+  }, [history, markManual])
 
   // Publish
   const handlePublish = async () => {
@@ -209,6 +243,23 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         >
           ⏱
         </button>
+
+        {/* Draft preview — always available to builders; opens current DSL */}
+        <Link
+          href={`/builder/${appId}/preview`}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Preview draft"
+          style={{
+            ...iconBtn(true),
+            textDecoration: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          ⊙
+        </Link>
 
         {/* Preview link — only available once published */}
         {app?.status === 'published' && (
@@ -322,9 +373,10 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           appId={appId}
           currentStatus={app?.status ?? 'draft'}
           onRollback={() => {
-            // Reload the app so the DSL is refreshed after rollback
+            // Reload the app so the DSL and node_metadata are refreshed after rollback
             getApp(workspace.id, appId).then(a => {
               setApp(a)
+              setNodeMetadata(a.node_metadata ?? {})
               try { history.reset(a.dsl_source ? parse(a.dsl_source) : []) } catch { history.reset([]) }
             }).catch(() => {})
           }}

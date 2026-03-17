@@ -3,9 +3,33 @@ package cryptoutil
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"io"
 )
+
+// Encrypt encrypts plaintext using AES-256-GCM with a key derived from secret.
+// The returned bytes are: nonce || ciphertext.
+func Encrypt(secret string, plaintext []byte) ([]byte, error) {
+	key, err := deriveKey(secret)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("new cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("new gcm: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("read nonce: %w", err)
+	}
+	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+}
 
 func deriveKey(secret string) ([]byte, error) {
 	if secret == "" {

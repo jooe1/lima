@@ -80,16 +80,17 @@ func PatchApp(s *store.Store, log *zap.Logger) http.HandlerFunc {
 		appID := chi.URLParam(r, "appID")
 
 		var req struct {
-			Name        *string `json:"name"`
-			Description *string `json:"description"`
-			DSLSource   *string `json:"dsl_source"`
+			Name         *string                   `json:"name"`
+			Description  *string                   `json:"description"`
+			DSLSource    *string                   `json:"dsl_source"`
+			NodeMetadata map[string]model.NodeMeta `json:"node_metadata"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 			return
 		}
 
-		app, err := s.PatchApp(r.Context(), workspaceID, appID, req.Name, req.Description, req.DSLSource)
+		app, err := s.PatchApp(r.Context(), workspaceID, appID, req.Name, req.Description, req.DSLSource, req.NodeMetadata)
 		if err != nil {
 			handleStoreErr(w, err)
 			return
@@ -217,6 +218,21 @@ func GetPublishedApp(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 		respond(w, http.StatusOK, version)
+	}
+}
+
+// PreviewDraftApp returns the current draft App (DSL + node_metadata) for preview in the builder.
+// End-user access is blocked at the router level by the RoleAppBuilder gate on this route.
+func PreviewDraftApp(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID := chi.URLParam(r, "workspaceID")
+		appID := chi.URLParam(r, "appID")
+		app, err := s.GetApp(r.Context(), workspaceID, appID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		respond(w, http.StatusOK, app)
 	}
 }
 

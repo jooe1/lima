@@ -70,7 +70,7 @@ services:
       REDIS_URL: redis://redis:6379
       OTEL_ENDPOINT: http://otel-collector:4318
       JWT_SECRET: dev_jwt_secret_change_in_prod
-      ALLOW_ORIGINS: http://localhost:3000
+      ALLOW_ORIGINS: http://localhost:3000,http://localhost:3001
     ports:
       - "8080:8080"
     depends_on:

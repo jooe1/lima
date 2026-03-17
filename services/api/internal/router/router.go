@@ -93,6 +93,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						r.Get("/versions", handler.ListAppVersions(s, log))
 						// Runtime: published DSL — only returns data for published apps (enforces isolation)
 						r.Get("/published", handler.GetPublishedApp(s, log))
+						// Builder draft preview — requires app_builder or admin; end_user is blocked
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+							Get("/preview", handler.PreviewDraftApp(s, log))
 
 						// Conversation threads (Phase 3)
 						r.Route("/threads", func(r chi.Router) {
@@ -150,9 +153,12 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 							Delete("/", handler.DeleteConnector(s, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Post("/test", handler.TestConnector(cfg, s, log))
-						r.Get("/schema", handler.GetConnectorSchema(s, enq, log))
+						r.Get("/schema", handler.GetConnectorSchema(cfg, s, enq, log))
 						// Dashboard read-only query (Phase 6) — any workspace member may query
 						r.Post("/query", handler.RunQuery(cfg, s, log))
+						// CSV file import — builders and admins may upload data
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+							Post("/import", handler.ImportCSV(s, log))
 					})
 				})
 

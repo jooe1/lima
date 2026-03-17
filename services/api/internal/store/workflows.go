@@ -533,3 +533,44 @@ func insertWorkflowStep(ctx context.Context, tx execer, workflowID string, order
 	}
 	return &step, nil
 }
+
+// UpdateWorkflowRunStatus sets the status of a workflow run.
+// Terminal statuses (completed, failed, cancelled) also set completed_at.
+func (s *Store) UpdateWorkflowRunStatus(ctx context.Context, runID string, status model.WorkflowRunStatus) error {
+	var completedAt *time.Time
+	switch status {
+	case model.RunStatusCompleted, model.RunStatusFailed, model.RunStatusCancelled:
+		now := time.Now()
+		completedAt = &now
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE workflow_runs
+		SET status=$2, completed_at=COALESCE($3, completed_at), updated_at=now()
+		WHERE id=$1`,
+		runID, status, completedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("update run status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetWorkflowRunApproval links a workflow run to an approval record.
+// Called after an approval gate is created so callers can look up runs by
+// their pending approval.
+func (s *Store) SetWorkflowRunApproval(ctx context.Context, runID, approvalID string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE workflow_runs SET approval_id=$2, updated_at=now() WHERE id=$1`,
+		runID, approvalID,
+	)
+	if err != nil {
+		return fmt.Errorf("set run approval: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

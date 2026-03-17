@@ -6,7 +6,9 @@ import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { WidgetRenderer } from './widgets/WidgetRenderer'
 
 export const CELL = 40   // pixels per grid unit
-export const COLS = 24   // number of grid columns
+// COLS is no longer a hard cap — the canvas expands to fit content.
+// Used only as a soft reference for input validation in the Inspector.
+export const COLS = 120
 const MIN_W = 2
 const MIN_H = 1
 
@@ -60,7 +62,16 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect }: Props) {
   onSelectRef.current = onSelect
   selectedIdRef.current = selectedId
 
-  // Canvas content height — enough to show all widgets + breathing room
+  // Canvas content dimensions — grows to fit all widgets with breathing room
+  const canvasWidth = React.useMemo(() => {
+    let maxRight = 24
+    for (const n of doc) {
+      const g = getGrid(n)
+      maxRight = Math.max(maxRight, g.x + g.w)
+    }
+    return maxRight * CELL + 240
+  }, [doc])
+
   const canvasHeight = React.useMemo(() => {
     let maxBottom = 15
     for (const n of doc) {
@@ -95,10 +106,10 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect }: Props) {
       let newW = drag.snapW, newH = drag.snapH
 
       if (drag.type === 'move') {
-        newX = Math.max(0, Math.min(COLS - drag.origGridW, Math.round((drag.origGridX * CELL + dx) / CELL)))
+        newX = Math.max(0, Math.round((drag.origGridX * CELL + dx) / CELL))
         newY = Math.max(0, Math.round((drag.origGridY * CELL + dy) / CELL))
       } else {
-        newW = Math.max(MIN_W, Math.min(COLS - drag.origGridX, Math.round((drag.origGridW * CELL + dx) / CELL)))
+        newW = Math.max(MIN_W, Math.round((drag.origGridW * CELL + dx) / CELL))
         newH = Math.max(MIN_H, Math.round((drag.origGridH * CELL + dy) / CELL))
       }
 
@@ -217,12 +228,12 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect }: Props) {
         }
       }}
     >
-      {/* Canvas content — fixed width, grows vertically */}
+      {/* Canvas content — expands to fit widgets */}
       <div
         data-canvas-bg="1"
         style={{
           position: 'relative',
-          width: COLS * CELL,
+          width: canvasWidth,
           minHeight: canvasHeight,
           backgroundImage: 'radial-gradient(circle, #1a1a1a 1px, transparent 1px)',
           backgroundSize: `${CELL}px ${CELL}px`,

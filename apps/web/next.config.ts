@@ -1,7 +1,9 @@
 import type { NextConfig } from 'next'
 
 const config: NextConfig = {
-  output: 'standalone',
+  // standalone output is required for Docker image builds (Linux/CI only).
+  // Omit it for local dev on Windows where symlink creation is restricted.
+  ...(process.env.CI ? { output: 'standalone' } : {}),
   // Allow the builder to make API calls to the Go control-plane
   async rewrites() {
     return [
