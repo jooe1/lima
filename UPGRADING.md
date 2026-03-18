@@ -92,9 +92,23 @@ these steps to rotate it without data loss:
      --set secrets.credentialsEncryptionKeyPrevious=<old-key>
    ```
 
-3. **Re-encrypt all connector secrets** — run the re-encryption admin endpoint
-   (or a migration script) to update every ciphertext in `connectors.encrypted_credentials`
-   to use the new key.
+3. **Re-encrypt all connector secrets** — run the supported maintenance CLI to
+   update every ciphertext in `connectors.encrypted_credentials` to use the new
+   key. Start with a dry run, then execute the write pass:
+   ```bash
+   # Kubernetes / Helm
+   kubectl exec -n <namespace> deploy/<release>-api -- \
+     /api maintenance reencrypt-connector-secrets --dry-run
+   kubectl exec -n <namespace> deploy/<release>-api -- \
+     /api maintenance reencrypt-connector-secrets
+
+   # Docker Compose / self-hosted
+   cd deploy/docker-compose
+   docker compose run --rm api maintenance reencrypt-connector-secrets --dry-run
+   docker compose run --rm api maintenance reencrypt-connector-secrets
+   ```
+   The command reads `DATABASE_URL`, `CREDENTIALS_ENCRYPTION_KEY`, and
+   `CREDENTIALS_ENCRYPTION_KEY_PREVIOUS` from the environment.
 
 4. **Remove the previous key** — once all ciphertexts have been re-encrypted,
    clear `credentialsEncryptionKeyPrevious`:
@@ -108,25 +122,36 @@ these steps to rotate it without data loss:
 
 ## Audit retention
 
-By default, audit events are retained indefinitely.  To apply a retention
-policy for a workspace, call the database helper function introduced in
-migration 008:
+By default, audit events are retained indefinitely. To apply a retention policy
+for a workspace, call the database helper function introduced in migration 008:
 
 ```sql
 -- Retain audit events for 365 days for workspace <id>
 SELECT apply_audit_retention('<workspace-uuid>', 365);
 ```
 
-A scheduled job (Kubernetes CronJob, cron on the Compose host, or a pg_cron
-extension job) should periodically run:
+A scheduled job should periodically remove expired rows after `expires_at` has
+been assigned:
 
-```sql
-DELETE FROM audit_events WHERE expires_at IS NOT NULL AND expires_at < now();
+```bash
+# Docker Compose / self-hosted one-off run
+cd deploy/docker-compose
+docker compose run --rm api maintenance prune-audit-events
 ```
 
-Or call the `PruneExpiredAuditEvents` store method via the API worker.  The
-append-only DB rules installed by migration 008 prevent ad-hoc tampering with
-active audit records.
+For Kubernetes / Helm, enable the built-in CronJob in `values.yaml`:
+
+```yaml
+auditPruning:
+  enabled: true
+  schedule: "15 3 * * *"
+```
+
+The chart runs `/api maintenance prune-audit-events` with the API image and the
+same database secret used by the API deployment. Self-hosted installations can
+run the same command from cron or a systemd timer. The append-only DB rules
+installed by migration 008 still prevent ad-hoc tampering with active audit
+records.
 
 ---
 

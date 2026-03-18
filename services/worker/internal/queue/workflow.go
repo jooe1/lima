@@ -1,10 +1,13 @@
 package queue
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -16,6 +19,23 @@ import (
 	"github.com/lima/worker/internal/cryptoutil"
 	"go.uber.org/zap"
 )
+
+type restCreds struct {
+	BaseURL      string `json:"base_url"`
+	AuthType     string `json:"auth_type"`
+	Token        string `json:"token,omitempty"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	APIKeyHeader string `json:"api_key_header,omitempty"`
+}
+
+type graphqlMutationCreds struct {
+	Endpoint string            `json:"endpoint"`
+	AuthType string            `json:"auth_type"`
+	Token    string            `json:"token,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
+}
 
 // combinedWorkflowPayload is parsed from any workflow queue message.
 // If ApprovalID is non-empty it is a resume; otherwise a fresh execution.
@@ -301,7 +321,14 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 // ---- query step execution --------------------------------------------------
 
 // wfMutationRe guards against accidental DML/DDL in workflow query steps.
-var wfMutationRe = regexp.MustCompile(`(?i)^\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE|CALL|MERGE|REPLACE|LOCK)`)
+var (
+	wfMutationRe            = regexp.MustCompile(`(?i)^\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE|CALL|MERGE|REPLACE|LOCK|BEGIN|COMMIT|ROLLBACK|DO)`)
+	wfCTEMutationRe         = regexp.MustCompile(`(?is)^\s*WITH\b[\s\S]*\b(INSERT\s+INTO|UPDATE\b|DELETE\s+FROM|MERGE\b|REPLACE\b)\b`)
+	workflowInputRefRe      = regexp.MustCompile(`\{\{input\.([a-zA-Z0-9_.-]+)\}\}`)
+	workflowGraphQLMutation = regexp.MustCompile(`(?is)^\s*mutation\b`)
+)
+
+const workflowHTTPResponseLimit = 1 << 20
 
 // executeQueryStep runs a SQL query against a connector and returns row results.
 // Only Postgres is supported in the first pass; other types return a stub.
@@ -596,17 +623,49 @@ func evaluateCondition(config map[string]any, inputData map[string]any) any {
 	}
 }
 
-// resolveInputRef replaces {{input.field}} with the corresponding value
-// from inputData, returning the original string if no match.
+// resolveInputRef replaces {{input.field}} placeholders from inputData.
+// Exact matches preserve the original value type; embedded placeholders are
+// interpolated into the surrounding string.
 func resolveInputRef(expr string, inputData map[string]any) any {
 	expr = strings.TrimSpace(expr)
-	if strings.HasPrefix(expr, "{{input.") && strings.HasSuffix(expr, "}}") {
-		field := strings.TrimSuffix(strings.TrimPrefix(expr, "{{input."), "}}")
-		if v, ok := inputData[field]; ok {
-			return v
-		}
+	matches := workflowInputRefRe.FindAllStringSubmatchIndex(expr, -1)
+	if len(matches) == 0 {
+		return expr
 	}
-	return expr
+	if len(matches) == 1 && matches[0][0] == 0 && matches[0][1] == len(expr) {
+		field := expr[matches[0][2]:matches[0][3]]
+		if value, ok := lookupInputValue(inputData, field); ok {
+			return value
+		}
+		return expr
+	}
+	return workflowInputRefRe.ReplaceAllStringFunc(expr, func(match string) string {
+		submatches := workflowInputRefRe.FindStringSubmatch(match)
+		if len(submatches) != 2 {
+			return match
+		}
+		value, ok := lookupInputValue(inputData, submatches[1])
+		if !ok {
+			return match
+		}
+		return fmt.Sprintf("%v", value)
+	})
+}
+
+func lookupInputValue(inputData map[string]any, fieldPath string) (any, bool) {
+	current := any(inputData)
+	for _, part := range strings.Split(fieldPath, ".") {
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		value, ok := obj[part]
+		if !ok {
+			return nil, false
+		}
+		current = value
+	}
+	return current, true
 }
 
 // ---- approval resolution ----------------------------------------------------
@@ -707,27 +766,612 @@ func resolveApprovedStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 }
 
 // executeMutationStep executes an approved mutation step against a connector.
-//
-// NOTE (Phase 6 stub): The connector-based mutation executor is not yet
-// implemented. This function records that the mutation was approved and
-// triggered, but does not perform the actual DML/API call.
-//
-// TODO (Phase 7+): dispatch to connector-specific mutation executors:
-//   - postgres/mysql/mssql: execute step.config["sql"] in a read-write transaction
-//   - rest/graphql: send step.config["method"] + step.config["path"] request
-//
-// The step config should contain connector_id + sql (relational) or
-// method/path/body (REST/GraphQL). Input variables resolved via resolveInputRef.
-func executeMutationStep(_ context.Context, _ *config.Config, _ *pgxpool.Pool, log *zap.Logger,
-	step wfStep, _ map[string]any,
+// The caller only marks the step completed after this returns success, so each
+// branch must fail closed for malformed config or unsupported connectors.
+func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger,
+	step wfStep, inputData map[string]any,
 ) (any, error) {
-	log.Info("executing approved mutation step (stub — connector executor not yet implemented)",
-		zap.String("step_id", step.id),
-		zap.String("step_name", step.name),
+	connectorID := resolveWorkflowString(step.config["connector_id"], inputData)
+	if connectorID == "" {
+		return nil, fmt.Errorf("mutation step %q missing connector_id in config", step.name)
+	}
+
+	rec, err := fetchConnectorForRun(ctx, pool, connectorID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch connector %s: %w", connectorID, err)
+	}
+
+	plainCreds, err := cryptoutil.DecryptWithRotation(cfg.CredentialsEncryptionKey, cfg.CredentialsEncryptionKeyPrevious, rec.encryptedCredentials)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt connector credentials: %w", err)
+	}
+
+	switch rec.connectorType {
+	case "postgres":
+		statement, err := mutationSQLForStep(step, inputData)
+		if err != nil {
+			return nil, err
+		}
+		var creds relationalCreds
+		if err := json.Unmarshal(plainCreds, &creds); err != nil {
+			return nil, fmt.Errorf("parse postgres credentials: %w", err)
+		}
+		return runPostgresMutationStep(ctx, creds, statement, log)
+
+	case "mysql":
+		statement, err := mutationSQLForStep(step, inputData)
+		if err != nil {
+			return nil, err
+		}
+		var creds relationalCreds
+		if err := json.Unmarshal(plainCreds, &creds); err != nil {
+			return nil, fmt.Errorf("parse mysql credentials: %w", err)
+		}
+		return runMySQLMutationStep(ctx, creds, statement, log)
+
+	case "mssql":
+		statement, err := mutationSQLForStep(step, inputData)
+		if err != nil {
+			return nil, err
+		}
+		var creds relationalCreds
+		if err := json.Unmarshal(plainCreds, &creds); err != nil {
+			return nil, fmt.Errorf("parse mssql credentials: %w", err)
+		}
+		return runMSSQLMutationStep(ctx, creds, statement, log)
+
+	case "rest":
+		var creds restCreds
+		if err := json.Unmarshal(plainCreds, &creds); err != nil {
+			return nil, fmt.Errorf("parse rest credentials: %w", err)
+		}
+		return runRESTMutationStep(ctx, creds, step, inputData, log)
+
+	case "graphql":
+		var creds graphqlMutationCreds
+		if err := json.Unmarshal(plainCreds, &creds); err != nil {
+			return nil, fmt.Errorf("parse graphql credentials: %w", err)
+		}
+		return runGraphQLMutationStep(ctx, creds, step, inputData, log)
+
+	default:
+		return nil, fmt.Errorf("mutation step %q uses unsupported connector type %q", step.name, rec.connectorType)
+	}
+}
+
+func mutationSQLForStep(step wfStep, inputData map[string]any) (string, error) {
+	resolved := resolveWorkflowValue(step.config["sql"], inputData)
+	statement, ok := resolved.(string)
+	if !ok {
+		return "", fmt.Errorf("mutation step %q missing sql in config", step.name)
+	}
+	statement = strings.TrimRight(strings.TrimSpace(statement), ";")
+	if statement == "" {
+		return "", fmt.Errorf("mutation step %q missing sql in config", step.name)
+	}
+	if !wfMutationRe.MatchString(statement) && !wfCTEMutationRe.MatchString(statement) {
+		return "", fmt.Errorf("mutation step %q sql must be a mutation statement", step.name)
+	}
+	return statement, nil
+}
+
+func runPostgresMutationStep(ctx context.Context, creds relationalCreds, statement string, log *zap.Logger) (any, error) {
+	sslmode := "disable"
+	if creds.SSL {
+		sslmode = "require"
+	}
+	connStr := fmt.Sprintf(
+		"postgres://%s:%s@%s:%d/%s?sslmode=%s&connect_timeout=10",
+		url.QueryEscape(creds.Username),
+		url.QueryEscape(creds.Password),
+		creds.Host, creds.Port, creds.Database,
+		sslmode,
 	)
-	return map[string]any{
-		"note":      "mutation executed (stub — connector mutation executor not yet implemented)",
-		"step_id":   step.id,
-		"step_name": step.name,
-	}, nil
+
+	conn, err := pgx.Connect(ctx, connStr)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("begin mutation tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tag, err := tx.Exec(ctx, statement)
+	if err != nil {
+		return nil, fmt.Errorf("execute mutation: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit mutation tx: %w", err)
+	}
+
+	result := map[string]any{
+		"command_tag":   tag.String(),
+		"rows_affected": tag.RowsAffected(),
+	}
+	log.Debug("postgres workflow mutation step completed",
+		zap.Int64("rows_affected", tag.RowsAffected()),
+	)
+	return result, nil
+}
+
+func runMySQLMutationStep(ctx context.Context, creds relationalCreds, statement string, log *zap.Logger) (any, error) {
+	tls := "false"
+	if creds.SSL {
+		tls = "skip-verify"
+	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=%s&timeout=10s&parseTime=true",
+		creds.Username, creds.Password, creds.Host, creds.Port, creds.Database, tls,
+	)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open mysql: %w", err)
+	}
+	defer db.Close()
+	db.SetConnMaxLifetime(15 * time.Second)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin mysql mutation tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	res, err := tx.ExecContext(ctx, statement)
+	if err != nil {
+		return nil, fmt.Errorf("mysql execute mutation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit mysql mutation tx: %w", err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("mysql rows affected: %w", err)
+	}
+	result := map[string]any{"rows_affected": rowsAffected}
+	if lastInsertID, err := res.LastInsertId(); err == nil {
+		result["last_insert_id"] = lastInsertID
+	}
+	log.Debug("mysql workflow mutation step completed",
+		zap.Int64("rows_affected", rowsAffected),
+	)
+	return result, nil
+}
+
+func runMSSQLMutationStep(ctx context.Context, creds relationalCreds, statement string, log *zap.Logger) (any, error) {
+	u := &url.URL{
+		Scheme: "sqlserver",
+		User:   url.UserPassword(creds.Username, creds.Password),
+		Host:   fmt.Sprintf("%s:%d", creds.Host, creds.Port),
+	}
+	q := u.Query()
+	q.Set("database", creds.Database)
+	q.Set("connection timeout", "10")
+	if !creds.SSL {
+		q.Set("encrypt", "disable")
+	}
+	u.RawQuery = q.Encode()
+
+	db, err := sql.Open("sqlserver", u.String())
+	if err != nil {
+		return nil, fmt.Errorf("open mssql: %w", err)
+	}
+	defer db.Close()
+	db.SetConnMaxLifetime(15 * time.Second)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin mssql mutation tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	res, err := tx.ExecContext(ctx, statement)
+	if err != nil {
+		return nil, fmt.Errorf("mssql execute mutation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit mssql mutation tx: %w", err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("mssql rows affected: %w", err)
+	}
+	result := map[string]any{"rows_affected": rowsAffected}
+	if lastInsertID, err := res.LastInsertId(); err == nil {
+		result["last_insert_id"] = lastInsertID
+	}
+	log.Debug("mssql workflow mutation step completed",
+		zap.Int64("rows_affected", rowsAffected),
+	)
+	return result, nil
+}
+
+func runRESTMutationStep(ctx context.Context, creds restCreds, step wfStep, inputData map[string]any, log *zap.Logger) (any, error) {
+	method := strings.ToUpper(resolveWorkflowString(step.config["method"], inputData))
+	if method == "" {
+		return nil, fmt.Errorf("mutation step %q missing method in config", step.name)
+	}
+	if !isRESTMutationMethod(method) {
+		return nil, fmt.Errorf("mutation step %q method %q is not a mutating HTTP method", step.name, method)
+	}
+
+	path := resolveWorkflowString(step.config["path"], inputData)
+	if path == "" {
+		return nil, fmt.Errorf("mutation step %q missing path in config", step.name)
+	}
+
+	bodyValue, hasBody := step.config["body"]
+	var body any
+	if hasBody {
+		body = resolveWorkflowValue(bodyValue, inputData)
+	}
+	if method != http.MethodDelete && (!hasBody || workflowValueIsEmpty(body)) {
+		return nil, fmt.Errorf("mutation step %q missing body in config", step.name)
+	}
+	if method == http.MethodDelete && workflowValueIsEmpty(body) {
+		body = nil
+	}
+
+	endpoint, err := joinConnectorRequestURL(creds.BaseURL, path)
+	if err != nil {
+		return nil, fmt.Errorf("prepare rest endpoint: %w", err)
+	}
+	bodyReader, contentType, err := encodeMutationRequestBody(body)
+	if err != nil {
+		return nil, fmt.Errorf("prepare rest request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("build rest request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	applyWorkflowRESTAuth(req, creds)
+
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("rest mutation request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := readWorkflowHTTPResponse(resp)
+	if err != nil {
+		return nil, fmt.Errorf("read rest mutation response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("rest mutation returned HTTP %d: %s", resp.StatusCode, summarizeWorkflowHTTPBody(responseBody))
+	}
+
+	result := map[string]any{
+		"method":      method,
+		"path":        path,
+		"status":      resp.Status,
+		"status_code": resp.StatusCode,
+	}
+	if responseBody != nil {
+		result["response"] = responseBody
+	}
+	if location := resp.Header.Get("Location"); location != "" {
+		result["location"] = location
+	}
+	log.Debug("rest workflow mutation step completed",
+		zap.String("method", method),
+		zap.Int("status_code", resp.StatusCode),
+	)
+	return result, nil
+}
+
+func runGraphQLMutationStep(ctx context.Context, creds graphqlMutationCreds, step wfStep, inputData map[string]any, log *zap.Logger) (any, error) {
+	endpoint := strings.TrimSpace(creds.Endpoint)
+	if endpoint == "" {
+		return nil, fmt.Errorf("graphql credentials missing endpoint")
+	}
+	if methodRaw, ok := step.config["method"]; ok {
+		method := strings.ToUpper(resolveWorkflowString(methodRaw, inputData))
+		if method == "" {
+			return nil, fmt.Errorf("mutation step %q missing method in config", step.name)
+		}
+		if method != http.MethodPost {
+			return nil, fmt.Errorf("mutation step %q method %q is not supported for graphql mutations", step.name, method)
+		}
+	}
+	if pathRaw, ok := step.config["path"]; ok {
+		path := resolveWorkflowString(pathRaw, inputData)
+		if path == "" {
+			return nil, fmt.Errorf("mutation step %q missing path in config", step.name)
+		}
+		joined, err := joinConnectorRequestURL(endpoint, path)
+		if err != nil {
+			return nil, fmt.Errorf("prepare graphql endpoint: %w", err)
+		}
+		endpoint = joined
+	}
+
+	body := resolveWorkflowValue(step.config["body"], inputData)
+	if workflowValueIsEmpty(body) {
+		return nil, fmt.Errorf("mutation step %q missing body in config", step.name)
+	}
+	payload, err := normalizeGraphQLMutationBody(body)
+	if err != nil {
+		return nil, fmt.Errorf("prepare graphql mutation body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("build graphql request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if creds.AuthType == "bearer" && creds.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+creds.Token)
+	}
+	for key, value := range creds.Headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("graphql mutation request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, workflowHTTPResponseLimit))
+	if err != nil {
+		return nil, fmt.Errorf("read graphql mutation response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("graphql mutation returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("parse graphql mutation response: %w", err)
+	}
+	if errs, ok := parsed["errors"]; ok {
+		switch typed := errs.(type) {
+		case []any:
+			if len(typed) > 0 {
+				return nil, fmt.Errorf("graphql mutation returned errors: %s", strings.TrimSpace(string(bodyBytes)))
+			}
+		case nil:
+		default:
+			return nil, fmt.Errorf("graphql mutation returned errors: %s", strings.TrimSpace(string(bodyBytes)))
+		}
+	}
+
+	result := map[string]any{
+		"status":      resp.Status,
+		"status_code": resp.StatusCode,
+	}
+	if data, ok := parsed["data"]; ok {
+		result["data"] = data
+	}
+	if extensions, ok := parsed["extensions"]; ok {
+		result["extensions"] = extensions
+	}
+	if _, ok := result["data"]; !ok {
+		result["response"] = parsed
+	}
+	log.Debug("graphql workflow mutation step completed",
+		zap.Int("status_code", resp.StatusCode),
+	)
+	return result, nil
+}
+
+func isRESTMutationMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func joinConnectorRequestURL(baseURL, requestPath string) (string, error) {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return "", fmt.Errorf("connector base URL is required")
+	}
+	if _, err := url.ParseRequestURI(baseURL); err != nil {
+		return "", fmt.Errorf("invalid connector base URL: %w", err)
+	}
+	requestPath = strings.TrimSpace(requestPath)
+	if requestPath == "" {
+		return baseURL, nil
+	}
+	rel, err := url.Parse(requestPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid request path: %w", err)
+	}
+	if rel.IsAbs() || rel.Host != "" {
+		return "", fmt.Errorf("request path must be relative, got %q", requestPath)
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse connector base URL: %w", err)
+	}
+	return base.ResolveReference(rel).String(), nil
+}
+
+func encodeMutationRequestBody(body any) (io.Reader, string, error) {
+	if body == nil {
+		return nil, "", nil
+	}
+	switch typed := body.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil, "", fmt.Errorf("body is empty")
+		}
+		contentType := "text/plain; charset=utf-8"
+		if json.Valid([]byte(typed)) {
+			contentType = "application/json"
+		}
+		return strings.NewReader(typed), contentType, nil
+	case []byte:
+		if len(typed) == 0 {
+			return nil, "", fmt.Errorf("body is empty")
+		}
+		contentType := "application/octet-stream"
+		if json.Valid(typed) {
+			contentType = "application/json"
+		}
+		return bytes.NewReader(typed), contentType, nil
+	default:
+		payload, err := json.Marshal(typed)
+		if err != nil {
+			return nil, "", fmt.Errorf("marshal body: %w", err)
+		}
+		return bytes.NewReader(payload), "application/json", nil
+	}
+}
+
+func readWorkflowHTTPResponse(resp *http.Response) (any, error) {
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, workflowHTTPResponseLimit))
+	if err != nil {
+		return nil, err
+	}
+	if len(bodyBytes) == 0 {
+		return nil, nil
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "json") || json.Valid(bodyBytes) {
+		var parsed any
+		if err := json.Unmarshal(bodyBytes, &parsed); err == nil {
+			return parsed, nil
+		}
+	}
+	return string(bodyBytes), nil
+}
+
+func summarizeWorkflowHTTPBody(body any) string {
+	switch typed := body.(type) {
+	case nil:
+		return "empty response"
+	case string:
+		return typed
+	default:
+		payload, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprintf("%v", typed)
+		}
+		return string(payload)
+	}
+}
+
+func normalizeGraphQLMutationBody(body any) ([]byte, error) {
+	switch typed := body.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return nil, fmt.Errorf("body is empty")
+		}
+		if json.Valid([]byte(trimmed)) {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+				return nil, fmt.Errorf("parse graphql body: %w", err)
+			}
+			return marshalValidatedGraphQLPayload(payload)
+		}
+		return marshalValidatedGraphQLPayload(map[string]any{"query": trimmed})
+	default:
+		payloadBytes, err := json.Marshal(typed)
+		if err != nil {
+			return nil, fmt.Errorf("marshal graphql body: %w", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+			return nil, fmt.Errorf("graphql body must be a JSON object or string: %w", err)
+		}
+		return marshalValidatedGraphQLPayload(payload)
+	}
+}
+
+func marshalValidatedGraphQLPayload(payload map[string]any) ([]byte, error) {
+	query, _ := payload["query"].(string)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("graphql mutation body missing query")
+	}
+	if !workflowGraphQLMutation.MatchString(query) {
+		return nil, fmt.Errorf("graphql mutation body must contain a mutation operation")
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal graphql payload: %w", err)
+	}
+	return bodyBytes, nil
+}
+
+func applyWorkflowRESTAuth(req *http.Request, creds restCreds) {
+	switch creds.AuthType {
+	case "bearer":
+		if creds.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+creds.Token)
+		}
+	case "basic":
+		if creds.Username != "" || creds.Password != "" {
+			req.SetBasicAuth(creds.Username, creds.Password)
+		}
+	case "api_key":
+		header := creds.APIKeyHeader
+		if header == "" {
+			header = "X-API-Key"
+		}
+		if creds.APIKey != "" {
+			req.Header.Set(header, creds.APIKey)
+		}
+	}
+}
+
+func resolveWorkflowString(value any, inputData map[string]any) string {
+	resolved := resolveWorkflowValue(value, inputData)
+	switch typed := resolved.(type) {
+	case nil:
+		return ""
+	case map[string]any, []any:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func resolveWorkflowValue(value any, inputData map[string]any) any {
+	switch typed := value.(type) {
+	case string:
+		return resolveInputRef(typed, inputData)
+	case []any:
+		resolved := make([]any, len(typed))
+		for i, item := range typed {
+			resolved[i] = resolveWorkflowValue(item, inputData)
+		}
+		return resolved
+	case map[string]any:
+		resolved := make(map[string]any, len(typed))
+		for key, item := range typed {
+			resolved[key] = resolveWorkflowValue(item, inputData)
+		}
+		return resolved
+	default:
+		return typed
+	}
+}
+
+func workflowValueIsEmpty(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(typed) == ""
+	default:
+		return false
+	}
 }

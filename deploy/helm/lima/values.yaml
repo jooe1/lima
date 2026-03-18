@@ -167,6 +167,11 @@ backup:
     endpoint: ""            # leave blank for AWS S3; set for MinIO / Ceph
     credentialsSecret: ""   # K8s Secret name with keys: accessKeyId, secretAccessKey
 
+# ---- Audit pruning CronJob -------------------------------------------------
+auditPruning:
+  enabled: false
+  schedule: "15 3 * * *"    # daily at 03:15 UTC
+
 # ---- Node scheduling -------------------------------------------------------
 nodeSelector: {}
 tolerations: []

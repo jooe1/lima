@@ -62,6 +62,28 @@ func (s *Store) ListConnectors(ctx context.Context, workspaceID string) ([]model
 	return out, rows.Err()
 }
 
+// ListConnectorRecordsForMaintenance returns all connector records including
+// encrypted credentials for operator maintenance workflows.
+func (s *Store) ListConnectorRecordsForMaintenance(ctx context.Context) ([]model.ConnectorRecord, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+connectorCols+` FROM connectors ORDER BY workspace_id, id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list connector records for maintenance: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.ConnectorRecord
+	for rows.Next() {
+		rec, err := scanConnectorRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list connector records for maintenance scan: %w", err)
+		}
+		out = append(out, *rec)
+	}
+	return out, rows.Err()
+}
+
 // GetConnectorRecord fetches a connector including its encrypted credentials.
 // Used internally for test-connection and schema-discovery flows.
 func (s *Store) GetConnectorRecord(ctx context.Context, workspaceID, connectorID string) (*model.ConnectorRecord, error) {
@@ -123,6 +145,21 @@ func (s *Store) PatchConnector(ctx context.Context, workspaceID, connectorID str
 		return nil, fmt.Errorf("patch connector: %w", err)
 	}
 	return &rec.Connector, nil
+}
+
+// ReplaceConnectorEncryptedCredentials swaps encrypted credentials only when
+// the stored ciphertext still matches the scanned value.
+func (s *Store) ReplaceConnectorEncryptedCredentials(ctx context.Context, workspaceID, connectorID string, currentEncCreds, nextEncCreds []byte) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE connectors
+		 SET encrypted_credentials = $4, updated_at = now()
+		 WHERE id = $1 AND workspace_id = $2 AND encrypted_credentials = $3`,
+		connectorID, workspaceID, currentEncCreds, nextEncCreds,
+	)
+	if err != nil {
+		return false, fmt.Errorf("replace connector encrypted credentials: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // DeleteConnector permanently removes a connector.

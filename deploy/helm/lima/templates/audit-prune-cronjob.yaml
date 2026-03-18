@@ -1,0 +1,52 @@
+{{- if .Values.auditPruning.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "lima.fullname" . }}-audit-prune
+  labels:
+    {{- include "lima.labels" . | nindent 4 }}
+    app.kubernetes.io/component: maintenance
+spec:
+  schedule: {{ .Values.auditPruning.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: audit-prune
+              image: {{ include "lima.image" (dict "global" .Values.global "image" .Values.images.api) }}
+              imagePullPolicy: {{ .Values.images.api.pullPolicy }}
+              args:
+                - maintenance
+                - prune-audit-events
+              env:
+                - name: ENV
+                  value: {{ .Values.env | default "production" | quote }}
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lima.secretName" . }}
+                      key: databaseURL
+                - name: DB_MAX_CONNS
+                  value: {{ .Values.db.maxConns | default 25 | quote }}
+                - name: DB_MIN_CONNS
+                  value: {{ .Values.db.minConns | default 2 | quote }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { cpu: 250m, memory: 256Mi }
+{{- end }}
