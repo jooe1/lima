@@ -298,7 +298,7 @@ func fetchUserAISettings(ctx context.Context, cfg *config.Config, pool *pgxpool.
 		settings.OpenAIBaseURL = providerConfig.OpenAIBaseURL
 	}
 	if len(encryptedCredentials) > 0 {
-		plaintext, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, encryptedCredentials)
+		plaintext, err := cryptoutil.DecryptWithRotation(cfg.CredentialsEncryptionKey, cfg.CredentialsEncryptionKeyPrevious, encryptedCredentials)
 		if err != nil {
 			return userAISettings{}, fmt.Errorf("decrypt ai credentials: %w", err)
 		}

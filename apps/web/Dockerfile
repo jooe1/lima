@@ -23,6 +23,7 @@ RUN pnpm --filter "@lima/sdk-connectors" build
 # Build the web app
 FROM build-packages AS build-web
 ARG NEXT_PUBLIC_DEV_LOGIN
+ENV CI=1
 ENV NEXT_PUBLIC_DEV_LOGIN=$NEXT_PUBLIC_DEV_LOGIN
 COPY apps/web/ ./apps/web/
 RUN pnpm --filter "@lima/web" build

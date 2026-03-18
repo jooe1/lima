@@ -63,3 +63,20 @@ func Decrypt(secret string, ciphertext []byte) ([]byte, error) {
 	}
 	return plaintext, nil
 }
+
+// DecryptWithRotation tries the current key first; if decryption fails it
+// falls back to previousSecret during key rotation.
+func DecryptWithRotation(currentSecret, previousSecret string, ciphertext []byte) ([]byte, error) {
+	plaintext, err := Decrypt(currentSecret, ciphertext)
+	if err == nil {
+		return plaintext, nil
+	}
+	if previousSecret == "" {
+		return nil, err
+	}
+	plaintext, fallbackErr := Decrypt(previousSecret, ciphertext)
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("decrypt with current key: %w; decrypt with previous key: %v", err, fallbackErr)
+	}
+	return plaintext, nil
+}

@@ -51,6 +51,26 @@ describe('serialize → parse round-trip', () => {
     const doc2 = parse(src2)
     expect(doc2).toEqual(doc1)
   })
+
+  it('round-trips multiline quoted with values', () => {
+    const source = `
+table tickets @ root
+  with
+    columns="[\n      { key: 'ticket_id', label: 'Ticket ID' },\n      { key: 'status', label: 'Status' }\n    ]"
+    data="{{tickets}}"
+;
+`
+
+    const doc1 = parse(source)
+    expect(doc1[0].with).toEqual({
+      columns: "[\n      { key: 'ticket_id', label: 'Ticket ID' },\n      { key: 'status', label: 'Status' }\n    ]",
+      data: '{{tickets}}',
+    })
+
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
 })
 
 describe('validate', () => {

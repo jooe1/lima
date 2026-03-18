@@ -140,7 +140,7 @@ func handleImport(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) jobHa
 			return fmt.Errorf("import job only supports csv connectors, got %q", rec.connectorType)
 		}
 
-		plainCreds, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, rec.encryptedCredentials)
+		plainCreds, err := cryptoutil.DecryptWithRotation(cfg.CredentialsEncryptionKey, cfg.CredentialsEncryptionKeyPrevious, rec.encryptedCredentials)
 		if err != nil {
 			return fmt.Errorf("decrypt credentials: %w", err)
 		}

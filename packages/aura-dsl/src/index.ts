@@ -264,8 +264,9 @@ function tokenise(source: string): string[] {
   const tokens: string[] = []
   // Strip line comments (# ...)
   const stripped = source.replace(/#[^\n]*/g, '')
-  // Match: quoted strings, style-block delimiters, semicolons, or bare words
-  const re = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[{}:;]|\S+/g
+  // Match: key="quoted values", standalone quoted strings, style-block
+  // delimiters, semicolons, or bare words.
+  const re = /[^\s=]+=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[{}:;]|\S+/g
   let m: RegExpExecArray | null
   while ((m = re.exec(stripped)) !== null) {
     tokens.push(m[0])
@@ -274,11 +275,7 @@ function tokenise(source: string): string[] {
 }
 
 function consumeString(_tokens: string[], _at: number, consume: () => string): string {
-  const raw = consume()
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return JSON.parse(raw.startsWith('"') ? raw : `"${raw.slice(1, -1)}"`)
-  }
-  return raw
+  return decodeStringToken(consume())
 }
 
 function parseWithMap(
@@ -292,13 +289,27 @@ function parseWithMap(
     const eq = pair.indexOf('=')
     if (eq === -1) break
     const k = pair.slice(0, eq)
-    let v = pair.slice(eq + 1)
-    if (v.startsWith('"') || v.startsWith("'")) {
-      v = v.slice(1, v.length - 1)
-    }
-    map[k] = v
+    const v = pair.slice(eq + 1)
+    map[k] = decodeStringToken(v)
   }
   return map
+}
+
+function decodeStringToken(raw: string): string {
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    const normalized = `"${raw.slice(1, -1).replace(/\r/g, '\\r').replace(/\n/g, '\\n')}"`
+    return JSON.parse(normalized)
+  }
+  if (raw.startsWith("'") && raw.endsWith("'")) {
+    const normalized = raw
+      .slice(1, -1)
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+    return JSON.parse(`"${normalized}"`)
+  }
+  return raw
 }
 
 function parseStyleBlock(

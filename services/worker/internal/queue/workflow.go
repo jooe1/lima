@@ -325,7 +325,7 @@ func executeQueryStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Poo
 		return nil, fmt.Errorf("fetch connector %s: %w", connectorID, err)
 	}
 
-	plainCreds, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, rec.encryptedCredentials)
+	plainCreds, err := cryptoutil.DecryptWithRotation(cfg.CredentialsEncryptionKey, cfg.CredentialsEncryptionKeyPrevious, rec.encryptedCredentials)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt connector credentials: %w", err)
 	}
@@ -635,7 +635,7 @@ func resolveApprovedStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 	}
 
 	// Decrypt and parse the approval payload to verify run_id + step_id.
-	payloadBytes, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, approval.encryptedPayload)
+	payloadBytes, err := cryptoutil.DecryptWithRotation(cfg.CredentialsEncryptionKey, cfg.CredentialsEncryptionKeyPrevious, approval.encryptedPayload)
 	if err != nil {
 		return fmt.Errorf("decrypt approval payload for approval %s: %w", approvalID, err)
 	}

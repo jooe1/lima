@@ -20,6 +20,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const { workspace } = useAuth()
   const [app, setApp] = useState<App | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [publishError, setPublishError] = useState('')
@@ -31,23 +32,40 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
   const history = useDocumentHistory()
 
+  function hydrateLoadedApp(nextApp: App) {
+    setApp(nextApp)
+    setNodeMetadata(nextApp.node_metadata ?? {})
+
+    if (!nextApp.dsl_source) {
+      setLoadError('')
+      history.reset([])
+      return
+    }
+
+    try {
+      history.reset(parse(nextApp.dsl_source))
+      setLoadError('')
+    } catch (error: unknown) {
+      console.error(`Failed to parse saved DSL for app ${nextApp.id}`, error)
+      setLoadError(error instanceof Error ? `Failed to load saved DSL: ${error.message}` : 'Failed to load saved DSL')
+    }
+  }
+
   // Load app and seed history
   useEffect(() => {
     if (!workspace) return
     let cancelled = false
     setLoading(true)
+    setLoadError('')
     getApp(workspace.id, appId)
       .then(a => {
         if (cancelled) return
-        setApp(a)
-        setNodeMetadata(a.node_metadata ?? {})
-        try {
-          history.reset(a.dsl_source ? parse(a.dsl_source) : [])
-        } catch {
-          history.reset([])
-        }
+        hydrateLoadedApp(a)
       })
-      .catch(() => { if (!cancelled) history.reset([]) })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setLoadError(error instanceof Error ? error.message : 'Failed to load app')
+      })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [workspace, appId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -70,7 +88,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     },
     [workspace, appId],
   )
-  const { saving, savedAt } = useAutosave(history.doc, nodeMetadata, app ? saveFn : undefined)
+  const { saving, savedAt } = useAutosave(history.doc, nodeMetadata, app && loadError === '' ? saveFn : undefined)
 
   // Keyboard shortcuts: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z / Ctrl+Y
   useEffect(() => {
@@ -113,6 +131,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         gridH: String(dh),
       },
     }
+    setLoadError('')
     history.set([...history.doc, newNode])
     setSelectedId(newId)
     markManual([newId])
@@ -120,6 +139,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
   // Delete widget
   const handleDeleteWidget = useCallback((id: string) => {
+    setLoadError('')
     history.set(history.doc.filter(n => n.id !== id))
     if (selectedId === id) setSelectedId(null)
     setNodeMetadata(prev => {
@@ -131,6 +151,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
   // Update node props (from inspector)
   const handleUpdateNode = useCallback((updated: AuraNode) => {
+    setLoadError('')
     history.set(history.doc.map(n => n.id === updated.id ? updated : n))
     markManual([updated.id])
   }, [history, markManual])
@@ -151,13 +172,14 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         changedIds.push(newNode.id)
       }
     }
+    setLoadError('')
     if (changedIds.length > 0) markManual(changedIds)
     history.set(newDoc)
   }, [history, markManual])
 
   // Publish
   const handlePublish = async () => {
-    if (!workspace || publishing) return
+    if (!workspace || publishing || loadError) return
     setPublishing(true)
     setPublishError('')
     try {
@@ -284,6 +306,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         {publishError && (
           <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{publishError}</span>
         )}
+        {loadError && (
+          <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{loadError}</span>
+        )}
 
         {/* Right-panel toggles */}
         <button
@@ -310,7 +335,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
         <button
           onClick={handlePublish}
-          disabled={publishing}
+          disabled={publishing || !!loadError}
           style={{
             padding: '5px 14px',
             borderRadius: 4,
@@ -355,7 +380,12 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               workspaceId={workspace.id}
               appId={appId}
               onDSLUpdate={src => {
-                try { history.set(parse(src)) } catch { /* ignore invalid DSL */ }
+                try {
+                  setLoadError('')
+                  history.set(parse(src))
+                } catch {
+                  /* ignore invalid DSL */
+                }
               }}
             />
           </div>
@@ -375,9 +405,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           onRollback={() => {
             // Reload the app so the DSL and node_metadata are refreshed after rollback
             getApp(workspace.id, appId).then(a => {
-              setApp(a)
-              setNodeMetadata(a.node_metadata ?? {})
-              try { history.reset(a.dsl_source ? parse(a.dsl_source) : []) } catch { history.reset([]) }
+              hydrateLoadedApp(a)
             }).catch(() => {})
           }}
           onClose={() => setShowVersionHistory(false)}

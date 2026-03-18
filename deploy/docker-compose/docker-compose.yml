@@ -70,6 +70,8 @@ services:
       REDIS_URL: redis://redis:6379
       OTEL_ENDPOINT: http://otel-collector:4318
       JWT_SECRET: dev_jwt_secret_change_in_prod
+      CREDENTIALS_ENCRYPTION_KEY: dev_credentials_key_change_in_prod
+      CREDENTIALS_ENCRYPTION_KEY_PREVIOUS: dev_jwt_secret_change_in_prod
       ALLOW_ORIGINS: http://localhost:3000,http://localhost:3001
     ports:
       - "8080:8080"
@@ -91,6 +93,8 @@ services:
       DATABASE_URL: postgres://lima:lima_dev_secret@postgres:5432/lima?sslmode=disable
       REDIS_URL: redis://redis:6379
       OTEL_ENDPOINT: http://otel-collector:4318
+      CREDENTIALS_ENCRYPTION_KEY: dev_credentials_key_change_in_prod
+      CREDENTIALS_ENCRYPTION_KEY_PREVIOUS: dev_jwt_secret_change_in_prod
     depends_on:
       migrate:
         condition: service_completed_successfully
