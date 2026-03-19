@@ -49,7 +49,12 @@ exporters:
 service:
   telemetry:
     metrics:
-      address: ":8888"   # collector self-metrics
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 8888
 
   pipelines:
     traces:

@@ -1,14 +1,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "lima.fullname" . }}-migrate
+  name: {{ include "lima.fullname" . }}-migrate-r{{ .Release.Revision }}
   labels: {{ include "lima.labels" . | nindent 4 }}
-  annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
-    "helm.sh/hook-weight": "-5"
-    "helm.sh/hook-delete-policy": hook-succeeded
 spec:
-  backoffLimit: 3
+  backoffLimit: 5
   template:
     spec:
       restartPolicy: Never
