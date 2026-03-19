@@ -38,7 +38,7 @@ wait_for_health() {
     local status=""
 
     while (( SECONDS - started_at < timeout )); do
-        container_id="$(compose ps -q "$service")"
+        container_id="$(compose ps -a -q "$service")"
         if [[ -n "$container_id" ]]; then
             status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)"
             if [[ "$status" == "healthy" ]]; then
@@ -65,7 +65,7 @@ wait_for_running() {
     local status=""
 
     while (( SECONDS - started_at < timeout )); do
-        container_id="$(compose ps -q "$service")"
+        container_id="$(compose ps -a -q "$service")"
         if [[ -n "$container_id" ]]; then
             status="$(docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
             if [[ "$status" == "running" ]]; then
@@ -93,7 +93,7 @@ wait_for_successful_exit() {
     local exit_code=""
 
     while (( SECONDS - started_at < timeout )); do
-        container_id="$(compose ps -q "$service")"
+        container_id="$(compose ps -a -q "$service")"
         if [[ -n "$container_id" ]]; then
             status="$(docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
             exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)"
@@ -470,7 +470,7 @@ cleanup() {
 
     if [[ "$exit_code" -ne 0 ]]; then
         log "Validation failed. Capturing compose status and recent logs."
-        compose ps || true
+        compose ps -a || true
         compose logs --no-color --tail=200 || true
     fi
 
