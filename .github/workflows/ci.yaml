@@ -74,10 +74,13 @@ jobs:
       matrix:
         include:
           - context: services/api
+            dockerfile: services/api/Dockerfile
             image: lima-api
           - context: services/worker
+            dockerfile: services/worker/Dockerfile
             image: lima-worker
-          - context: apps/web
+          - context: .
+            dockerfile: apps/web/Dockerfile
             image: lima-web
     steps:
       - uses: actions/checkout@v5
@@ -86,6 +89,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -12,7 +12,7 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
 binaryData:
   {{- range $path, $bytes := $files }}
-  {{ base $path }}: {{ $bytes | b64enc | quote }}
+  {{ base $path }}: {{ $bytes | toString | b64enc | quote }}
   {{- end }}
 {{- end }}
 {{- end }}

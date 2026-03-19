@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/worker/internal/config"
@@ -49,12 +50,28 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("parse redis url: %w", err)
 	}
-	d.client = redis.NewClient(opt)
-	defer d.client.Close()
 
-	if err := d.client.Ping(ctx).Err(); err != nil {
-		return fmt.Errorf("redis ping: %w", err)
+	for attempt := 1; attempt <= 5; attempt++ {
+		client := redis.NewClient(opt)
+		if err = client.Ping(ctx).Err(); err == nil {
+			d.client = client
+			break
+		}
+		_ = client.Close()
+		if attempt == 5 {
+			return fmt.Errorf("redis ping: %w", err)
+		}
+		d.log.Warn("redis unavailable, retrying",
+			zap.Int("attempt", attempt),
+			zap.Error(err),
+		)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt) * time.Second):
+		}
 	}
+	defer d.client.Close()
 
 	var wg sync.WaitGroup
 
