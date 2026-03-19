@@ -120,7 +120,7 @@ wait_for_http() {
     local started_at="$SECONDS"
 
     while (( SECONDS - started_at < timeout )); do
-        if curl --fail --silent --show-error --max-time 5 "$url" >/dev/null; then
+        if curl --noproxy '*' --fail --silent --show-error --max-time 5 "$url" >/dev/null; then
             log "$label is ready"
             return 0
         fi
@@ -209,6 +209,8 @@ api_request() {
     : > "$HTTP_HEADERS_FILE"
 
     local -a curl_args=(
+        --noproxy
+        '*'
         --silent
         --show-error
         --max-time 15

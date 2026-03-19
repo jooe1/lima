@@ -33,6 +33,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 
 	// Health check — unauthenticated
 	r.Get("/healthz", handler.Healthz(pool))
+	r.Handle("/metrics", handler.Metrics())
 
 	// Versioned API
 	r.Route("/v1", func(r chi.Router) {

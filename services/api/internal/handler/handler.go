@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/api/internal/store"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // respond writes a JSON body with the given status code.
@@ -53,6 +54,11 @@ func Healthz(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 		respond(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
+}
+
+// Metrics exposes the process Prometheus metrics for local scraping.
+func Metrics() http.Handler {
+	return promhttp.Handler()
 }
 
 // Approvals are implemented in approvals.go.
