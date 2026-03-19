@@ -80,15 +80,22 @@ func serve(cfg *config.Config, log *zap.Logger) error {
 
 	s := store.New(pool)
 
-	// Enqueuer is optional — if Redis is not configured the API still serves
-	// HTTP but generation jobs are not dispatched.
+	// Enqueuer is optional only when Redis is not configured. If REDIS_URL is
+	// set, fail startup after a few retries so queue-backed features do not
+	// silently degrade into stuck pending runs.
 	var enq *queue.Enqueuer
 	if cfg.RedisURL != "" {
-		enq, err = queue.NewEnqueuer(context.Background(), cfg.RedisURL)
-		if err != nil {
-			log.Warn("redis enqueuer unavailable — generation jobs disabled", zap.Error(err))
-		} else {
-			defer enq.Close()
+		for attempt := 1; attempt <= 5; attempt++ {
+			enq, err = queue.NewEnqueuer(context.Background(), cfg.RedisURL)
+			if err == nil {
+				defer enq.Close()
+				break
+			}
+			if attempt == 5 {
+				return fmt.Errorf("redis enqueuer unavailable after retries: %w", err)
+			}
+			log.Warn("redis enqueuer unavailable, retrying", zap.Int("attempt", attempt), zap.Error(err))
+			time.Sleep(time.Duration(attempt) * time.Second)
 		}
 	}
 

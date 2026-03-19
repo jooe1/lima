@@ -42,7 +42,8 @@ jobs:
           cache-dependency-path: services/api/go.sum
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-      - run: "$(go env GOPATH)/bin/golangci-lint" run ./...
+      - run: |
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
       - run: go test ./... -race -timeout 120s
 
   # ---- Go worker service ----------------------------------------------------
@@ -60,7 +61,8 @@ jobs:
           cache-dependency-path: services/worker/go.sum
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-      - run: "$(go env GOPATH)/bin/golangci-lint" run ./...
+      - run: |
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
       - run: go test ./... -race -timeout 120s
 
   # ---- Docker image builds (smoke) ------------------------------------------
