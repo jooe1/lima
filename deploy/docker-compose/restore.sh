@@ -119,14 +119,14 @@ if [[ "$BACKUP_FILE" == *.gz ]]; then
         --username="$PGUSER" --no-password \
         --dbname="$PGDATABASE" \
         --single-transaction \
-        --on-error-stop
+        -v ON_ERROR_STOP=1
 else
     PGPASSWORD="${PGPASSWORD:-}" psql \
         --host="$PGHOST" --port="$PGPORT" \
         --username="$PGUSER" --no-password \
         --dbname="$PGDATABASE" \
         --single-transaction \
-        --on-error-stop \
+        -v ON_ERROR_STOP=1 \
         -f "$BACKUP_FILE"
 fi
 

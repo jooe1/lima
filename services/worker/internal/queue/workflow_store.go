@@ -154,8 +154,7 @@ func setRunStatus(ctx context.Context, pool *pgxpool.Pool, runID string,
 		    output_data  = $3,
 		    error_message= $4,
 		    approval_id  = COALESCE($5, approval_id),
-		    completed_at = $6,
-		    updated_at   = now()
+		    completed_at = $6
 		WHERE id = $1`,
 		runID, status, outBytes, errMsg, approvalID, completedAt,
 	)

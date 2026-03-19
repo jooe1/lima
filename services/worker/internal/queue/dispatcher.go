@@ -33,7 +33,7 @@ const (
 // Dispatcher starts per-type worker pools and routes jobs to them.
 type Dispatcher struct {
 	cfg    *config.Config
-	pool   *pgxpool.Pool // may be nil; generation handler gracefully degrades
+	pool   *pgxpool.Pool // may be nil only when DATABASE_URL is unset at startup
 	log    *zap.Logger
 	client *redis.Client
 }

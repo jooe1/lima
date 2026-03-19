@@ -6,13 +6,19 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/worker/internal/config"
 	"github.com/lima/worker/internal/db"
 	"github.com/lima/worker/internal/observability"
 	"github.com/lima/worker/internal/queue"
 	"go.uber.org/zap"
 )
+
+const dbConnectMaxAttempts = 5
+
+type dbConnectFunc func(db.ConnConfig) (*pgxpool.Pool, error)
 
 func main() {
 	cfg := config.Load()
@@ -37,15 +43,11 @@ func main() {
 		}
 	}()
 
-	// DB is optional: worker starts without it but LLM generation is disabled.
-	pool, dbErr := db.Connect(db.ConnConfig{
-		URL:      cfg.DatabaseURL,
-		MaxConns: cfg.DBMaxConns,
-		MinConns: cfg.DBMinConns,
-	})
-	if dbErr != nil {
-		log.Warn("db connect failed — generation jobs will be skipped", zap.Error(dbErr))
-	} else {
+	pool, err := openDBPool(cfg, log)
+	if err != nil {
+		log.Fatal("db connect failed", zap.Error(err))
+	}
+	if pool != nil {
 		defer pool.Close()
 	}
 
@@ -59,4 +61,42 @@ func main() {
 		log.Error("worker stopped with error", zap.Error(err))
 	}
 	log.Info("worker stopped")
+}
+
+func openDBPool(cfg *config.Config, log *zap.Logger) (*pgxpool.Pool, error) {
+	return openDBPoolWithRetries(cfg, log, db.Connect, time.Sleep)
+}
+
+func openDBPoolWithRetries(cfg *config.Config, log *zap.Logger, connect dbConnectFunc, sleep func(time.Duration)) (*pgxpool.Pool, error) {
+	if cfg.DatabaseURL == "" {
+		log.Warn("DATABASE_URL is empty; starting worker without DB-backed job support")
+		return nil, nil
+	}
+
+	connCfg := db.ConnConfig{
+		URL:      cfg.DatabaseURL,
+		MaxConns: cfg.DBMaxConns,
+		MinConns: cfg.DBMinConns,
+	}
+
+	var err error
+	for attempt := 1; attempt <= dbConnectMaxAttempts; attempt++ {
+		pool, connectErr := connect(connCfg)
+		if connectErr == nil {
+			return pool, nil
+		}
+		err = connectErr
+		if attempt == dbConnectMaxAttempts {
+			return nil, fmt.Errorf("after %d attempts: %w", dbConnectMaxAttempts, err)
+		}
+
+		log.Warn("db unavailable, retrying",
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", dbConnectMaxAttempts),
+			zap.Error(err),
+		)
+		sleep(time.Duration(attempt) * time.Second)
+	}
+
+	return nil, fmt.Errorf("after %d attempts: db connect retries exhausted", dbConnectMaxAttempts)
 }

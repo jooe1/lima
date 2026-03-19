@@ -561,7 +561,7 @@ func (s *Store) UpdateWorkflowRunStatus(ctx context.Context, runID string, statu
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE workflow_runs
-		SET status=$2, completed_at=COALESCE($3, completed_at), updated_at=now()
+		SET status=$2, completed_at=COALESCE($3, completed_at)
 		WHERE id=$1`,
 		runID, status, completedAt,
 	)
@@ -579,7 +579,7 @@ func (s *Store) UpdateWorkflowRunStatus(ctx context.Context, runID string, statu
 // their pending approval.
 func (s *Store) SetWorkflowRunApproval(ctx context.Context, runID, approvalID string) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE workflow_runs SET approval_id=$2, updated_at=now() WHERE id=$1`,
+		`UPDATE workflow_runs SET approval_id=$2 WHERE id=$1`,
 		runID, approvalID,
 	)
 	if err != nil {
