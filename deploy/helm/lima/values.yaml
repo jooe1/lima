@@ -153,7 +153,7 @@ migration:
   enabled: true
   image:
     repository: migrate/migrate
-    tag: "4"
+    tag: "v4.19.1"
 
 # ---- Backup CronJob --------------------------------------------------------
 backup:

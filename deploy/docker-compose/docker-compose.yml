@@ -45,7 +45,7 @@ services:
 
   # ---- golang-migrate (runs once, then exits) --------------------------------
   migrate:
-    image: migrate/migrate:4
+    image: migrate/migrate:v4.19.1
     command: >
       -path /migrations
       -database "postgres://lima:lima_dev_secret@postgres:5432/lima?sslmode=disable"
