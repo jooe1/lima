@@ -3,7 +3,9 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lima/api/internal/config"
@@ -103,18 +105,17 @@ func ApproveAction(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.Ha
 
 		auditApprovalEvent(r.Context(), s, log, claims, workspaceID, "approval.approved", &approval.ID)
 
-		// If a workflow run is blocked on this approval, enqueue a resume job.
-		if enq != nil {
-			if run, err := s.GetWorkflowRunByApproval(r.Context(), approvalID); err == nil {
-				if err := enq.EnqueueWorkflowResume(r.Context(), model.WorkflowResumePayload{
-					RunID:      run.ID,
-					ApprovalID: approvalID,
-					Approved:   true,
-				}); err != nil {
-					log.Warn("workflow resume enqueue failed on approve",
-						zap.String("run_id", run.ID), zap.Error(err))
-				}
+		if err := resumeWorkflowRunAfterApprovalDecision(r.Context(), s, enq, approvalID, true); err != nil {
+			log.Error("approval workflow resume failed",
+				zap.String("approval_id", approvalID),
+				zap.String("approval_status", string(model.ApprovalApproved)),
+				zap.Error(err))
+			if errors.Is(err, errWorkflowQueueUnavailable) {
+				respondErr(w, http.StatusServiceUnavailable, "queue_unavailable", "approval recorded but workflow resume unavailable")
+				return
 			}
+			respondErr(w, http.StatusInternalServerError, "internal_error", "approval recorded but workflow resume failed")
+			return
 		}
 
 		respond(w, http.StatusOK, approval)
@@ -145,22 +146,74 @@ func RejectAction(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.Han
 
 		auditApprovalEvent(r.Context(), s, log, claims, workspaceID, "approval.rejected", &approval.ID)
 
-		// Notify the worker so it can fail the blocked run.
-		if enq != nil {
-			if run, err := s.GetWorkflowRunByApproval(r.Context(), approvalID); err == nil {
-				if err := enq.EnqueueWorkflowResume(r.Context(), model.WorkflowResumePayload{
-					RunID:      run.ID,
-					ApprovalID: approvalID,
-					Approved:   false,
-				}); err != nil {
-					log.Warn("workflow resume enqueue failed on reject",
-						zap.String("run_id", run.ID), zap.Error(err))
-				}
+		if err := resumeWorkflowRunAfterApprovalDecision(r.Context(), s, enq, approvalID, false); err != nil {
+			log.Error("approval workflow resume failed",
+				zap.String("approval_id", approvalID),
+				zap.String("approval_status", string(model.ApprovalRejected)),
+				zap.Error(err))
+			if errors.Is(err, errWorkflowQueueUnavailable) {
+				respondErr(w, http.StatusServiceUnavailable, "queue_unavailable", "approval recorded but workflow resume unavailable")
+				return
 			}
+			respondErr(w, http.StatusInternalServerError, "internal_error", "approval recorded but workflow resume failed")
+			return
 		}
 
 		respond(w, http.StatusOK, approval)
 	}
+}
+
+type approvalWorkflowResumeStore interface {
+	GetWorkflowRunByApproval(ctx context.Context, approvalID string) (*model.WorkflowRun, error)
+	UpdateWorkflowRunStatus(ctx context.Context, runID string, status model.WorkflowRunStatus) error
+}
+
+type workflowResumeEnqueuer interface {
+	EnqueueWorkflowResume(ctx context.Context, p model.WorkflowResumePayload) error
+}
+
+func resumeWorkflowRunAfterApprovalDecision(ctx context.Context, s approvalWorkflowResumeStore, enq workflowResumeEnqueuer, approvalID string, approved bool) error {
+	return resumeWorkflowRunAfterApprovalDecisionWithRetry(ctx, s, enq, approvalID, approved, workflowEnqueueAttempts, workflowEnqueueRetryDelay)
+}
+
+func resumeWorkflowRunAfterApprovalDecisionWithRetry(
+	ctx context.Context,
+	s approvalWorkflowResumeStore,
+	enq workflowResumeEnqueuer,
+	approvalID string,
+	approved bool,
+	attempts int,
+	retryDelay time.Duration,
+) error {
+	run, err := s.GetWorkflowRunByApproval(ctx, approvalID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	err = enqueueWorkflowJob(ctx, attempts, retryDelay, func(ctx context.Context) error {
+		if enq == nil {
+			return errWorkflowQueueUnavailable
+		}
+		return enq.EnqueueWorkflowResume(ctx, model.WorkflowResumePayload{
+			RunID:      run.ID,
+			ApprovalID: approvalID,
+			Approved:   approved,
+		})
+	})
+	if err == nil {
+		return nil
+	}
+
+	queueErr := errors.Join(errWorkflowQueueUnavailable, err)
+	statusErr := s.UpdateWorkflowRunStatus(ctx, run.ID, model.RunStatusFailed)
+	if statusErr == nil || errors.Is(statusErr, store.ErrNotFound) {
+		return queueErr
+	}
+
+	return errors.Join(queueErr, statusErr)
 }
 
 func auditApprovalEvent(ctx context.Context, s *store.Store, log *zap.Logger, claims *Claims, workspaceID, eventType string, resourceID *string) {
