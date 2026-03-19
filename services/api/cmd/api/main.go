@@ -25,7 +25,11 @@ func main() {
 	cfg := config.Load()
 
 	log := newLogger(cfg.Env)
-	defer log.Sync()
+	defer func() {
+		if syncErr := log.Sync(); syncErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "logger sync failed: %v\n", syncErr)
+		}
+	}()
 
 	if err := run(cfg, log, os.Args[1:]); err != nil {
 		log.Fatal("command failed", zap.Error(err))
@@ -58,7 +62,11 @@ func serve(cfg *config.Config, log *zap.Logger) error {
 	if err != nil {
 		return fmt.Errorf("tracer init failed: %w", err)
 	}
-	defer shutdown(context.Background())
+	defer func() {
+		if shutdownErr := shutdown(context.Background()); shutdownErr != nil {
+			log.Error("tracer shutdown failed", zap.Error(shutdownErr))
+		}
+	}()
 
 	pool, err := db.Connect(db.ConnConfig{
 		URL:      cfg.DatabaseURL,

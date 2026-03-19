@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,13 +21,21 @@ func main() {
 	if cfg.Env == "development" {
 		log, _ = zap.NewDevelopment()
 	}
-	defer log.Sync()
+	defer func() {
+		if syncErr := log.Sync(); syncErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "logger sync failed: %v\n", syncErr)
+		}
+	}()
 
 	shutdown, err := observability.InitTracer(cfg.OTELEndpoint, cfg.ServiceName)
 	if err != nil {
 		log.Fatal("tracer init failed", zap.Error(err))
 	}
-	defer shutdown(context.Background())
+	defer func() {
+		if shutdownErr := shutdown(context.Background()); shutdownErr != nil {
+			log.Error("tracer shutdown failed", zap.Error(shutdownErr))
+		}
+	}()
 
 	// DB is optional: worker starts without it but LLM generation is disabled.
 	pool, dbErr := db.Connect(db.ConnConfig{

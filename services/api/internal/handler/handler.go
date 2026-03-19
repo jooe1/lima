@@ -1,5 +1,5 @@
 // Package handler contains HTTP handlers for the Lima API service.
-// Core helpers (respond, decodeJSON, handleStoreErr, stub) live here.
+// Core helpers (respond, decodeJSON, handleStoreErr) live here.
 // Each entity group has its own file: auth.go, tenancy.go, apps.go, rbac.go.
 package handler
 
@@ -40,13 +40,6 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 		return
 	}
 	respondErr(w, http.StatusInternalServerError, "internal_error", err.Error())
-}
-
-// stub returns a placeholder handler for endpoints not yet implemented.
-func stub(name string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		respondErr(w, http.StatusNotImplemented, "not_implemented", name+" is not yet implemented")
-	}
 }
 
 // ---- Health ----------------------------------------------------------------

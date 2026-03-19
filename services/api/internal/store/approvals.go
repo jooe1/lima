@@ -45,12 +45,7 @@ func (s *Store) ListApprovals(ctx context.Context, workspaceID string, status *m
 	var approvals []model.Approval
 	for rows.Next() {
 		var a model.Approval
-		if err := rows.Scan(
-			&a.ID, &a.WorkspaceID, &a.AppID, &a.ConnectorID,
-			&a.Description, &a.Status, &a.RequestedBy,
-			&a.ReviewedBy, &a.ReviewedAt, &a.RejectionReason,
-			&a.CreatedAt, &a.UpdatedAt,
-		); err != nil {
+		if err := scanApproval(rows, &a); err != nil {
 			return nil, fmt.Errorf("list approvals scan: %w", err)
 		}
 		approvals = append(approvals, a)
@@ -93,7 +88,7 @@ func (s *Store) CreateApproval(
 	requestedBy string,
 ) (*model.Approval, error) {
 	a := &model.Approval{}
-	err := s.pool.QueryRow(ctx,
+	err := scanApproval(s.pool.QueryRow(ctx,
 		`INSERT INTO approvals
 		    (workspace_id, app_id, connector_id, description, encrypted_payload, requested_by)
 		 VALUES ($1, $2, $3, $4, $5, $6)
@@ -102,12 +97,7 @@ func (s *Store) CreateApproval(
 		           reviewed_by, reviewed_at, rejection_reason,
 		           created_at, updated_at`,
 		workspaceID, appID, connectorID, description, encryptedPayload, requestedBy,
-	).Scan(
-		&a.ID, &a.WorkspaceID, &a.AppID, &a.ConnectorID,
-		&a.Description, &a.Status, &a.RequestedBy,
-		&a.ReviewedBy, &a.ReviewedAt, &a.RejectionReason,
-		&a.CreatedAt, &a.UpdatedAt,
-	)
+	), a)
 	if err != nil {
 		return nil, fmt.Errorf("create approval: %w", err)
 	}
@@ -124,7 +114,7 @@ func (s *Store) UpdateApprovalStatus(
 	rejectionReason *string,
 ) (*model.Approval, error) {
 	a := &model.Approval{}
-	err := s.pool.QueryRow(ctx,
+	err := scanApproval(s.pool.QueryRow(ctx,
 		`UPDATE approvals
 		 SET status = $3, reviewed_by = $4, reviewed_at = now(),
 		     rejection_reason = $5, updated_at = now()
@@ -134,12 +124,7 @@ func (s *Store) UpdateApprovalStatus(
 		           reviewed_by, reviewed_at, rejection_reason,
 		           created_at, updated_at`,
 		approvalID, workspaceID, status, reviewerID, rejectionReason,
-	).Scan(
-		&a.ID, &a.WorkspaceID, &a.AppID, &a.ConnectorID,
-		&a.Description, &a.Status, &a.RequestedBy,
-		&a.ReviewedBy, &a.ReviewedAt, &a.RejectionReason,
-		&a.CreatedAt, &a.UpdatedAt,
-	)
+	), a)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

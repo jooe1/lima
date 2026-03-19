@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	copilot "github.com/github/copilot-sdk/go"
 	"github.com/jackc/pgx/v5"
@@ -127,7 +129,7 @@ func callOpenAI(ctx context.Context, settings userAISettings, messages []chatMes
 	return parsed.Choices[0].Message.Content, nil
 }
 
-func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt string) (string, error) {
+func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt string) (content string, err error) {
 	if settings.Credentials.GitHubToken == "" {
 		return "", errors.New("github_token is not configured for the selected Copilot provider")
 	}
@@ -140,7 +142,11 @@ func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt stri
 	if err := client.Start(ctx); err != nil {
 		return "", fmt.Errorf("start copilot sdk client: %w", err)
 	}
-	defer client.Stop()
+	defer func() {
+		if stopErr := client.Stop(); stopErr != nil {
+			err = errors.Join(err, fmt.Errorf("stop copilot sdk client: %w", stopErr))
+		}
+	}()
 
 	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
 		Model:               settings.Model,
@@ -154,7 +160,11 @@ func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt stri
 	if err != nil {
 		return "", fmt.Errorf("create copilot session: %w", err)
 	}
-	defer session.Disconnect()
+	defer func() {
+		if disconnectErr := session.Disconnect(); disconnectErr != nil {
+			err = errors.Join(err, fmt.Errorf("disconnect copilot session: %w", disconnectErr))
+		}
+	}()
 
 	response, err := session.SendAndWait(ctx, copilot.MessageOptions{Prompt: prompt})
 	if err != nil {
@@ -182,7 +192,7 @@ func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow) s
 	builder.WriteString(currentDSL)
 	builder.WriteString("\n```\n\nConversation history:\n")
 	for _, message := range history {
-		role := strings.Title(message.role)
+		role := titleCaseFirst(message.role)
 		builder.WriteString(role)
 		builder.WriteString(": ")
 		builder.WriteString(message.content)
@@ -192,6 +202,17 @@ func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow) s
 	builder.WriteString(latestUserPrompt)
 	builder.WriteString("\n\nReturn the complete updated Aura DSL document.")
 	return builder.String()
+}
+
+func titleCaseFirst(value string) string {
+	if value == "" {
+		return ""
+	}
+	firstRune, size := utf8.DecodeRuneInString(value)
+	if size == 0 {
+		return value
+	}
+	return string(unicode.ToTitle(firstRune)) + value[size:]
 }
 
 const systemPrompt = `You are an AI assistant that generates and modifies user interface definitions for an internal tools platform called Lima.

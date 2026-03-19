@@ -16,11 +16,9 @@ jobs:
     name: TS lint + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: pnpm
@@ -37,16 +35,14 @@ jobs:
       run:
         working-directory: services/api
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.23"
+          go-version-file: go.work
           cache-dependency-path: services/api/go.sum
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          working-directory: services/api
-          version: latest
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - run: "$(go env GOPATH)/bin/golangci-lint" run ./...
       - run: go test ./... -race -timeout 120s
 
   # ---- Go worker service ----------------------------------------------------
@@ -57,16 +53,14 @@ jobs:
       run:
         working-directory: services/worker
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.23"
+          go-version-file: go.work
           cache-dependency-path: services/worker/go.sum
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          working-directory: services/worker
-          version: latest
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - run: "$(go env GOPATH)/bin/golangci-lint" run ./...
       - run: go test ./... -race -timeout 120s
 
   # ---- Docker image builds (smoke) ------------------------------------------
@@ -84,10 +78,10 @@ jobs:
           - context: apps/web
             image: lima-web
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
       - name: Build ${{ matrix.image }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           push: false

@@ -13,23 +13,48 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   helm-validation:
     name: Helm lint and template
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: azure/setup-helm@v4
       - name: Build chart dependencies
         run: helm dependency build deploy/helm/lima
       - name: Helm lint
-        run: helm lint deploy/helm/lima -f deploy/helm/lima/ci-values.yaml
+        run: |
+          helm lint deploy/helm/lima \
+            -f deploy/helm/lima/ci-values.yaml \
+            -f deploy/helm/lima/ci-smoke-values.yaml \
+            --set-string images.api.repository=lima/api \
+            --set-string images.api.tag=ci-test \
+            --set-string images.api.pullPolicy=IfNotPresent \
+            --set-string images.worker.repository=lima/worker \
+            --set-string images.worker.tag=ci-test \
+            --set-string images.worker.pullPolicy=IfNotPresent \
+            --set-string images.web.repository=lima/web \
+            --set-string images.web.tag=ci-test \
+            --set-string images.web.pullPolicy=IfNotPresent
       - name: Helm template
         run: |
           helm template lima deploy/helm/lima \
             --namespace lima \
-            -f deploy/helm/lima/ci-values.yaml > /tmp/lima-helm-render.yaml
+            -f deploy/helm/lima/ci-values.yaml \
+            -f deploy/helm/lima/ci-smoke-values.yaml \
+            --set-string images.api.repository=lima/api \
+            --set-string images.api.tag=ci-test \
+            --set-string images.api.pullPolicy=IfNotPresent \
+            --set-string images.worker.repository=lima/worker \
+            --set-string images.worker.tag=ci-test \
+            --set-string images.worker.pullPolicy=IfNotPresent \
+            --set-string images.web.repository=lima/web \
+            --set-string images.web.tag=ci-test \
+            --set-string images.web.pullPolicy=IfNotPresent > /tmp/lima-helm-render.yaml
           test -s /tmp/lima-helm-render.yaml
 
   helm-install-smoke:
@@ -43,27 +68,27 @@ jobs:
       KIND_CLUSTER_NAME: lima-smoke
       IMAGE_TAG: ci-${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: azure/setup-helm@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: helm/kind-action@v1.10.0
+      - uses: docker/setup-buildx-action@v4
+      - uses: helm/kind-action@v1.14.0
         with:
           cluster_name: ${{ env.KIND_CLUSTER_NAME }}
           wait: 120s
       - name: Build API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: services/api
           load: true
           tags: lima/api:${{ env.IMAGE_TAG }}
       - name: Build worker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: services/worker
           load: true
           tags: lima/worker:${{ env.IMAGE_TAG }}
       - name: Build web image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/web/Dockerfile
@@ -122,8 +147,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update

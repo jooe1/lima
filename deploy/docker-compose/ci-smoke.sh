@@ -20,7 +20,7 @@ compose() {
 }
 
 log() {
-    echo "[compose-smoke] $*"
+    echo "[compose-smoke] $*" >&2
 }
 
 require_cmd() {
