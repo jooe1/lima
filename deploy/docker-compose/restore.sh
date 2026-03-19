@@ -2,7 +2,7 @@
 # restore.sh — Restore a Lima PostgreSQL backup produced by backup.sh.
 #
 # Usage:
-#   ./restore.sh <BACKUP_FILE>
+#   ./restore.sh [--yes] <BACKUP_FILE>
 #
 # BACKUP_FILE can be a local path to a .sql.gz file, an s3:// URI, or a plain
 # .sql file.  The script drops all objects in the target database before
@@ -14,15 +14,44 @@
 #   PGUSER      default: lima
 #   PGPASSWORD  (required)
 #   PGDATABASE  default: lima
+#   LIMA_RESTORE_CONFIRM=YES to skip the interactive confirmation prompt
 #
 # For S3 sources set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or use an
 # IAM role, instance profile, etc.) in addition to BACKUP_S3_ENDPOINT if
 # using non-AWS storage.
 set -euo pipefail
 
-BACKUP_FILE="${1:-}"
+AUTO_CONFIRM="${LIMA_RESTORE_CONFIRM:-}"
+BACKUP_FILE=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --yes|--force)
+            AUTO_CONFIRM="YES"
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--yes] <backup-file.sql.gz|s3://bucket/key>"
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            echo "Usage: $0 [--yes] <backup-file.sql.gz|s3://bucket/key>" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -n "$BACKUP_FILE" ]]; then
+                echo "Usage: $0 [--yes] <backup-file.sql.gz|s3://bucket/key>" >&2
+                exit 1
+            fi
+            BACKUP_FILE="$1"
+            shift
+            ;;
+    esac
+done
+
 if [[ -z "$BACKUP_FILE" ]]; then
-    echo "Usage: $0 <backup-file.sql.gz|s3://bucket/key>" >&2
+    echo "Usage: $0 [--yes] <backup-file.sql.gz|s3://bucket/key>" >&2
     exit 1
 fi
 
@@ -54,14 +83,23 @@ fi
 
 echo "[restore] Target: ${PGUSER}@${PGHOST}:${PGPORT}/${PGDATABASE}"
 echo "[restore] WARNING: this will DROP and recreate all objects in ${PGDATABASE}."
-read -r -p "Type YES to continue: " confirm
-if [[ "$confirm" != "YES" ]]; then
-    echo "[restore] Aborted."
-    exit 0
+if [[ "$AUTO_CONFIRM" == "YES" ]]; then
+    echo "[restore] Confirmation skipped."
+else
+    read -r -p "Type YES to continue: " confirm
+    if [[ "$confirm" != "YES" ]]; then
+        echo "[restore] Aborted."
+        exit 0
+    fi
 fi
 
 # ---- Drop and recreate the database ------------------------------------
 echo "[restore] Recreating database ..."
+PGPASSWORD="${PGPASSWORD:-}" psql \
+    --host="$PGHOST" --port="$PGPORT" \
+    --username="$PGUSER" --no-password \
+    -d postgres \
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${PGDATABASE}' AND pid <> pg_backend_pid();"
 PGPASSWORD="${PGPASSWORD:-}" psql \
     --host="$PGHOST" --port="$PGPORT" \
     --username="$PGUSER" --no-password \

@@ -1,0 +1,40 @@
+replicaCount:
+  api: 1
+  worker: 1
+  web: 1
+
+podDisruptionBudget:
+  api:
+    enabled: false
+  worker:
+    enabled: false
+  web:
+    enabled: false
+
+resources:
+  api:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 250m, memory: 256Mi }
+  worker:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 250m, memory: 256Mi }
+  web:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 250m, memory: 256Mi }
+
+postgresql:
+  primary:
+    persistence:
+      enabled: false
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 250m, memory: 256Mi }
+
+redis:
+  architecture: standalone
+  master:
+    persistence:
+      enabled: false
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 250m, memory: 256Mi }

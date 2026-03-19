@@ -35,6 +35,7 @@ type wfRun struct {
 	id          string
 	workflowID  string
 	workspaceID string
+	triggeredBy *string
 	status      workflowRunStatus
 	inputData   map[string]any
 	outputData  map[string]any
@@ -66,10 +67,10 @@ func getWorkflowRun(ctx context.Context, pool *pgxpool.Pool, runID string) (*wfR
 	var r wfRun
 	var inputJSON, outputJSON []byte
 	err := pool.QueryRow(ctx, `
-		SELECT id, workflow_id, workspace_id, status, input_data, output_data
+		SELECT id, workflow_id, workspace_id, status, triggered_by, input_data, output_data
 		FROM workflow_runs WHERE id = $1`,
 		runID,
-	).Scan(&r.id, &r.workflowID, &r.workspaceID, &r.status, &inputJSON, &outputJSON)
+	).Scan(&r.id, &r.workflowID, &r.workspaceID, &r.status, &r.triggeredBy, &inputJSON, &outputJSON)
 	if err != nil {
 		return nil, fmt.Errorf("get workflow run %s: %w", runID, err)
 	}
@@ -165,17 +166,22 @@ func setRunStatus(ctx context.Context, pool *pgxpool.Pool, runID string,
 // Returns the new approval ID.
 func createApprovalForRun(ctx context.Context, pool *pgxpool.Pool,
 	workspaceID, appID, runID, stepName string,
+	requestedBy string,
 	payloadBytes []byte,
 ) (string, error) {
+	if requestedBy == "" {
+		return "", fmt.Errorf("workflow run %s missing triggered_by for approval creation", runID)
+	}
+
 	description := fmt.Sprintf("Workflow approval required: %s (run %s)", stepName, runID[:8])
 
 	var approvalID string
 	err := pool.QueryRow(ctx, `
 		INSERT INTO approvals
 		    (workspace_id, app_id, description, encrypted_payload, requested_by)
-		VALUES ($1, $2, $3, $4, 'system')
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id`,
-		workspaceID, appID, description, payloadBytes,
+		workspaceID, appID, description, payloadBytes, requestedBy,
 	).Scan(&approvalID)
 	if err != nil {
 		return "", fmt.Errorf("insert approval for run %s: %w", runID, err)

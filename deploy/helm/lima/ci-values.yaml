@@ -1,0 +1,20 @@
+ingress:
+  enabled: false
+
+secrets:
+  jwtSecret: ci-jwt-secret
+  databaseURL: postgres://lima:lima-ci-password@lima-postgresql:5432/lima?sslmode=disable
+  redisURL: redis://lima-redis-master:6379
+  credentialsEncryptionKey: 0123456789abcdef0123456789abcdef
+
+api:
+  allowOrigins: https://lima.example.test
+  frontendURL: https://lima.example.test
+
+web:
+  apiBaseURL: http://lima-api:8080
+  nextauthURL: https://lima.example.test
+
+postgresql:
+  auth:
+    password: lima-ci-password

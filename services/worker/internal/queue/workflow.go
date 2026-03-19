@@ -239,6 +239,10 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 
 	stepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	requestedBy := ""
+	if run.triggeredBy != nil {
+		requestedBy = *run.triggeredBy
+	}
 
 	switch step.stepType {
 
@@ -266,7 +270,7 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 			return false, fmt.Errorf("encrypt mutation payload for step %q: %w", step.name, encErr)
 		}
 		approvalID, gateErr := createApprovalForRun(stepCtx, pool,
-			def.workspaceID, def.appID, run.id, step.name, encryptedPayload)
+			def.workspaceID, def.appID, run.id, step.name, requestedBy, encryptedPayload)
 		if gateErr != nil {
 			return false, fmt.Errorf("create approval gate for mutation %q: %w", step.name, gateErr)
 		}
@@ -288,7 +292,7 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 			return false, fmt.Errorf("encrypt approval gate payload for %q: %w", step.name, encGateErr)
 		}
 		approvalID, gateErr := createApprovalForRun(stepCtx, pool,
-			def.workspaceID, def.appID, run.id, step.name, encryptedGatePayload)
+			def.workspaceID, def.appID, run.id, step.name, requestedBy, encryptedGatePayload)
 		if gateErr != nil {
 			return false, fmt.Errorf("create approval gate %q: %w", step.name, gateErr)
 		}
