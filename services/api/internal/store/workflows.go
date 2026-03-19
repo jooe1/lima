@@ -393,6 +393,22 @@ func (s *Store) CreateWorkflowRun(ctx context.Context, workspaceID, workflowID s
 	return &run, nil
 }
 
+// DeleteWorkflowRun removes a run record. Used to clean up trigger attempts
+// that never made it onto the worker queue.
+func (s *Store) DeleteWorkflowRun(ctx context.Context, workspaceID, runID string) error {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM workflow_runs WHERE id=$1 AND workspace_id=$2`,
+		runID, workspaceID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete run: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListWorkflowRuns returns runs for a workflow, newest first.
 func (s *Store) ListWorkflowRuns(ctx context.Context, workspaceID, workflowID string) ([]model.WorkflowRun, error) {
 	// Verify workspaceID ownership

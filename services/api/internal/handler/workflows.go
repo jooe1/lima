@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lima/api/internal/model"
@@ -10,6 +13,13 @@ import (
 	"github.com/lima/api/internal/store"
 	"go.uber.org/zap"
 )
+
+const (
+	workflowEnqueueAttempts   = 3
+	workflowEnqueueRetryDelay = 250 * time.Millisecond
+)
+
+var errWorkflowQueueUnavailable = errors.New("workflow queue unavailable")
 
 // ListWorkflows returns all workflows for an app.
 func ListWorkflows(s *store.Store, log *zap.Logger) http.HandlerFunc {
@@ -237,6 +247,8 @@ func ReviewStep(s *store.Store, log *zap.Logger) http.HandlerFunc {
 // TriggerWorkflow creates a new run record for a workflow. For active workflows
 // this creates a run with status=pending that the worker will pick up. For draft
 // workflows the run is still created so builders can test the flow manually.
+// If the execution job cannot be queued after retries, the run is cleaned up
+// and the request fails.
 func TriggerWorkflow(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		workspaceID := chi.URLParam(r, "workspaceID")
@@ -258,16 +270,24 @@ func TriggerWorkflow(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.
 			return
 		}
 
-		// Enqueue the execution job. Non-fatal if Redis is unavailable; the run
-		// record is persisted and can be retried via a separate sweep.
-		if enq != nil {
-			if err := enq.EnqueueWorkflow(r.Context(), model.WorkflowJobPayload{
-				RunID:       run.ID,
-				WorkflowID:  workflowID,
-				WorkspaceID: workspaceID,
-			}); err != nil {
-				log.Warn("workflow job enqueue failed", zap.String("run_id", run.ID), zap.Error(err))
+		payload := model.WorkflowJobPayload{
+			RunID:       run.ID,
+			WorkflowID:  workflowID,
+			WorkspaceID: workspaceID,
+		}
+		if err := enqueueWorkflowJob(r.Context(), workflowEnqueueAttempts, workflowEnqueueRetryDelay, func(ctx context.Context) error {
+			if enq == nil {
+				return errWorkflowQueueUnavailable
 			}
+			return enq.EnqueueWorkflow(ctx, payload)
+		}); err != nil {
+			log.Warn("workflow job enqueue failed after retries", zap.String("run_id", run.ID), zap.Error(err))
+			if cleanupErr := cleanupTriggeredWorkflowRun(r.Context(), s, workspaceID, run.ID); cleanupErr != nil {
+				log.Error("workflow run cleanup failed after enqueue error",
+					zap.String("run_id", run.ID), zap.Error(cleanupErr))
+			}
+			respondErr(w, http.StatusServiceUnavailable, "queue_unavailable", "workflow trigger unavailable")
+			return
 		}
 
 		respond(w, http.StatusCreated, run)
@@ -300,6 +320,51 @@ type workflowStepInput struct {
 	StepType    model.WorkflowStepType `json:"step_type"`
 	Config      map[string]any         `json:"config"`
 	AIGenerated bool                   `json:"ai_generated"`
+}
+
+type workflowRunCleanupStore interface {
+	DeleteWorkflowRun(ctx context.Context, workspaceID, runID string) error
+	UpdateWorkflowRunStatus(ctx context.Context, runID string, status model.WorkflowRunStatus) error
+}
+
+func enqueueWorkflowJob(ctx context.Context, attempts int, retryDelay time.Duration, enqueue func(context.Context) error) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err = enqueue(ctx); err == nil {
+			return nil
+		}
+		if attempt == attempts || retryDelay <= 0 {
+			continue
+		}
+
+		timer := time.NewTimer(time.Duration(attempt) * retryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return err
+}
+
+func cleanupTriggeredWorkflowRun(ctx context.Context, s workflowRunCleanupStore, workspaceID, runID string) error {
+	err := s.DeleteWorkflowRun(ctx, workspaceID, runID)
+	if err == nil || errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+
+	statusErr := s.UpdateWorkflowRunStatus(ctx, runID, model.RunStatusFailed)
+	if statusErr == nil || errors.Is(statusErr, store.ErrNotFound) {
+		return nil
+	}
+
+	return errors.Join(err, statusErr)
 }
 
 func stepsFromInput(inputs []workflowStepInput) []model.WorkflowStep {
