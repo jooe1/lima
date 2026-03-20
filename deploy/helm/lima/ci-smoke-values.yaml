@@ -23,6 +23,9 @@ resources:
     limits: { cpu: 250m, memory: 256Mi }
 
 postgresql:
+  image:
+    tag: latest
+    digest: sha256:04ba9db5789d501cc6b88b52765f4cb15e6454644cd0e1a4fdeb8ff861309aa9
   primary:
     persistence:
       enabled: false
@@ -31,6 +34,9 @@ postgresql:
       limits: { cpu: 500m, memory: 512Mi }
 
 redis:
+  image:
+    tag: latest
+    digest: sha256:7b14fdbdd974c080ed82dcbcf6f3184cb8024f6f96b0c41a5316e803f63b11da
   architecture: standalone
   master:
     persistence:
