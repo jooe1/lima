@@ -19,6 +19,15 @@ compose() {
     docker compose -f "$COMPOSE_FILE" "$@"
 }
 
+compose_container_id() {
+    local service="$1"
+
+    docker ps -aq \
+        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=${service}" \
+        | head -n 1
+}
+
 log() {
     echo "[compose-smoke] $*" >&2
 }
@@ -38,7 +47,7 @@ wait_for_health() {
     local status=""
 
     while (( SECONDS - started_at < timeout )); do
-        container_id="$(compose ps -a -q "$service")"
+        container_id="$(compose_container_id "$service")"
         if [[ -n "$container_id" ]]; then
             status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)"
             if [[ "$status" == "healthy" ]]; then
@@ -65,7 +74,7 @@ wait_for_running() {
     local status=""
 
     while (( SECONDS - started_at < timeout )); do
-        container_id="$(compose ps -a -q "$service")"
+        container_id="$(compose_container_id "$service")"
         if [[ -n "$container_id" ]]; then
             status="$(docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
             if [[ "$status" == "running" ]]; then
@@ -93,7 +102,7 @@ wait_for_successful_exit() {
     local exit_code=""
 
     while (( SECONDS - started_at < timeout )); do
-        container_id="$(compose ps -a -q "$service")"
+        container_id="$(compose_container_id "$service")"
         if [[ -n "$container_id" ]]; then
             status="$(docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
             exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)"
