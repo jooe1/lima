@@ -27,8 +27,8 @@ postgresql:
     persistence:
       enabled: false
     resources:
-      requests: { cpu: 50m, memory: 128Mi }
-      limits: { cpu: 250m, memory: 256Mi }
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
 
 redis:
   architecture: standalone
@@ -36,5 +36,5 @@ redis:
     persistence:
       enabled: false
     resources:
-      requests: { cpu: 50m, memory: 128Mi }
-      limits: { cpu: 250m, memory: 256Mi }
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }

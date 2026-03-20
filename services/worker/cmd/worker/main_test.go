@@ -93,7 +93,7 @@ func TestOpenDBPoolWithRetriesFailsAfterMaxAttempts(t *testing.T) {
 	if err == nil {
 		t.Fatal("openDBPoolWithRetries() error = nil, want non-nil")
 	}
-	if !strings.Contains(err.Error(), "after 5 attempts") {
+	if !strings.Contains(err.Error(), "after 10 attempts") {
 		t.Fatalf("openDBPoolWithRetries() error = %q, want attempts context", err.Error())
 	}
 	if pool != nil {
@@ -102,7 +102,17 @@ func TestOpenDBPoolWithRetriesFailsAfterMaxAttempts(t *testing.T) {
 	if connectCalls != dbConnectMaxAttempts {
 		t.Fatalf("openDBPoolWithRetries() connect calls = %d, want %d", connectCalls, dbConnectMaxAttempts)
 	}
-	wantSleeps := []time.Duration{time.Second, 2 * time.Second, 3 * time.Second, 4 * time.Second}
+	wantSleeps := []time.Duration{
+		time.Second,
+		2 * time.Second,
+		3 * time.Second,
+		4 * time.Second,
+		5 * time.Second,
+		6 * time.Second,
+		7 * time.Second,
+		8 * time.Second,
+		9 * time.Second,
+	}
 	if len(sleepDurations) != len(wantSleeps) {
 		t.Fatalf("sleep count = %d, want %d", len(sleepDurations), len(wantSleeps))
 	}

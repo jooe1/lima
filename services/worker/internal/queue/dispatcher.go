@@ -24,10 +24,11 @@ import (
 type JobType string
 
 const (
-	JobGeneration JobType = "lima:jobs:generation"
-	JobSchema     JobType = "lima:jobs:schema"
-	JobImport     JobType = "lima:jobs:import"
-	JobWorkflow   JobType = "lima:jobs:workflow"
+	JobGeneration           JobType = "lima:jobs:generation"
+	JobSchema               JobType = "lima:jobs:schema"
+	JobImport               JobType = "lima:jobs:import"
+	JobWorkflow             JobType = "lima:jobs:workflow"
+	redisConnectMaxAttempts         = 10
 )
 
 // Dispatcher starts per-type worker pools and routes jobs to them.
@@ -51,18 +52,19 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		return fmt.Errorf("parse redis url: %w", err)
 	}
 
-	for attempt := 1; attempt <= 5; attempt++ {
+	for attempt := 1; attempt <= redisConnectMaxAttempts; attempt++ {
 		client := redis.NewClient(opt)
 		if err = client.Ping(ctx).Err(); err == nil {
 			d.client = client
 			break
 		}
 		_ = client.Close()
-		if attempt == 5 {
+		if attempt == redisConnectMaxAttempts {
 			return fmt.Errorf("redis ping: %w", err)
 		}
 		d.log.Warn("redis unavailable, retrying",
 			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", redisConnectMaxAttempts),
 			zap.Error(err),
 		)
 		select {

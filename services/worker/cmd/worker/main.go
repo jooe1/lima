@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const dbConnectMaxAttempts = 5
+const dbConnectMaxAttempts = 10
 
 type dbConnectFunc func(db.ConnConfig) (*pgxpool.Pool, error)
 

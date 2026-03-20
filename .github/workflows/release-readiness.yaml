@@ -105,14 +105,35 @@ jobs:
             "lima/web:${IMAGE_TAG}"
       - name: Build chart dependencies
         run: helm dependency build deploy/helm/lima
+      - name: Preload chart images into kind
+        run: |
+          helm template "$HELM_RELEASE" deploy/helm/lima \
+            --namespace "$HELM_NAMESPACE" \
+            -f deploy/helm/lima/ci-values.yaml \
+            -f deploy/helm/lima/ci-smoke-values.yaml \
+            --set-string images.api.repository=lima/api \
+            --set-string images.api.tag="$IMAGE_TAG" \
+            --set-string images.api.pullPolicy=IfNotPresent \
+            --set-string images.worker.repository=lima/worker \
+            --set-string images.worker.tag="$IMAGE_TAG" \
+            --set-string images.worker.pullPolicy=IfNotPresent \
+            --set-string images.web.repository=lima/web \
+            --set-string images.web.tag="$IMAGE_TAG" \
+            --set-string images.web.pullPolicy=IfNotPresent > /tmp/lima-helm-render.yaml
+          mapfile -t images < <(grep -E '^[[:space:]]*image:' /tmp/lima-helm-render.yaml | sed -E 's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?/\1/' | sort -u)
+          printf '%s\n' "${images[@]}"
+          for image in "${images[@]}"; do
+            if ! docker image inspect "$image" >/dev/null 2>&1; then
+              docker pull "$image"
+            fi
+            kind load docker-image --name "$KIND_CLUSTER_NAME" "$image"
+          done
       - name: Helm install smoke
         run: |
           helm install "$HELM_RELEASE" deploy/helm/lima \
             --namespace "$HELM_NAMESPACE" \
             --create-namespace \
-            --wait \
-            --wait-for-jobs \
-            --timeout 10m \
+            --timeout 5m \
             -f deploy/helm/lima/ci-values.yaml \
             -f deploy/helm/lima/ci-smoke-values.yaml \
             --set-string images.api.repository=lima/api \
@@ -124,12 +145,26 @@ jobs:
             --set-string images.web.repository=lima/web \
             --set-string images.web.tag="$IMAGE_TAG" \
             --set-string images.web.pullPolicy=IfNotPresent
-      - name: Verify cluster rollout and API health
+      - name: Wait for cluster rollout and API health
         run: |
+          kubectl rollout status statefulset/lima-postgresql -n "$HELM_NAMESPACE" --timeout=10m
+          kubectl rollout status statefulset/lima-redis-master -n "$HELM_NAMESPACE" --timeout=10m
+          for _ in $(seq 1 60); do
+            MIGRATE_JOB="$(kubectl get jobs -n "$HELM_NAMESPACE" -l app.kubernetes.io/instance="$HELM_RELEASE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep "^${HELM_RELEASE}-migrate-r" | tail -n 1)"
+            if [ -n "$MIGRATE_JOB" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$MIGRATE_JOB" ]; then
+            echo "migration job was not created" >&2
+            exit 1
+          fi
+          kubectl wait -n "$HELM_NAMESPACE" --for=condition=complete "job/$MIGRATE_JOB" --timeout=10m
           kubectl rollout status deployment/lima-api -n "$HELM_NAMESPACE" --timeout=5m
           kubectl rollout status deployment/lima-worker -n "$HELM_NAMESPACE" --timeout=5m
           kubectl rollout status deployment/lima-web -n "$HELM_NAMESPACE" --timeout=5m
-          kubectl get deploy,statefulset,pods,svc -n "$HELM_NAMESPACE"
+          kubectl get deploy,statefulset,job,pods,svc -n "$HELM_NAMESPACE"
           kubectl port-forward -n "$HELM_NAMESPACE" svc/lima-api 18080:8080 >/tmp/lima-api-port-forward.log 2>&1 &
           PF_PID=$!
           trap 'kill "$PF_PID" >/dev/null 2>&1 || true' EXIT
