@@ -56,6 +56,13 @@ func Healthz(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+// Livez reports whether the API process is up enough to serve requests.
+func Livez() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		respond(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
 // Metrics exposes the process Prometheus metrics for local scraping.
 func Metrics() http.Handler {
 	return promhttp.Handler()

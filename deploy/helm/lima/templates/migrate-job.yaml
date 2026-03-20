@@ -8,6 +8,30 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      {{- if .Values.migration.wait.enabled }}
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.migration.wait.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              deadline=$(( $(date +%s) + {{ .Values.migration.wait.timeoutSeconds }} ))
+              until pg_isready -d "$DATABASE_URL"; do
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "postgres did not become ready in time" >&2
+                  exit 1
+                fi
+                sleep 2
+              done
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lima.secretName" . }}
+                  key: databaseURL
+      {{- end }}
       containers:
         - name: migrate
           image: "{{ .Values.migration.image.repository }}:{{ .Values.migration.image.tag }}"

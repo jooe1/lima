@@ -1,12 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/api/internal/config"
+	"github.com/lima/api/internal/db"
 	"go.uber.org/zap"
 )
 
@@ -88,6 +92,67 @@ func TestRunMaintenanceSkipsDBForUnexpectedArguments(t *testing.T) {
 				t.Fatalf("runMaintenance() error = %q, unexpectedly attempted DB connect", err.Error())
 			}
 		})
+	}
+}
+
+func TestOpenDBPoolWithRetriesRetriesUntilSuccess(t *testing.T) {
+	var attempts int
+	var sleeps []time.Duration
+
+	pool, err := openDBPoolWithRetries(
+		&config.Config{DatabaseURL: "postgres://example.test/lima"},
+		zap.NewNop(),
+		func(dbConfig db.ConnConfig) (*pgxpool.Pool, error) {
+			attempts++
+			if dbConfig.URL != "postgres://example.test/lima" {
+				t.Fatalf("dbConfig.URL = %q, want original DATABASE_URL", dbConfig.URL)
+			}
+			if attempts < 3 {
+				return nil, fmt.Errorf("db unavailable")
+			}
+			return nil, nil
+		},
+		func(delay time.Duration) {
+			sleeps = append(sleeps, delay)
+		},
+	)
+	if err != nil {
+		t.Fatalf("openDBPoolWithRetries() error = %v, want nil", err)
+	}
+	if pool != nil {
+		t.Fatal("openDBPoolWithRetries() pool != nil, want nil stub pool")
+	}
+	if attempts != 3 {
+		t.Fatalf("openDBPoolWithRetries() attempts = %d, want 3", attempts)
+	}
+	if len(sleeps) != 2 {
+		t.Fatalf("openDBPoolWithRetries() sleep calls = %d, want 2", len(sleeps))
+	}
+	if sleeps[0] != time.Second || sleeps[1] != 2*time.Second {
+		t.Fatalf("openDBPoolWithRetries() sleeps = %v, want [1s 2s]", sleeps)
+	}
+}
+
+func TestOpenDBPoolWithRetriesReturnsLastError(t *testing.T) {
+	var attempts int
+
+	_, err := openDBPoolWithRetries(
+		&config.Config{DatabaseURL: "postgres://example.test/lima"},
+		zap.NewNop(),
+		func(db.ConnConfig) (*pgxpool.Pool, error) {
+			attempts++
+			return nil, fmt.Errorf("still unavailable")
+		},
+		func(time.Duration) {},
+	)
+	if err == nil {
+		t.Fatal("openDBPoolWithRetries() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "after 10 attempts") {
+		t.Fatalf("openDBPoolWithRetries() error = %q, want retry exhaustion details", err.Error())
+	}
+	if attempts != 10 {
+		t.Fatalf("openDBPoolWithRetries() attempts = %d, want 10", attempts)
 	}
 }
 

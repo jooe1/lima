@@ -142,7 +142,16 @@ jobs:
           kubectl get all -A || true
           kubectl get events -n "$HELM_NAMESPACE" --sort-by=.metadata.creationTimestamp || true
           kubectl describe pods -n "$HELM_NAMESPACE" || true
-          kubectl logs -n "$HELM_NAMESPACE" job/lima-migrate || true
+          MIGRATE_JOB="$(kubectl get jobs -n "$HELM_NAMESPACE" -l app.kubernetes.io/instance="$HELM_RELEASE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep "^${HELM_RELEASE}-migrate-r" | tail -n 1)"
+          if [ -n "$MIGRATE_JOB" ]; then
+            kubectl logs -n "$HELM_NAMESPACE" "job/$MIGRATE_JOB" || true
+          fi
+          kubectl get pods -n "$HELM_NAMESPACE" -l app.kubernetes.io/name=postgresql || true
+          kubectl describe pods -n "$HELM_NAMESPACE" -l app.kubernetes.io/name=postgresql || true
+          kubectl logs -n "$HELM_NAMESPACE" -l app.kubernetes.io/name=postgresql --all-containers=true --tail=200 || true
+          kubectl get pods -n "$HELM_NAMESPACE" -l app.kubernetes.io/name=redis || true
+          kubectl describe pods -n "$HELM_NAMESPACE" -l app.kubernetes.io/name=redis || true
+          kubectl logs -n "$HELM_NAMESPACE" -l app.kubernetes.io/name=redis --all-containers=true --tail=200 || true
           kubectl logs -n "$HELM_NAMESPACE" deployment/lima-api --all-containers=true || true
           kubectl logs -n "$HELM_NAMESPACE" deployment/lima-worker --all-containers=true || true
           kubectl logs -n "$HELM_NAMESPACE" deployment/lima-web --all-containers=true || true

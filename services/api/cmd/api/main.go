@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/api/internal/config"
 	"github.com/lima/api/internal/db"
 	"github.com/lima/api/internal/maintenance"
@@ -20,6 +21,13 @@ import (
 	"github.com/lima/api/internal/store"
 	"go.uber.org/zap"
 )
+
+const (
+	dbConnectMaxAttempts     = 10
+	redisEnqueuerMaxAttempts = 10
+)
+
+type dbConnectFunc func(db.ConnConfig) (*pgxpool.Pool, error)
 
 func main() {
 	cfg := config.Load()
@@ -68,11 +76,7 @@ func serve(cfg *config.Config, log *zap.Logger) error {
 		}
 	}()
 
-	pool, err := db.Connect(db.ConnConfig{
-		URL:      cfg.DatabaseURL,
-		MaxConns: cfg.DBMaxConns,
-		MinConns: cfg.DBMinConns,
-	})
+	pool, err := openDBPool(cfg, log)
 	if err != nil {
 		return fmt.Errorf("db connect failed: %w", err)
 	}
@@ -85,13 +89,13 @@ func serve(cfg *config.Config, log *zap.Logger) error {
 	// silently degrade into stuck pending runs.
 	var enq *queue.Enqueuer
 	if cfg.RedisURL != "" {
-		for attempt := 1; attempt <= 5; attempt++ {
+		for attempt := 1; attempt <= redisEnqueuerMaxAttempts; attempt++ {
 			enq, err = queue.NewEnqueuer(context.Background(), cfg.RedisURL)
 			if err == nil {
 				defer enq.Close()
 				break
 			}
-			if attempt == 5 {
+			if attempt == redisEnqueuerMaxAttempts {
 				return fmt.Errorf("redis enqueuer unavailable after retries: %w", err)
 			}
 			log.Warn("redis enqueuer unavailable, retrying", zap.Int("attempt", attempt), zap.Error(err))
@@ -128,6 +132,43 @@ func serve(cfg *config.Config, log *zap.Logger) error {
 	}
 	log.Info("server stopped")
 	return nil
+}
+
+func openDBPool(cfg *config.Config, log *zap.Logger) (*pgxpool.Pool, error) {
+	return openDBPoolWithRetries(cfg, log, db.Connect, time.Sleep)
+}
+
+func openDBPoolWithRetries(cfg *config.Config, log *zap.Logger, connect dbConnectFunc, sleep func(time.Duration)) (*pgxpool.Pool, error) {
+	if cfg.DatabaseURL == "" {
+		return nil, fmt.Errorf("DATABASE_URL is required")
+	}
+
+	connCfg := db.ConnConfig{
+		URL:      cfg.DatabaseURL,
+		MaxConns: cfg.DBMaxConns,
+		MinConns: cfg.DBMinConns,
+	}
+
+	var err error
+	for attempt := 1; attempt <= dbConnectMaxAttempts; attempt++ {
+		pool, connectErr := connect(connCfg)
+		if connectErr == nil {
+			return pool, nil
+		}
+		err = connectErr
+		if attempt == dbConnectMaxAttempts {
+			return nil, fmt.Errorf("after %d attempts: %w", dbConnectMaxAttempts, err)
+		}
+
+		log.Warn("db unavailable, retrying",
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", dbConnectMaxAttempts),
+			zap.Error(err),
+		)
+		sleep(time.Duration(attempt) * time.Second)
+	}
+
+	return nil, fmt.Errorf("after %d attempts: db connect retries exhausted", dbConnectMaxAttempts)
 }
 
 func runMaintenance(cfg *config.Config, log *zap.Logger, args []string) error {

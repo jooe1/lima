@@ -42,6 +42,7 @@ func Connect(c ConnConfig) (*pgxpool.Pool, error) {
 	}
 
 	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("db ping: %w", err)
 	}
 

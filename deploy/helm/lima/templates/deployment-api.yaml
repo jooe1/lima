@@ -99,7 +99,7 @@ spec:
               value: {{ .Values.db.minConns | default 2 | quote }}
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: http
             initialDelaySeconds: 5
             periodSeconds: 15

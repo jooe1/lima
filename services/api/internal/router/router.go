@@ -32,6 +32,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 	}))
 
 	// Health check — unauthenticated
+	r.Get("/livez", handler.Livez())
 	r.Get("/healthz", handler.Healthz(pool))
 	r.Handle("/metrics", handler.Metrics())
 

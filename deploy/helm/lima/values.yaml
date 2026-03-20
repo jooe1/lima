@@ -154,6 +154,10 @@ migration:
   image:
     repository: migrate/migrate
     tag: "v4.19.1"
+  wait:
+    enabled: true
+    image: postgres:16-alpine
+    timeoutSeconds: 300
 
 # ---- Backup CronJob --------------------------------------------------------
 backup:
