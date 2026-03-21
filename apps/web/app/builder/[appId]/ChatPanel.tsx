@@ -22,6 +22,8 @@ interface Props {
 
 export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
   const [thread, setThread] = useState<ConversationThread | null>(null)
+  const [threads, setThreads] = useState<ConversationThread[]>([])
+  const [threadListOpen, setThreadListOpen] = useState(false)
   const [messages, setMessages] = useState<ThreadMessage[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -100,11 +102,12 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
     let cancelled = false
     async function init() {
       try {
-        const { threads } = await listThreads(workspaceId, appId)
+        const { threads: fetched } = await listThreads(workspaceId, appId)
         if (cancelled) return
-        if (threads.length > 0) {
-          setThread(threads[0])
-          const { messages: msgs } = await listMessages(workspaceId, appId, threads[0].id)
+        setThreads(fetched)
+        if (fetched.length > 0) {
+          setThread(fetched[0])
+          const { messages: msgs } = await listMessages(workspaceId, appId, fetched[0].id)
           if (!cancelled) {
             setMessages(msgs)
             if (msgs.length > 0) {
@@ -157,6 +160,32 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
     }
   }
 
+  const switchThread = useCallback(async (t: ConversationThread) => {
+    stopPolling()
+    setThread(t)
+    setMessages([])
+    setGenerating(false)
+    setError('')
+    lastMsgIdRef.current = null
+    try {
+      const { messages: msgs } = await listMessages(workspaceId, appId, t.id)
+      setMessages(msgs)
+      if (msgs.length > 0) lastMsgIdRef.current = msgs[msgs.length - 1].id
+    } catch {
+      // ignore
+    }
+  }, [workspaceId, appId])
+
+  const handleNewThread = useCallback(async () => {
+    try {
+      const t = await createThread(workspaceId, appId)
+      setThreads(prev => [t, ...prev])
+      await switchThread(t)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to create thread')
+    }
+  }, [workspaceId, appId, switchThread])
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -176,7 +205,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
       {/* Header */}
       <div style={{
         padding: '10px 14px',
-        borderBottom: '1px solid #1a1a1a',
+        borderBottom: threadListOpen ? 'none' : '1px solid #1a1a1a',
         fontSize: '0.75rem',
         fontWeight: 600,
         color: '#888',
@@ -191,7 +220,73 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
             generating…
           </span>
         )}
+        <button
+          onClick={() => setThreadListOpen(o => !o)}
+          style={{
+            marginLeft: 'auto',
+            background: 'none',
+            border: '1px solid #1a1a1a',
+            borderRadius: 4,
+            color: '#555',
+            fontSize: '0.6rem',
+            padding: '2px 6px',
+            cursor: 'pointer',
+          }}
+        >
+          {threads.length} thread{threads.length !== 1 ? 's' : ''}
+        </button>
       </div>
+
+      {/* Thread list strip */}
+      {threadListOpen && (
+        <div style={{
+          padding: '6px 14px',
+          borderBottom: '1px solid #1a1a1a',
+          flexShrink: 0,
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 4,
+          alignItems: 'center',
+        }}>
+          <button
+            onClick={handleNewThread}
+            style={{
+              background: '#1d4ed8',
+              border: 'none',
+              borderRadius: 4,
+              color: '#fff',
+              fontSize: '0.6rem',
+              fontWeight: 600,
+              padding: '3px 8px',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            + New
+          </button>
+          {threads.map(t => (
+            <button
+              key={t.id}
+              onClick={() => switchThread(t)}
+              style={{
+                background: t.id === thread?.id ? '#1a1a1a' : 'none',
+                border: t.id === thread?.id ? '1px solid #333' : '1px solid #1a1a1a',
+                borderRadius: 4,
+                color: t.id === thread?.id ? '#e5e5e5' : '#555',
+                fontSize: '0.6rem',
+                padding: '3px 6px',
+                cursor: 'pointer',
+                maxWidth: 80,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {new Date(t.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Message list */}
       <div style={{

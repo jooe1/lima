@@ -1,15 +1,17 @@
 'use client'
 
-import React from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { type AuraNode, type AuraDocument } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType, type PropDef } from '@lima/widget-catalog'
 import { getGrid, CELL, COLS } from './CanvasEditor'
+import { listConnectors, runConnectorQuery, type Connector, type DashboardQueryResponse } from '../../../lib/api'
 
 interface Props {
   node: AuraNode | null
   doc: AuraDocument
   onUpdate: (node: AuraNode) => void
   onDelete: (id: string) => void
+  workspaceId: string
 }
 
 /**
@@ -55,7 +57,7 @@ function setPropValue(node: AuraNode, propName: string, value: string): AuraNode
   return updated
 }
 
-export function Inspector({ node, doc: _doc, onUpdate, onDelete }: Props) {
+export function Inspector({ node, doc: _doc, onUpdate, onDelete, workspaceId }: Props) {
   if (!node) {
     return (
       <aside style={panelStyle}>
@@ -90,6 +92,21 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete }: Props) {
   const handlePropChange = (propName: string, value: string) => {
     onUpdate(setPropValue(n, propName, value))
   }
+
+  const handleWithChange = (key: string, value: string) => {
+    const updated: AuraNode = {
+      ...n,
+      manuallyEdited: true,
+      with: { ...(n.with ?? {}), [key]: value },
+    }
+    if (!value) {
+      const { [key]: _removed, ...rest } = updated.with!
+      updated.with = Object.keys(rest).length > 0 ? rest : undefined
+    }
+    onUpdate(updated)
+  }
+
+  const isDataWidget = n.element === 'table' || n.element === 'chart'
 
   return (
     <aside style={panelStyle}>
@@ -149,7 +166,11 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete }: Props) {
       )}
 
       {/* Data binding (with clause) */}
-      {n.with && Object.keys(n.with).length > 0 && (
+      {isDataWidget ? (
+        <Section title="Data binding">
+          <DataBindingEditor node={n} workspaceId={workspaceId} onWithChange={handleWithChange} />
+        </Section>
+      ) : n.with && Object.keys(n.with).length > 0 ? (
         <Section title="Data binding">
           <div style={{ fontSize: '0.65rem', color: '#444', fontFamily: 'monospace', background: '#0d0d0d', borderRadius: 4, padding: 8 }}>
             {Object.entries(n.with).map(([k, v]) => (
@@ -157,7 +178,7 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete }: Props) {
             ))}
           </div>
         </Section>
-      )}
+      ) : null}
 
       {/* Danger zone */}
       <div style={{ padding: '0.75rem 1rem', marginTop: 'auto' }}>
@@ -179,6 +200,214 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete }: Props) {
 }
 
 /* ---- Sub-components --------------------------------------------------- */
+
+function DataBindingEditor({ node, workspaceId, onWithChange }: {
+  node: AuraNode
+  workspaceId: string
+  onWithChange: (key: string, value: string) => void
+}) {
+  const [connectors, setConnectors] = useState<Connector[]>([])
+  const [preview, setPreview] = useState<DashboardQueryResponse | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+
+  useEffect(() => {
+    if (!workspaceId) return
+    let cancelled = false
+    listConnectors(workspaceId)
+      .then(res => { if (!cancelled) setConnectors(res.connectors ?? []) })
+      .catch(() => { /* ignore */ })
+    return () => { cancelled = true }
+  }, [workspaceId])
+
+  const handlePreview = useCallback(async () => {
+    const connectorId = node.with?.connector
+    const sql = node.with?.sql
+    if (!connectorId || !sql || !workspaceId) return
+    setPreviewLoading(true)
+    setPreviewError('')
+    setPreview(null)
+    try {
+      const res = await runConnectorQuery(workspaceId, connectorId, { sql, limit: 10 })
+      if (res.error) {
+        setPreviewError(res.error)
+      } else {
+        setPreview(res)
+      }
+    } catch (e: unknown) {
+      setPreviewError(e instanceof Error ? e.message : 'Query failed')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }, [workspaceId, node.with?.connector, node.with?.sql])
+
+  const connectorId = node.with?.connector ?? ''
+  const sql = node.with?.sql ?? ''
+  const isChart = node.element === 'chart'
+  const previewColumns = preview?.columns ?? []
+
+  return (
+    <>
+      {/* Connector picker */}
+      <div>
+        <label style={labelStyle}>Connector</label>
+        <select
+          value={connectorId}
+          onChange={e => onWithChange('connector', e.target.value)}
+          style={{ ...inputStyle, appearance: 'auto' }}
+        >
+          <option value="">— select connector —</option>
+          {connectors.map(c => (
+            <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
+          ))}
+        </select>
+      </div>
+
+      {/* SQL input */}
+      <div>
+        <label style={labelStyle}>SQL query</label>
+        <textarea
+          value={sql}
+          onChange={e => onWithChange('sql', e.target.value)}
+          rows={4}
+          style={{
+            ...inputStyle,
+            fontFamily: 'monospace',
+            fontSize: '0.65rem',
+            resize: 'vertical',
+            minHeight: 60,
+          }}
+        />
+      </div>
+
+      {/* Table-specific: columns */}
+      {node.element === 'table' && (
+        <div>
+          <label style={labelStyle}>Columns (comma-separated)</label>
+          <input
+            type="text"
+            value={node.with?.columns ?? node.style?.columns ?? ''}
+            onChange={e => onWithChange('columns', e.target.value)}
+            placeholder="col1, col2, col3"
+            style={inputStyle}
+          />
+        </div>
+      )}
+
+      {/* Chart-specific: labelCol, valueCol */}
+      {isChart && (
+        <>
+          <div>
+            <label style={labelStyle}>Label column</label>
+            {previewColumns.length > 0 ? (
+              <select
+                value={node.with?.labelCol ?? node.style?.labelCol ?? ''}
+                onChange={e => onWithChange('labelCol', e.target.value)}
+                style={{ ...inputStyle, appearance: 'auto' }}
+              >
+                <option value="">— select column —</option>
+                {previewColumns.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={node.with?.labelCol ?? node.style?.labelCol ?? ''}
+                onChange={e => onWithChange('labelCol', e.target.value)}
+                placeholder="e.g. name"
+                style={inputStyle}
+              />
+            )}
+          </div>
+          <div>
+            <label style={labelStyle}>Value column</label>
+            {previewColumns.length > 0 ? (
+              <select
+                value={node.with?.valueCol ?? node.style?.valueCol ?? ''}
+                onChange={e => onWithChange('valueCol', e.target.value)}
+                style={{ ...inputStyle, appearance: 'auto' }}
+              >
+                <option value="">— select column —</option>
+                {previewColumns.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={node.with?.valueCol ?? node.style?.valueCol ?? ''}
+                onChange={e => onWithChange('valueCol', e.target.value)}
+                placeholder="e.g. count"
+                style={inputStyle}
+              />
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Preview button + results */}
+      <div>
+        <button
+          onClick={handlePreview}
+          disabled={!connectorId || !sql || previewLoading}
+          style={{
+            width: '100%',
+            padding: '5px 10px',
+            borderRadius: 4,
+            fontSize: '0.7rem',
+            fontWeight: 600,
+            background: (!connectorId || !sql) ? '#111' : '#1e3a8a',
+            border: '1px solid #222',
+            color: (!connectorId || !sql) ? '#444' : '#93c5fd',
+            cursor: (!connectorId || !sql || previewLoading) ? 'default' : 'pointer',
+          }}
+        >
+          {previewLoading ? 'Running…' : 'Preview (10 rows)'}
+        </button>
+      </div>
+
+      {previewError && (
+        <div style={{ fontSize: '0.65rem', color: '#f87171', background: '#1a0a0a', borderRadius: 4, padding: 8 }}>
+          {previewError}
+        </div>
+      )}
+
+      {preview && preview.rows.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.6rem' }}>
+            <thead>
+              <tr>
+                {preview.columns.map(col => (
+                  <th key={col} style={{
+                    textAlign: 'left', padding: '3px 6px', color: '#888',
+                    borderBottom: '1px solid #222', fontWeight: 600, whiteSpace: 'nowrap',
+                  }}>
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {preview.rows.map((row, i) => (
+                <tr key={i}>
+                  {preview.columns.map(col => (
+                    <td key={col} style={{
+                      padding: '2px 6px', color: '#bbb',
+                      borderBottom: '1px solid #151515', whiteSpace: 'nowrap',
+                      maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis',
+                    }}>
+                      {row[col] == null ? '' : String(row[col])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: '0.6rem', color: '#444', marginTop: 4 }}>
+            {preview.row_count} row{preview.row_count !== 1 ? 's' : ''} returned
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (

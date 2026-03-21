@@ -313,6 +313,7 @@ export function WorkflowEditor({ appId }: Props) {
           onDelete={() => handleDelete(selected.id)}
           onReviewStep={handleReviewStep}
           onSaveSteps={handleSaveSteps}
+          onPatchWorkflow={handlePatchWorkflow}
         />
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted }}>
@@ -338,6 +339,7 @@ interface DetailProps {
   onDelete: () => void
   onReviewStep: (stepId: string) => void
   onSaveSteps: (steps: WorkflowStepInput[]) => Promise<void>
+  onPatchWorkflow: (patch: Parameters<typeof patchWorkflow>[3]) => Promise<void>
 }
 
 const STEP_TYPES: WorkflowStepType[] = ['query', 'mutation', 'condition', 'approval_gate', 'notification']
@@ -354,13 +356,21 @@ interface DraftStep {
   ai_generated: boolean
 }
 
-function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, onArchive, onTrigger, onDelete, onReviewStep, onSaveSteps }: DetailProps) {
+function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, onArchive, onTrigger, onDelete, onReviewStep, onSaveSteps, onPatchWorkflow }: DetailProps) {
   const unreviewedCount = wf.steps.filter(s => s.ai_generated && !s.reviewed_by).length
 
   const [editingSteps, setEditingSteps] = useState(false)
   const [draftSteps, setDraftSteps]     = useState<DraftStep[]>([])
   const [savingSteps, setSavingSteps]   = useState(false)
   const [stepsErr, setStepsErr]         = useState('')
+
+  // Metadata local state (save on blur)
+  const [metaName, setMetaName]         = useState(wf.name)
+  const [metaDesc, setMetaDesc]         = useState(wf.description ?? '')
+
+  // Sync local state when the workflow prop changes (e.g. after patch)
+  useEffect(() => { setMetaName(wf.name) }, [wf.name])
+  useEffect(() => { setMetaDesc(wf.description ?? '') }, [wf.description])
 
   const startEditing = () => {
     setDraftSteps(wf.steps.map(s => ({
@@ -463,6 +473,53 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
       )}
 
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0 }}>
+
+        {/* Metadata */}
+        {isBuilder && (
+          <Section title="Metadata">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ color: C.muted, fontSize: '0.65rem' }}>Name</span>
+                <input
+                  value={metaName}
+                  onChange={e => setMetaName(e.target.value)}
+                  onBlur={() => { if (metaName.trim() && metaName !== wf.name) onPatchWorkflow({ name: metaName.trim() }) }}
+                  style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, fontSize: '0.72rem', padding: '3px 7px' }}
+                />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ color: C.muted, fontSize: '0.65rem' }}>Description</span>
+                <textarea
+                  value={metaDesc}
+                  onChange={e => setMetaDesc(e.target.value)}
+                  onBlur={() => { if (metaDesc !== (wf.description ?? '')) onPatchWorkflow({ description: metaDesc }) }}
+                  rows={2}
+                  style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, fontSize: '0.72rem', padding: '3px 7px', resize: 'vertical', fontFamily: 'inherit' }}
+                />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ color: C.muted, fontSize: '0.65rem' }}>Trigger Type</span>
+                <select
+                  value={wf.trigger_type}
+                  onChange={e => onPatchWorkflow({ trigger_type: e.target.value as WorkflowTrigger })}
+                  style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, fontSize: '0.72rem', padding: '3px 7px' }}
+                >
+                  {(Object.keys(TRIGGER_LABELS) as WorkflowTrigger[]).map(t => (
+                    <option key={t} value={t}>{TRIGGER_LABELS[t]}</option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={wf.requires_approval}
+                  onChange={e => onPatchWorkflow({ requires_approval: e.target.checked })}
+                />
+                <span style={{ fontSize: '0.72rem' }}>Requires approval</span>
+              </label>
+            </div>
+          </Section>
+        )}
 
         {/* Steps */}
         <Section

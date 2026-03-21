@@ -72,9 +72,19 @@ export default function BuilderSidebar() {
       <nav style={{ flex: 1, padding: '0.5rem 0' }}>
         <NavItem href="/builder" active={pathname === '/builder'} label="Apps" />
         <NavItem
+          href="/builder/connectors"
+          active={pathname === '/builder/connectors'}
+          label="Connectors"
+        />
+        <NavItem
           href="/builder/approvals"
           active={pathname === '/builder/approvals'}
           label="Approvals"
+        />
+        <NavItem
+          href="/builder/admin"
+          active={pathname.startsWith('/builder/admin')}
+          label="Admin"
         />
         <NavItem
           href="/builder/settings"

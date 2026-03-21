@@ -133,8 +133,11 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 							r.Get("/", handler.ListPublications(s, log))
 							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 								Post("/", handler.CreatePublication(s, log))
-							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
-								Delete("/{publicationID}", handler.ArchivePublication(s, log))
+							r.Route("/{publicationID}", func(r chi.Router) {
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+									Delete("/", handler.ArchivePublication(s, log))
+								r.Get("/audiences", handler.GetPublicationAudiences(s, log))
+							})
 						})
 
 						// Conversation threads (Phase 3)

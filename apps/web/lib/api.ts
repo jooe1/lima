@@ -544,6 +544,83 @@ export function runConnectorQuery(
   )
 }
 
+// ---- Connectors (Phase 4) --------------------------------------------------
+
+export type ConnectorType = 'postgres' | 'mysql' | 'mssql' | 'rest' | 'graphql' | 'csv'
+
+export interface Connector {
+  id: string
+  workspace_id: string
+  name: string
+  type: ConnectorType
+  schema_cache?: Record<string, unknown>
+  schema_cached_at?: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  company_id?: string
+  owner_scope: string
+}
+
+export interface TestConnectorResponse {
+  ok: boolean
+  error?: string
+}
+
+export interface ConnectorSchemaResponse {
+  schema: Record<string, unknown> | null
+  schema_cached_at?: string
+  refreshing?: boolean
+}
+
+export function listConnectors(workspaceId: string) {
+  return request<{ connectors: Connector[] }>(`/v1/workspaces/${workspaceId}/connectors`)
+}
+
+export function createConnector(
+  workspaceId: string,
+  data: { name: string; type: ConnectorType; credentials: Record<string, unknown> },
+) {
+  return request<Connector>(`/v1/workspaces/${workspaceId}/connectors`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export function getConnector(workspaceId: string, connectorId: string) {
+  return request<Connector>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}`)
+}
+
+export function patchConnector(
+  workspaceId: string,
+  connectorId: string,
+  data: { name?: string; credentials?: Record<string, unknown> },
+) {
+  return request<Connector>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+}
+
+export function deleteConnector(workspaceId: string, connectorId: string) {
+  return request<void>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function testConnector(workspaceId: string, connectorId: string) {
+  return request<TestConnectorResponse>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/test`,
+    { method: 'POST' },
+  )
+}
+
+export function getConnectorSchema(workspaceId: string, connectorId: string) {
+  return request<ConnectorSchemaResponse>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/schema`,
+  )
+}
+
 // ---- CSV import (Phase 4) --------------------------------------------------
 
 export interface CSVImportResponse {
@@ -575,6 +652,42 @@ export function importCSV(workspaceId: string, connectorId: string, file: File) 
       throw new ApiError(res.status, err.error ?? 'unknown_error', err.message ?? res.statusText)
     }
     return res.json() as Promise<CSVImportResponse>
+  })
+}
+
+// ---- Audit log -------------------------------------------------------------
+
+export interface AuditEvent {
+  id: string
+  workspace_id: string
+  actor_id?: string
+  event_type: string
+  resource_type?: string
+  resource_id?: string
+  metadata?: Record<string, unknown>
+  created_at: string
+}
+
+export function listAuditEvents(workspaceId: string, limit?: number) {
+  const params = limit ? `?limit=${limit}` : ''
+  return request<{ events: AuditEvent[] }>(`/v1/workspaces/${workspaceId}/audit${params}`)
+}
+
+export function exportAuditEventsCSV(workspaceId: string, since: string, until?: string) {
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const params = new URLSearchParams({ since })
+  if (until) params.set('until', until)
+  return fetch(
+    `${API_BASE}/v1/workspaces/${workspaceId}/audit/export?${params}`,
+    { headers },
+  ).then(async (res) => {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: res.statusText }))
+      throw new ApiError(res.status, err.error ?? 'unknown_error', err.message ?? res.statusText)
+    }
+    return res.blob()
   })
 }
 
@@ -631,6 +744,57 @@ export function addGroupMember(companyId: string, groupId: string, userId: strin
 
 export function removeGroupMember(companyId: string, groupId: string, userId: string) {
   return request<void>(`/v1/companies/${companyId}/groups/${groupId}/members/${userId}`, {
+    method: 'DELETE',
+  })
+}
+
+// ---- Company resources -----------------------------------------------------
+
+export interface CompanyResource {
+  id: string
+  workspace_id: string
+  name: string
+  type: ConnectorType
+  schema_cache?: Record<string, unknown>
+  schema_cached_at?: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  company_id?: string
+  owner_scope: string
+}
+
+export function listCompanyResources(companyId: string) {
+  return request<{ resources: CompanyResource[] }>(`/v1/companies/${companyId}/resources`)
+}
+
+export function createCompanyResource(
+  companyId: string,
+  data: { workspace_id: string; name: string; type: ConnectorType; credentials: Record<string, unknown> },
+) {
+  return request<CompanyResource>(`/v1/companies/${companyId}/resources`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export function getCompanyResource(companyId: string, resourceId: string) {
+  return request<CompanyResource>(`/v1/companies/${companyId}/resources/${resourceId}`)
+}
+
+export function patchCompanyResource(
+  companyId: string,
+  resourceId: string,
+  data: { name?: string; credentials?: Record<string, unknown> },
+) {
+  return request<CompanyResource>(`/v1/companies/${companyId}/resources/${resourceId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+}
+
+export function deleteCompanyResource(companyId: string, resourceId: string) {
+  return request<void>(`/v1/companies/${companyId}/resources/${resourceId}`, {
     method: 'DELETE',
   })
 }
@@ -726,8 +890,26 @@ export function archivePublication(workspaceId: string, appId: string, publicati
   )
 }
 
+export function listPublicationAudiences(workspaceId: string, appId: string, publicationId: string) {
+  return request<{ audiences: PublicationAudience[] }>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/publications/${publicationId}/audiences`,
+  )
+}
+
 // ---- Company tool discovery ------------------------------------------------
 
+export interface CompanyTool {
+  publication_id: string
+  app_id: string
+  app_name: string
+  app_description: string
+  app_version_id: string
+  workspace_id: string
+  company_id: string
+  published_by: string
+  published_at: string
+}
+
 export function listCompanyTools(companyId: string) {
-  return request<{ tools: AppPublication[] }>(`/v1/companies/${companyId}/tools`)
+  return request<{ tools: CompanyTool[] }>(`/v1/companies/${companyId}/tools`)
 }

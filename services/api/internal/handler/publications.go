@@ -108,8 +108,25 @@ func ListCompanyTools(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 		if tools == nil {
-			tools = []model.AppPublication{}
+			tools = []model.CompanyTool{}
 		}
 		respond(w, http.StatusOK, map[string]any{"tools": tools})
+	}
+}
+
+// GetPublicationAudiences returns audiences for a specific publication.
+func GetPublicationAudiences(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		publicationID := chi.URLParam(r, "publicationID")
+		audiences, err := s.ListPublicationAudiences(r.Context(), publicationID)
+		if err != nil {
+			log.Error("list publication audiences", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to list audiences")
+			return
+		}
+		if audiences == nil {
+			audiences = []model.AppPublicationAudience{}
+		}
+		respond(w, http.StatusOK, map[string]any{"audiences": audiences})
 	}
 }

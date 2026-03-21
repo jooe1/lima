@@ -65,11 +65,11 @@ func (s *Store) CreatePublication(ctx context.Context, appID, appVersionID, work
 	return p, nil
 }
 
-// ListPublications returns all active publications for an app, newest first.
+// ListPublications returns all publications for an app, newest first.
 func (s *Store) ListPublications(ctx context.Context, appID string) ([]model.AppPublication, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+pubCols+` FROM app_publications
-		 WHERE app_id = $1 AND status = 'active'
+		 WHERE app_id = $1
 		 ORDER BY created_at DESC`,
 		appID,
 	)
@@ -151,20 +151,23 @@ func (s *Store) ListPublicationAudiences(ctx context.Context, publicationID stri
 }
 
 // ListCompanyPublishedTools returns all active publications visible to a user
-// through their group memberships. Used for company-scoped tool discovery.
-func (s *Store) ListCompanyPublishedTools(ctx context.Context, companyID, userID string) ([]model.AppPublication, error) {
+// through their group memberships, enriched with app name and description.
+// Used for company-scoped tool discovery.
+func (s *Store) ListCompanyPublishedTools(ctx context.Context, companyID, userID string) ([]model.CompanyTool, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+pubCols+`
-		 FROM app_publications
-		 WHERE company_id = $1
-		   AND status = 'active'
-		   AND id IN (
+		`SELECT ap.id, ap.app_id, a.name, COALESCE(a.description, ''), ap.app_version_id,
+		        ap.workspace_id, ap.company_id, ap.published_by, ap.created_at
+		 FROM app_publications ap
+		 JOIN apps a ON a.id = ap.app_id
+		 WHERE ap.company_id = $1
+		   AND ap.status = 'active'
+		   AND ap.id IN (
 		       SELECT DISTINCT apa.publication_id
 		       FROM app_publication_audiences apa
 		       JOIN group_memberships gm ON gm.group_id = apa.group_id AND gm.user_id = $2
 		       WHERE apa.capability = 'use'
 		   )
-		 ORDER BY created_at DESC`,
+		 ORDER BY ap.created_at DESC`,
 		companyID, userID,
 	)
 	if err != nil {
@@ -172,17 +175,16 @@ func (s *Store) ListCompanyPublishedTools(ctx context.Context, companyID, userID
 	}
 	defer rows.Close()
 
-	var out []model.AppPublication
+	var out []model.CompanyTool
 	for rows.Next() {
-		p := model.AppPublication{}
+		t := model.CompanyTool{}
 		if err := rows.Scan(
-			&p.ID, &p.AppID, &p.AppVersionID, &p.WorkspaceID, &p.CompanyID,
-			&p.Status, &p.PublishedBy, &p.PolicyProfileID, &p.RuntimeIdentityID,
-			&p.CreatedAt, &p.UpdatedAt,
+			&t.PublicationID, &t.AppID, &t.AppName, &t.AppDescription, &t.AppVersionID,
+			&t.WorkspaceID, &t.CompanyID, &t.PublishedBy, &t.PublishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("list company published tools scan: %w", err)
 		}
-		out = append(out, p)
+		out = append(out, t)
 	}
 	return out, rows.Err()
 }

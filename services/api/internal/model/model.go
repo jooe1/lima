@@ -474,3 +474,16 @@ type AppPublicationAudience struct {
 	GroupID       string `json:"group_id"`
 	Capability    string `json:"capability"` // "discover", "use"
 }
+
+// CompanyTool is an enriched publication record with app display metadata for tool discovery.
+type CompanyTool struct {
+	PublicationID  string    `json:"publication_id"`
+	AppID          string    `json:"app_id"`
+	AppName        string    `json:"app_name"`
+	AppDescription string    `json:"app_description"`
+	AppVersionID   string    `json:"app_version_id"`
+	WorkspaceID    string    `json:"workspace_id"`
+	CompanyID      string    `json:"company_id"`
+	PublishedBy    string    `json:"published_by"`
+	PublishedAt    time.Time `json:"published_at"`
+}
