@@ -18,8 +18,8 @@ func CreatePublication(s *store.Store, log *zap.Logger) http.HandlerFunc {
 		claims, _ := ClaimsFromContext(r.Context())
 
 		var req struct {
-			AppVersionID string                          `json:"app_version_id"`
-			Audiences    []model.AppPublicationAudience  `json:"audiences"`
+			AppVersionID string                         `json:"app_version_id"`
+			Audiences    []model.AppPublicationAudience `json:"audiences"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")

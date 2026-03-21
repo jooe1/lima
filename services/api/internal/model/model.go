@@ -422,7 +422,7 @@ type CompanyGroup struct {
 	CompanyID   string    `json:"company_id"`
 	Name        string    `json:"name"`
 	Slug        string    `json:"slug"`
-	SourceType  string    `json:"source_type"`  // "internal", "workspace_sync", "external"
+	SourceType  string    `json:"source_type"` // "internal", "workspace_sync", "external"
 	ExternalRef *string   `json:"external_ref,omitempty"`
 	ManagedBy   *string   `json:"managed_by,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -442,11 +442,11 @@ type ResourceGrant struct {
 	CompanyID    string    `json:"company_id"`
 	ResourceKind string    `json:"resource_kind"` // e.g. "connector"
 	ResourceID   string    `json:"resource_id"`
-	SubjectType  string    `json:"subject_type"`  // "user", "group", "workspace", "app", "service_principal"
+	SubjectType  string    `json:"subject_type"` // "user", "group", "workspace", "app", "service_principal"
 	SubjectID    string    `json:"subject_id"`
-	Action       string    `json:"action"`        // "query", "mutate", "manage", "bind", "read_schema"
+	Action       string    `json:"action"` // "query", "mutate", "manage", "bind", "read_schema"
 	ScopeJSON    *string   `json:"scope_json,omitempty"`
-	Effect       string    `json:"effect"`        // "allow", "deny"
+	Effect       string    `json:"effect"` // "allow", "deny"
 	CreatedBy    *string   `json:"created_by,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }

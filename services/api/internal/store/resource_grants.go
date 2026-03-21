@@ -132,4 +132,3 @@ func (s *Store) HasResourceGrant(ctx context.Context, companyID, resourceKind, r
 	}
 	return exists, nil
 }
-
