@@ -221,6 +221,8 @@ type Connector struct {
 	CreatedBy      string         `json:"created_by"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
+	CompanyID      *string        `json:"company_id,omitempty"`
+	OwnerScope     string         `json:"owner_scope"` // "company" or "workspace"
 }
 
 // ConnectorRecord extends Connector with the raw encrypted credentials for
@@ -401,4 +403,74 @@ type DashboardQueryResponse struct {
 	Columns  []string         `json:"columns"`
 	Rows     []map[string]any `json:"rows"`
 	RowCount int              `json:"row_count"`
+}
+
+// ---- Authorization (Migrations 010-011) -------------------------------------
+
+// CompanyRoleBinding maps a subject to a company-level role.
+type CompanyRoleBinding struct {
+	CompanyID   string    `json:"company_id"`
+	SubjectType string    `json:"subject_type"` // "user", "service_principal"
+	SubjectID   string    `json:"subject_id"`
+	Role        string    `json:"role"` // "company_admin", "resource_admin", "policy_admin", "company_member"
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// CompanyGroup is a named set of users within a company, used for audience targeting and grants.
+type CompanyGroup struct {
+	ID          string    `json:"id"`
+	CompanyID   string    `json:"company_id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	SourceType  string    `json:"source_type"`  // "internal", "workspace_sync", "external"
+	ExternalRef *string   `json:"external_ref,omitempty"`
+	ManagedBy   *string   `json:"managed_by,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// GroupMembership records that a user belongs to a company group.
+type GroupMembership struct {
+	GroupID  string    `json:"group_id"`
+	UserID   string    `json:"user_id"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// ResourceGrant gives a subject permission to perform an action on a company-owned resource.
+type ResourceGrant struct {
+	ID           string    `json:"id"`
+	CompanyID    string    `json:"company_id"`
+	ResourceKind string    `json:"resource_kind"` // e.g. "connector"
+	ResourceID   string    `json:"resource_id"`
+	SubjectType  string    `json:"subject_type"`  // "user", "group", "workspace", "app", "service_principal"
+	SubjectID    string    `json:"subject_id"`
+	Action       string    `json:"action"`        // "query", "mutate", "manage", "bind", "read_schema"
+	ScopeJSON    *string   `json:"scope_json,omitempty"`
+	Effect       string    `json:"effect"`        // "allow", "deny"
+	CreatedBy    *string   `json:"created_by,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// ---- App Publications (Migration 013) ---------------------------------------
+
+// AppPublication represents a published version of an app with audience metadata.
+type AppPublication struct {
+	ID                string    `json:"id"`
+	AppID             string    `json:"app_id"`
+	AppVersionID      string    `json:"app_version_id"`
+	WorkspaceID       string    `json:"workspace_id"`
+	CompanyID         string    `json:"company_id"`
+	Status            string    `json:"status"` // "active", "archived"
+	PublishedBy       string    `json:"published_by"`
+	PolicyProfileID   *string   `json:"policy_profile_id,omitempty"`
+	RuntimeIdentityID *string   `json:"runtime_identity_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// AppPublicationAudience links a publication to a company group with a capability level.
+type AppPublicationAudience struct {
+	PublicationID string `json:"publication_id"`
+	GroupID       string `json:"group_id"`
+	Capability    string `json:"capability"` // "discover", "use"
 }

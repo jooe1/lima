@@ -48,6 +48,24 @@ func (s *Store) GetWorkspace(ctx context.Context, companyID, workspaceID string)
 	return ws, nil
 }
 
+// GetWorkspaceByID returns a workspace by its ID without company scoping.
+// Used internally when the company context is not available from the URL.
+func (s *Store) GetWorkspaceByID(ctx context.Context, workspaceID string) (*model.Workspace, error) {
+	ws := &model.Workspace{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, company_id, name, slug, created_at, updated_at
+		 FROM workspaces WHERE id = $1`,
+		workspaceID,
+	).Scan(&ws.ID, &ws.CompanyID, &ws.Name, &ws.Slug, &ws.CreatedAt, &ws.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get workspace by id: %w", err)
+	}
+	return ws, nil
+}
+
 // CreateWorkspace inserts a new workspace and returns it.
 func (s *Store) CreateWorkspace(ctx context.Context, companyID, name, slug string) (*model.Workspace, error) {
 	ws := &model.Workspace{}

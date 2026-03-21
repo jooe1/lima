@@ -67,3 +67,44 @@ func RequireCompanyClaim(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// isCompanyAdminOrResourceAdmin checks that the caller holds the company_admin
+// or resource_admin role for the given company. It writes an error response and
+// returns false when the check fails.
+func isCompanyAdminOrResourceAdmin(s *store.Store, w http.ResponseWriter, r *http.Request, companyID string) bool {
+	claims, ok := ClaimsFromContext(r.Context())
+	if !ok {
+		respondErr(w, http.StatusUnauthorized, "unauthenticated", "authentication required")
+		return false
+	}
+	binding, err := s.GetCompanyRole(r.Context(), companyID, "user", claims.UserID)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, "db_error", "failed to check company role")
+		return false
+	}
+	if binding == nil || (binding.Role != "company_admin" && binding.Role != "resource_admin") {
+		respondErr(w, http.StatusForbidden, "insufficient_role", "company_admin or resource_admin role required")
+		return false
+	}
+	return true
+}
+
+// isCompanyAdmin checks that the caller holds the company_admin role for the
+// given company. It writes an error response and returns false when the check fails.
+func isCompanyAdmin(s *store.Store, w http.ResponseWriter, r *http.Request, companyID string) bool {
+	claims, ok := ClaimsFromContext(r.Context())
+	if !ok {
+		respondErr(w, http.StatusUnauthorized, "unauthenticated", "authentication required")
+		return false
+	}
+	binding, err := s.GetCompanyRole(r.Context(), companyID, "user", claims.UserID)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, "db_error", "failed to check company role")
+		return false
+	}
+	if binding == nil || binding.Role != "company_admin" {
+		respondErr(w, http.StatusForbidden, "insufficient_role", "company_admin role required")
+		return false
+	}
+	return true
+}

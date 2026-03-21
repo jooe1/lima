@@ -577,3 +577,157 @@ export function importCSV(workspaceId: string, connectorId: string, file: File) 
     return res.json() as Promise<CSVImportResponse>
   })
 }
+
+// ---- Company groups --------------------------------------------------------
+
+export interface CompanyGroup {
+  id: string
+  company_id: string
+  name: string
+  slug: string
+  source_type: string
+  external_ref?: string
+  managed_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface GroupMembership {
+  group_id: string
+  user_id: string
+  joined_at: string
+}
+
+export function listCompanyGroups(companyId: string) {
+  return request<{ groups: CompanyGroup[] }>(`/v1/companies/${companyId}/groups`)
+}
+
+export function createCompanyGroup(
+  companyId: string,
+  data: { name: string; slug: string; source_type?: string },
+) {
+  return request<CompanyGroup>(`/v1/companies/${companyId}/groups`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export function deleteCompanyGroup(companyId: string, groupId: string) {
+  return request<void>(`/v1/companies/${companyId}/groups/${groupId}`, { method: 'DELETE' })
+}
+
+export function listGroupMembers(companyId: string, groupId: string) {
+  return request<{ members: GroupMembership[] }>(
+    `/v1/companies/${companyId}/groups/${groupId}/members`,
+  )
+}
+
+export function addGroupMember(companyId: string, groupId: string, userId: string) {
+  return request<void>(`/v1/companies/${companyId}/groups/${groupId}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId }),
+  })
+}
+
+export function removeGroupMember(companyId: string, groupId: string, userId: string) {
+  return request<void>(`/v1/companies/${companyId}/groups/${groupId}/members/${userId}`, {
+    method: 'DELETE',
+  })
+}
+
+// ---- Resource grants -------------------------------------------------------
+
+export interface ResourceGrant {
+  id: string
+  company_id: string
+  resource_kind: string
+  resource_id: string
+  subject_type: string
+  subject_id: string
+  action: string
+  scope_json?: string
+  effect: string
+  created_by?: string
+  created_at: string
+}
+
+export function listResourceGrants(companyId: string, resourceId: string) {
+  return request<{ grants: ResourceGrant[] }>(
+    `/v1/companies/${companyId}/resources/${resourceId}/grants`,
+  )
+}
+
+export function createResourceGrant(
+  companyId: string,
+  resourceId: string,
+  data: {
+    subject_type: string
+    subject_id: string
+    action: string
+    effect?: string
+    scope_json?: string
+  },
+) {
+  return request<ResourceGrant>(
+    `/v1/companies/${companyId}/resources/${resourceId}/grants`,
+    { method: 'POST', body: JSON.stringify(data) },
+  )
+}
+
+export function deleteResourceGrant(companyId: string, resourceId: string, grantId: string) {
+  return request<void>(
+    `/v1/companies/${companyId}/resources/${resourceId}/grants/${grantId}`,
+    { method: 'DELETE' },
+  )
+}
+
+// ---- App publications ------------------------------------------------------
+
+export interface AppPublication {
+  id: string
+  app_id: string
+  app_version_id: string
+  workspace_id: string
+  company_id: string
+  status: string
+  published_by: string
+  policy_profile_id?: string
+  runtime_identity_id?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface PublicationAudience {
+  group_id: string
+  capability: string
+}
+
+export function createPublication(
+  workspaceId: string,
+  appId: string,
+  data: { app_version_id: string; audiences: PublicationAudience[] },
+) {
+  return request<AppPublication>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/publications`,
+    { method: 'POST', body: JSON.stringify(data) },
+  )
+}
+
+export function listPublications(workspaceId: string, appId: string) {
+  return request<{ publications: AppPublication[] }>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/publications`,
+  )
+}
+
+export function archivePublication(workspaceId: string, appId: string, publicationId: string) {
+  return request<void>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/publications/${publicationId}`,
+    { method: 'DELETE' },
+  )
+}
+
+// ---- Company tool discovery ------------------------------------------------
+
+export function listCompanyTools(companyId: string) {
+  return request<{ tools: AppPublication[] }>(`/v1/companies/${companyId}/tools`)
+}

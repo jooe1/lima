@@ -69,6 +69,35 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						r.Get("/members", handler.ListMembers(s, log))
 					})
 				})
+
+				// Company-scoped resources (connectors with owner_scope='company')
+				r.Route("/resources", func(r chi.Router) {
+					r.Get("/", handler.ListCompanyResources(s, log))
+					r.Post("/", handler.CreateCompanyResource(cfg, s, enq, log))
+					r.Route("/{resourceID}", func(r chi.Router) {
+						r.Get("/", handler.GetCompanyResource(s, log))
+						r.Patch("/", handler.UpdateCompanyResource(cfg, s, enq, log))
+						r.Delete("/", handler.DeleteCompanyResource(s, log))
+						r.Get("/grants", handler.ListResourceGrants(s, log))
+						r.Post("/grants", handler.CreateResourceGrant(s, log))
+						r.Delete("/grants/{grantID}", handler.DeleteResourceGrant(s, log))
+					})
+				})
+
+				// Company groups and memberships
+				r.Route("/groups", func(r chi.Router) {
+					r.Get("/", handler.ListGroups(s, log))
+					r.Post("/", handler.CreateGroup(s, log))
+					r.Route("/{groupID}", func(r chi.Router) {
+						r.Delete("/", handler.DeleteGroup(s, log))
+						r.Get("/members", handler.ListGroupMembers(s, log))
+						r.Post("/members", handler.AddGroupMember(s, log))
+						r.Delete("/members/{userID}", handler.RemoveGroupMember(s, log))
+					})
+				})
+
+				// Company-scoped tool discovery
+				r.Get("/tools", handler.ListCompanyTools(s, log))
 			})
 
 			// Workspace-scoped routes — require at least end_user membership
@@ -98,6 +127,15 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						// Builder draft preview — requires app_builder or admin; end_user is blocked
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 							Get("/preview", handler.PreviewDraftApp(s, log))
+
+						// Publications (Phase 7)
+						r.Route("/publications", func(r chi.Router) {
+							r.Get("/", handler.ListPublications(s, log))
+							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+								Post("/", handler.CreatePublication(s, log))
+							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+								Delete("/{publicationID}", handler.ArchivePublication(s, log))
+						})
 
 						// Conversation threads (Phase 3)
 						r.Route("/threads", func(r chi.Router) {

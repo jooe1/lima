@@ -5,7 +5,11 @@ import Link from 'next/link'
 import { parse, serialize, type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { useAuth } from '../../../lib/auth'
-import { getApp, patchApp, publishApp, type App } from '../../../lib/api'
+import {
+  getApp, patchApp, publishApp,
+  listCompanyGroups, createPublication,
+  type App, type CompanyGroup,
+} from '../../../lib/api'
 import { useDocumentHistory } from './hooks/useDocumentHistory'
 import { useAutosave } from './hooks/useAutosave'
 import { CanvasEditor } from './CanvasEditor'
@@ -17,7 +21,7 @@ import { WorkflowEditor } from './WorkflowEditor'
 
 export default function AppEditorPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
-  const { workspace } = useAuth()
+  const { workspace, company } = useAuth()
   const [app, setApp] = useState<App | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -25,6 +29,10 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [publishing, setPublishing] = useState(false)
   const [publishError, setPublishError] = useState('')
   const [showVersionHistory, setShowVersionHistory] = useState(false)
+  const [showPublishDialog, setShowPublishDialog] = useState(false)
+  const [publishGroups, setPublishGroups] = useState<CompanyGroup[]>([])
+  const [publishGroupsLoading, setPublishGroupsLoading] = useState(false)
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set())
   // 'inspector' | 'chat' | 'workflows' — controls the right-hand panel
   const [rightPanel, setRightPanel] = useState<'inspector' | 'chat' | 'workflows'>('inspector')
   // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
@@ -177,17 +185,42 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     history.set(newDoc)
   }, [history, markManual])
 
-  // Publish
+  // Open publish dialog — load groups + latest version
+  const handleOpenPublishDialog = async () => {
+    if (!workspace || !company || loadError) return
+    setPublishError('')
+    setShowPublishDialog(true)
+    setPublishGroupsLoading(true)
+    try {
+      const groupsRes = await listCompanyGroups(company.id)
+      const groups = groupsRes.groups ?? []
+      setPublishGroups(groups)
+      setSelectedGroupIds(new Set(groups.map(g => g.id)))
+    } catch {
+      // non-fatal: dialog still usable
+    } finally {
+      setPublishGroupsLoading(false)
+    }
+  }
+
+  // Confirm publish — call legacy publish + new publication API
   const handlePublish = async () => {
     if (!workspace || publishing || loadError) return
     setPublishing(true)
     setPublishError('')
     try {
-      // Flush any pending autosave first
       const source = serialize(history.doc)
       await patchApp(workspace.id, appId, { dsl_source: source })
-      await publishApp(workspace.id, appId)
+      const version = await publishApp(workspace.id, appId)
       setApp(prev => prev ? { ...prev, status: 'published' } : prev)
+      // Also create a publication record if groups are selected
+      if (selectedGroupIds.size > 0) {
+        await createPublication(workspace.id, appId, {
+          app_version_id: version.id,
+          audiences: [...selectedGroupIds].map(gid => ({ group_id: gid, capability: 'use' })),
+        }).catch(() => { /* non-blocking */ })
+      }
+      setShowPublishDialog(false)
     } catch (e: unknown) {
       setPublishError(e instanceof Error ? e.message : 'Publish failed')
     } finally {
@@ -334,7 +367,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         </button>
 
         <button
-          onClick={handlePublish}
+          onClick={handleOpenPublishDialog}
           disabled={publishing || !!loadError}
           style={{
             padding: '5px 14px',
@@ -395,6 +428,83 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           </div>
         ) : null}
       </div>
+
+      {/* Publish dialog */}
+      {showPublishDialog && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div style={{
+            background: '#111', border: '1px solid #2a2a2a', borderRadius: 8,
+            padding: '1.5rem', minWidth: 360, maxWidth: 480, color: '#e5e5e5',
+          }}>
+            <h2 style={{ margin: '0 0 1rem', fontSize: '1rem', fontWeight: 600 }}>
+              Publish &ldquo;{app?.name}&rdquo;
+            </h2>
+            <p style={{ margin: '0 0 0.75rem', fontSize: '0.75rem', color: '#888' }}>
+              Select the groups that can discover and use this app.
+            </p>
+            {publishGroupsLoading ? (
+              <p style={{ fontSize: '0.75rem', color: '#555' }}>Loading groups…</p>
+            ) : publishGroups.length === 0 ? (
+              <p style={{ fontSize: '0.75rem', color: '#555' }}>No groups found. The app will be published without audience targeting.</p>
+            ) : (
+              <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: '1rem' }}>
+                {publishGroups.map(g => (
+                  <label key={g.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '4px 0', fontSize: '0.8rem', cursor: 'pointer',
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={selectedGroupIds.has(g.id)}
+                      onChange={e => {
+                        setSelectedGroupIds(prev => {
+                          const next = new Set(prev)
+                          if (e.target.checked) next.add(g.id); else next.delete(g.id)
+                          return next
+                        })
+                      }}
+                    />
+                    <span>{g.name}</span>
+                    {g.source_type === 'workspace_synthetic' && (
+                      <span style={{ fontSize: '0.65rem', color: '#555' }}>(workspace)</span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
+            {publishError && (
+              <p style={{ fontSize: '0.7rem', color: '#f87171', marginBottom: '0.5rem' }}>{publishError}</p>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setShowPublishDialog(false); setPublishError('') }}
+                disabled={publishing}
+                style={{
+                  padding: '5px 14px', borderRadius: 4, fontSize: '0.75rem',
+                  background: 'transparent', border: '1px solid #333', color: '#aaa', cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handlePublish}
+                disabled={publishing}
+                style={{
+                  padding: '5px 14px', borderRadius: 4, fontSize: '0.75rem', fontWeight: 600,
+                  background: publishing ? '#1e3a8a66' : '#1d4ed8',
+                  border: 'none', color: publishing ? '#93c5fd66' : '#fff',
+                  cursor: publishing ? 'default' : 'pointer',
+                }}
+              >
+                {publishing ? 'Publishing…' : 'Publish'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Version history drawer */}
       {showVersionHistory && workspace && (

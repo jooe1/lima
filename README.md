@@ -57,6 +57,8 @@ cp .env.example .env
 pnpm dev
 ```
 
+Local dev note: the Docker Compose stack exposes Postgres on `localhost:5444` and Redis on `localhost:6380`. If you already copied the `.env.example` files before this change, update the existing `.env` files to use those host ports.
+
 Then open http://localhost:3000.
 
 Traces are visible at http://localhost:16686 (Jaeger UI).
