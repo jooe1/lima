@@ -1,11 +1,10 @@
 package handler
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -244,7 +243,13 @@ func TestConnector(cfg *config.Config, s *store.Store, log *zap.Logger) http.Han
 			testErr = testGraphQLConn(ctx, creds)
 
 		case model.ConnectorTypeCSV:
-			testErr = testCSVConn(plainCreds)
+			// CSV connectors are validated by checking whether any data has been
+			// uploaded rather than by inspecting credentials (which are empty for
+			// UI-created CSV connectors).
+			_, testErr = s.GetLatestCSVUpload(r.Context(), connectorID)
+			if errors.Is(testErr, store.ErrNotFound) {
+				testErr = fmt.Errorf("csv connector has no data; upload a CSV file via POST /import first")
+			}
 
 		default:
 			respond(w, http.StatusOK, map[string]any{
@@ -264,12 +269,14 @@ func TestConnector(cfg *config.Config, s *store.Store, log *zap.Logger) http.Han
 
 // ImportCSV handles POST .../connectors/:id/import.
 // It accepts a multipart/form-data upload with a "file" field containing a CSV
-// (first row = column headers). Parses the CSV, stores the data in schema_cache
-// for later queries, and returns {"columns": [...], "rows": [[...]]}.
+// (first row = column headers). Parses the CSV, persists all rows in the
+// csv_uploads table, updates the connector's schema_cache with column-only
+// metadata, and returns {"columns": [...], "rows": [[...]], "row_count": N}.
 func ImportCSV(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		workspaceID := chi.URLParam(r, "workspaceID")
 		connectorID := chi.URLParam(r, "connectorID")
+		claims, _ := ClaimsFromContext(r.Context())
 
 		conn, err := s.GetConnector(r.Context(), workspaceID, connectorID)
 		if err != nil {
@@ -286,7 +293,7 @@ func ImportCSV(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			respondErr(w, http.StatusBadRequest, "bad_request", "failed to parse multipart form")
 			return
 		}
-		file, _, err := r.FormFile("file")
+		file, fileHeader, err := r.FormFile("file")
 		if err != nil {
 			respondErr(w, http.StatusBadRequest, "bad_request", `"file" field is required in the multipart form`)
 			return
@@ -313,18 +320,15 @@ func ImportCSV(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			dataRows = [][]string{}
 		}
 
-		// Build column metadata and row maps for schema_cache storage.
+		// Build column metadata.
 		colMeta := make([]map[string]any, len(columns))
 		for i, c := range columns {
 			colMeta[i] = map[string]any{"name": c, "type": "text", "nullable": true}
 		}
-		// Cap at 100 rows for the schema cache.
-		cacheLimit := len(dataRows)
-		if cacheLimit > 100 {
-			cacheLimit = 100
-		}
-		cacheRows := make([]map[string]any, 0, cacheLimit)
-		for _, rec := range dataRows[:cacheLimit] {
+
+		// Build full row maps — no row cap; all rows are persisted.
+		rowMaps := make([]map[string]any, 0, len(dataRows))
+		for _, rec := range dataRows {
 			row := make(map[string]any, len(columns))
 			for i, col := range columns {
 				if i < len(rec) {
@@ -333,17 +337,30 @@ func ImportCSV(s *store.Store, log *zap.Logger) http.HandlerFunc {
 					row[col] = nil
 				}
 			}
-			cacheRows = append(cacheRows, row)
+			rowMaps = append(rowMaps, row)
 		}
+
+		// Persist the upload. All rows are stored in the csv_uploads table.
+		var filename *string
+		if fileHeader != nil && fileHeader.Filename != "" {
+			filename = &fileHeader.Filename
+		}
+		if _, err := s.CreateCSVUpload(r.Context(), connectorID, claims.UserID, filename, colMeta, rowMaps, len(dataRows)); err != nil {
+			log.Error("failed to persist CSV upload", zap.String("connector_id", connectorID), zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to save CSV data")
+			return
+		}
+
+		// Update schema_cache with column-only metadata (no row data) so that
+		// schema-discovery consumers (e.g. the builder) can still read column names.
 		schemaCache := map[string]any{
 			"type":       "csv",
 			"columns":    colMeta,
-			"rows":       cacheRows,
 			"total_rows": len(dataRows),
 		}
 		if schemaJSON, merr := json.Marshal(schemaCache); merr == nil {
 			if err := s.UpdateConnectorSchema(r.Context(), connectorID, schemaJSON); err != nil {
-				log.Warn("failed to persist CSV import schema cache",
+				log.Warn("failed to update CSV schema_cache metadata",
 					zap.String("connector_id", connectorID), zap.Error(err))
 			}
 		}
@@ -406,13 +423,6 @@ type graphqlConnCreds struct {
 	Headers  map[string]string `json:"headers,omitempty"`
 }
 
-// csvConnCreds holds the base64-encoded CSV content and parsing options.
-type csvConnCreds struct {
-	Data      string `json:"data"`
-	HasHeader bool   `json:"has_header"`
-	Delimiter string `json:"delimiter,omitempty"`
-}
-
 // testGraphQLConn sends an introspection query to the GraphQL endpoint.
 // Returns nil if HTTP 200 is received, an error otherwise.
 func testGraphQLConn(ctx context.Context, creds graphqlConnCreds) error {
@@ -439,34 +449,6 @@ func testGraphQLConn(ctx context.Context, creds graphqlConnCreds) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("graphql endpoint returned HTTP %d", resp.StatusCode)
-	}
-	return nil
-}
-
-// testCSVConn verifies that the CSV connector has data and that it is
-// valid base64-encoded content parseable as CSV.
-func testCSVConn(plainCreds []byte) error {
-	var creds csvConnCreds
-	if err := json.Unmarshal(plainCreds, &creds); err != nil {
-		return fmt.Errorf("cannot parse csv credentials: %w", err)
-	}
-	if creds.Data == "" {
-		return fmt.Errorf("csv connector has no data; upload a CSV file via POST /import first")
-	}
-	raw, err := base64.StdEncoding.DecodeString(creds.Data)
-	if err != nil {
-		raw, err = base64.RawStdEncoding.DecodeString(creds.Data)
-		if err != nil {
-			return fmt.Errorf("invalid base64 csv data: %w", err)
-		}
-	}
-	r := csv.NewReader(bytes.NewReader(raw))
-	records, err := r.ReadAll()
-	if err != nil {
-		return fmt.Errorf("cannot parse CSV: %w", err)
-	}
-	if len(records) == 0 {
-		return fmt.Errorf("CSV file is empty")
 	}
 	return nil
 }
@@ -579,33 +561,57 @@ func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 			respond(w, http.StatusOK, result)
 
 		case model.ConnectorTypeCSV:
-			// CSV does not support live SQL queries; data is served from schema_cache.
-			// Use POST /import to upload a CSV file and populate the cache.
-			conn, cerr := s.GetConnector(ctx, workspaceID, connectorID)
-			if cerr != nil {
-				handleStoreErr(w, cerr)
-				return
-			}
-			if conn.SchemaCache == nil {
-				respondErr(w, http.StatusUnprocessableEntity, "no_data",
-					"CSV data not available; use POST /import to upload a CSV file first")
-				return
-			}
-			colsMeta, _ := conn.SchemaCache["columns"].([]any)
-			cacheCols := make([]string, 0, len(colsMeta))
-			for _, c := range colsMeta {
-				if col, ok := c.(map[string]any); ok {
-					if name, ok := col["name"].(string); ok {
-						cacheCols = append(cacheCols, name)
+			// Resolve CSV data from the dedicated csv_uploads table.
+			// If the caller supplies an app_version_id, serve the snapshot
+			// recorded at publish time so published apps see immutable data.
+			var upload *model.CSVUpload
+			if req.AppVersionID != "" {
+				conn, cerr := s.GetConnector(ctx, workspaceID, connectorID)
+				if cerr != nil {
+					handleStoreErr(w, cerr)
+					return
+				}
+				uploadID, serr := s.GetCSVSnapshotForVersion(ctx, req.AppVersionID, conn.Name)
+				if errors.Is(serr, store.ErrNotFound) {
+					// Snapshot not found — fall back to latest upload.
+					upload, serr = s.GetLatestCSVUpload(ctx, connectorID)
+				} else if serr == nil {
+					upload, serr = s.GetCSVUploadByID(ctx, uploadID)
+				}
+				if serr != nil {
+					if errors.Is(serr, store.ErrNotFound) {
+						respondErr(w, http.StatusUnprocessableEntity, "no_data",
+							"CSV data not available; use POST /import to upload a CSV file first")
+						return
 					}
+					log.Error("resolve csv upload for version", zap.Error(serr))
+					respondErr(w, http.StatusInternalServerError, "db_error", "failed to load CSV data")
+					return
+				}
+			} else {
+				var cerr error
+				upload, cerr = s.GetLatestCSVUpload(ctx, connectorID)
+				if errors.Is(cerr, store.ErrNotFound) {
+					respondErr(w, http.StatusUnprocessableEntity, "no_data",
+						"CSV data not available; use POST /import to upload a CSV file first")
+					return
+				}
+				if cerr != nil {
+					log.Error("get latest csv upload", zap.Error(cerr))
+					respondErr(w, http.StatusInternalServerError, "db_error", "failed to load CSV data")
+					return
 				}
 			}
-			cacheRows, _ := conn.SchemaCache["rows"].([]any)
-			outRows := make([]map[string]any, 0, len(cacheRows))
-			for _, rowRaw := range cacheRows {
-				if row, ok := rowRaw.(map[string]any); ok {
-					outRows = append(outRows, row)
+
+			cacheCols := make([]string, 0, len(upload.Columns))
+			for _, c := range upload.Columns {
+				if name, ok := c["name"].(string); ok {
+					cacheCols = append(cacheCols, name)
 				}
+			}
+			outRows := upload.Rows
+			if outRows == nil {
+				outRows = []map[string]any{}
 			}
 			respond(w, http.StatusOK, &model.DashboardQueryResponse{
 				Columns:  cacheCols,

@@ -129,6 +129,23 @@ func PublishApp(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 
+		// Snapshot the current CSV upload for every CSV connector in the workspace.
+		// This ensures published apps see immutable data even if the connector is
+		// updated or deleted later.
+		snapshots, serr := s.ListLatestCSVUploadsByWorkspace(r.Context(), workspaceID)
+		if serr != nil {
+			log.Warn("failed to list CSV uploads for publish snapshot",
+				zap.String("app_version_id", version.ID), zap.Error(serr))
+		} else if len(snapshots) > 0 {
+			for i := range snapshots {
+				snapshots[i].AppVersionID = version.ID
+			}
+			if serr := s.CreateAppVersionCSVSnapshots(r.Context(), version.ID, snapshots); serr != nil {
+				log.Warn("failed to create CSV snapshots for published version",
+					zap.String("app_version_id", version.ID), zap.Error(serr))
+			}
+		}
+
 		auditAppEvent(r.Context(), s, log, claims, workspaceID, "app.published", &appID)
 		respond(w, http.StatusOK, version)
 	}

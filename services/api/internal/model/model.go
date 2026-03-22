@@ -343,6 +343,31 @@ type SchemaJobPayload struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
+// CSVUpload is a single file import for a CSV connector.
+// Row data lives here instead of in connectors.schema_cache so that:
+//   - The connectors table stays lean (no fat JSONB blobs on list queries).
+//   - All rows are persisted (no 100-row cap).
+//   - Multiple uploads are tracked over time.
+type CSVUpload struct {
+	ID          string           `json:"id"`
+	ConnectorID string           `json:"connector_id"`
+	Filename    *string          `json:"filename,omitempty"`
+	Columns     []map[string]any `json:"columns"`
+	Rows        []map[string]any `json:"rows"`
+	TotalRows   int              `json:"total_rows"`
+	UploadedBy  string           `json:"uploaded_by"`
+	UploadedAt  time.Time        `json:"uploaded_at"`
+}
+
+// AppVersionCSVSnapshot records which CSV upload was live for a connector
+// name at the moment an app version was published, enabling published apps
+// to serve deterministic, immutable data.
+type AppVersionCSVSnapshot struct {
+	AppVersionID  string `json:"app_version_id"`
+	ConnectorName string `json:"connector_name"`
+	CSVUploadID   string `json:"csv_upload_id"`
+}
+
 // ---- Approvals (Phase 5) ----------------------------------------------------
 
 // ApprovalStatus mirrors the approval_status DB enum.
@@ -501,6 +526,9 @@ type DashboardQueryRequest struct {
 	SQL    string `json:"sql"`
 	Params []any  `json:"params,omitempty"`
 	Limit  int    `json:"limit,omitempty"` // max rows; capped at 10000
+	// AppVersionID is optional. When set, CSV connectors are served from the
+	// snapshot recorded at publish time rather than the latest upload.
+	AppVersionID string `json:"app_version_id,omitempty"`
 }
 
 // DashboardQueryResponse carries the rows returned from a connector query.
