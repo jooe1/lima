@@ -1,6 +1,6 @@
 'use client'
 
-import React, { use, useCallback, useEffect, useRef, useState } from 'react'
+import React, { use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { parse, serialize, type AuraDocument, type AuraNode } from '@lima/aura-dsl'
@@ -21,6 +21,7 @@ import { Inspector } from './Inspector'
 import { LayersPanel } from './LayersPanel'
 import { VersionHistory } from './VersionHistory'
 import { WorkflowEditor } from './WorkflowEditor'
+import { formatProductionIssues, getAppProductionIssues } from '../../../lib/appValidation'
 
 type PublicationAudienceSelection = PublicationCapability | ''
 
@@ -211,7 +212,10 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
   // Open publish dialog — load groups + latest version
   const handleOpenPublishDialog = async () => {
-    if (!workspace || !company || loadError) return
+    if (!workspace || !company || loadError || publishBlocked) {
+      if (publishBlocked) setPublishError(publishBlockerMessage)
+      return
+    }
     setPublishError('')
     setShowPublishDialog(true)
     setPublishGroupsLoading(true)
@@ -231,9 +235,24 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     }
   }
 
+  const latestActivePublicationId = publications.find(publication => publication.status === 'active')?.id
+  const publishedAppHref = useMemo(() => {
+    if (!workspace) return `/app/${appId}`
+
+    const params = new URLSearchParams({ workspace: workspace.id })
+    if (latestActivePublicationId) {
+      params.set('publication', latestActivePublicationId)
+    }
+
+    return `/app/${appId}?${params.toString()}`
+  }, [appId, latestActivePublicationId, workspace])
+
   // Confirm publish — call legacy publish + new publication API
   const handlePublish = async () => {
-    if (!workspace || publishing || loadError) return
+    if (!workspace || publishing || loadError || publishBlocked) {
+      if (publishBlocked) setPublishError(publishBlockerMessage)
+      return
+    }
     setPublishing(true)
     setPublishError('')
     try {
@@ -252,6 +271,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         await createPublication(workspace.id, appId, {
           app_version_id: version.id,
           audiences,
+        }).then(publication => {
+          setPublications(prev => [publication, ...prev.filter(existing => existing.id !== publication.id)])
         }).catch(() => { /* non-blocking */ })
       }
       setShowPublishDialog(false)
@@ -263,6 +284,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   }
 
   const selectedNode = history.doc.find(n => n.id === selectedId) ?? null
+  const publishIssues = useMemo(() => getAppProductionIssues(history.doc), [history.doc])
+  const publishBlocked = publishIssues.length > 0
+  const publishBlockerMessage = publishBlocked ? formatProductionIssues(publishIssues) : ''
   const workflowTriggerTargets = history.doc
     .filter(node => node.id !== 'root')
     .map(node => ({
@@ -372,7 +396,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         {/* Preview link — only available once published */}
         {app?.status === 'published' && (
           <Link
-            href={`/app/${appId}`}
+            href={publishedAppHref}
             target="_blank"
             rel="noopener noreferrer"
             title="Open published app"
@@ -394,6 +418,14 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         )}
         {loadError && (
           <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{loadError}</span>
+        )}
+        {publishBlockerMessage && (
+          <span
+            style={{ fontSize: '0.65rem', color: '#fbbf24', maxWidth: 320 }}
+            title={publishIssues.map(issue => issue.message).join('\n')}
+          >
+            {publishBlockerMessage}
+          </span>
         )}
 
         {/* App settings dropdown */}
@@ -507,16 +539,16 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
         <button
           onClick={handleOpenPublishDialog}
-          disabled={publishing || !!loadError}
+          disabled={publishing || !!loadError || publishBlocked}
           style={{
             padding: '5px 14px',
             borderRadius: 4,
             fontSize: '0.75rem',
             fontWeight: 600,
-            background: publishing ? '#1e3a8a66' : '#1d4ed8',
+            background: (publishing || publishBlocked || !!loadError) ? '#1e3a8a66' : '#1d4ed8',
             border: 'none',
-            color: publishing ? '#93c5fd66' : '#fff',
-            cursor: publishing ? 'default' : 'pointer',
+            color: (publishing || publishBlocked || !!loadError) ? '#93c5fd66' : '#fff',
+            cursor: (publishing || publishBlocked || !!loadError) ? 'default' : 'pointer',
           }}
         >
           {publishing ? 'Publishing…' : 'Publish'}
@@ -607,6 +639,11 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             <p style={{ margin: '0 0 0.75rem', fontSize: '0.7rem', color: '#555', lineHeight: 1.5 }}>
               Discover lists the app for that group. Use grants launch access.
             </p>
+            {publishBlocked && (
+              <p style={{ margin: '0 0 0.75rem', fontSize: '0.72rem', color: '#fbbf24', lineHeight: 1.5 }}>
+                {publishBlockerMessage}
+              </p>
+            )}
             {publishGroupsLoading ? (
               <p style={{ fontSize: '0.75rem', color: '#555' }}>Loading groups…</p>
             ) : publishGroups.length === 0 ? (
@@ -677,12 +714,12 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               </button>
               <button
                 onClick={handlePublish}
-                disabled={publishing}
+                disabled={publishing || publishBlocked}
                 style={{
                   padding: '5px 14px', borderRadius: 4, fontSize: '0.75rem', fontWeight: 600,
-                  background: publishing ? '#1e3a8a66' : '#1d4ed8',
-                  border: 'none', color: publishing ? '#93c5fd66' : '#fff',
-                  cursor: publishing ? 'default' : 'pointer',
+                  background: (publishing || publishBlocked) ? '#1e3a8a66' : '#1d4ed8',
+                  border: 'none', color: (publishing || publishBlocked) ? '#93c5fd66' : '#fff',
+                  cursor: (publishing || publishBlocked) ? 'default' : 'pointer',
                 }}
               >
                 {publishing ? 'Publishing…' : 'Publish'}

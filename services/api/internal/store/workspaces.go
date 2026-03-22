@@ -106,7 +106,22 @@ func (s *Store) ListMembers(ctx context.Context, workspaceID string) ([]model.Me
 		}
 		members = append(members, m)
 	}
-	return members, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	grantSummaries, err := listWorkspaceMemberGrantSummaries(ctx, s.pool, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	grantsByUser := make(map[string][]model.MemberGrant, len(grantSummaries))
+	for _, summary := range grantSummaries {
+		grantsByUser[summary.UserID] = append(grantsByUser[summary.UserID], describeWorkspaceMemberGrant(summary))
+	}
+	for idx := range members {
+		members[idx].Grants = grantsByUser[members[idx].UserID]
+	}
+	return members, nil
 }
 
 // GetMemberRole returns the role of userID in workspaceID.

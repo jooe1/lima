@@ -4,6 +4,8 @@ import React, { useEffect, useState } from 'react'
 import { type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { runConnectorQuery, type DashboardQueryResponse } from '../../../lib/api'
+import { getMissingRequiredProps, hasConnectorBinding, isProductionReadyWidget, isSupportedChartType } from '../../../lib/appValidation'
+import { buildChartSeries } from '../../../lib/charting'
 
 const CELL = 40
 // COLS removed — canvas width is computed dynamically from content
@@ -107,7 +109,62 @@ interface WidgetProps {
   appId: string
 }
 
+function RuntimeStateMessage({
+  message,
+  tone = 'muted',
+}: {
+  message: string
+  tone?: 'muted' | 'warning' | 'error'
+}) {
+  const color = tone === 'error' ? '#f87171' : tone === 'warning' ? '#fbbf24' : '#666'
+  return (
+    <div
+      style={{
+        height: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center',
+        padding: '0.75rem',
+        color,
+        fontSize: '0.75rem',
+        lineHeight: 1.5,
+      }}
+    >
+      {message}
+    </div>
+  )
+}
+
+function RuntimeConfigurationRequired({ node, missing }: { node: AuraNode; missing: string[] }) {
+  const meta = WIDGET_REGISTRY[node.element as WidgetType]
+  const labels = missing
+    .map(propName => meta?.propSchema[propName]?.label ?? propName)
+    .join(', ')
+
+  return (
+    <RuntimeStateMessage
+      message={`${meta?.displayName ?? node.element} requires ${labels} before it can be used.`}
+      tone="warning"
+    />
+  )
+}
+
+function RuntimeUnsupportedWidget({ node }: { node: AuraNode }) {
+  const meta = WIDGET_REGISTRY[node.element as WidgetType]
+  return (
+    <RuntimeStateMessage
+      message={`${meta?.displayName ?? node.element} is not supported in the production runtime yet.`}
+      tone="error"
+    />
+  )
+}
+
 function RuntimeWidget({ node, workspaceId, appId }: WidgetProps) {
+  if (!isProductionReadyWidget(node.element)) {
+    return <RuntimeUnsupportedWidget node={node} />
+  }
+
   switch (node.element) {
     case 'text':     return <RuntimeText node={node} />
     case 'button':   return <RuntimeButton node={node} workspaceId={workspaceId} appId={appId} />
@@ -115,17 +172,16 @@ function RuntimeWidget({ node, workspaceId, appId }: WidgetProps) {
     case 'form':     return <RuntimeForm node={node} workspaceId={workspaceId} appId={appId} />
     case 'kpi':      return <RuntimeKPI node={node} />
     case 'chart':    return <RuntimeChart node={node} workspaceId={workspaceId} appId={appId} />
-    case 'filter':   return <RuntimeFilter node={node} />
     case 'markdown': return <RuntimeMarkdown node={node} />
-    case 'container':
-    case 'modal':
-    case 'tabs':
     default:
-      return <RuntimePlaceholder node={node} />
+      return <RuntimeUnsupportedWidget node={node} />
   }
 }
 
 function RuntimeText({ node }: { node: AuraNode }) {
+  const missing = getMissingRequiredProps(node)
+  if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
+
   const content = node.text ?? node.value ?? ''
   const variant = node.style?.variant ?? 'body'
   const fz = variant === 'heading1' ? '1.5rem' : variant === 'heading2' ? '1.125rem' : variant === 'caption' ? '0.75rem' : '0.875rem'
@@ -139,6 +195,9 @@ function RuntimeText({ node }: { node: AuraNode }) {
 }
 
 function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
+  const missing = getMissingRequiredProps(node)
+  if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
+
   const [status, setStatus] = useState<'idle' | 'pending' | 'done' | 'error'>('idle')
   const variant = node.style?.variant ?? 'primary'
   const bg = variant === 'danger' ? '#7f1d1d' : variant === 'secondary' ? '#1a1a1a' : '#1d4ed8'
@@ -163,7 +222,7 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
     }
   }
 
-  const label = status === 'pending' ? 'Submitting…' : status === 'done' ? 'Submitted for review' : status === 'error' ? 'Error' : (node.text ?? 'Button')
+  const label = status === 'pending' ? 'Submitting…' : status === 'done' ? 'Submitted for review' : status === 'error' ? 'Error' : (node.text ?? '')
 
   return (
     <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem' }}>
@@ -193,38 +252,50 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
 function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const connectorId: string | undefined = node.with?.connector
   const sql: string | undefined = node.with?.sql
-  const rawCols = node.style?.columns ?? node.with?.columns ?? 'id, name, status'
+  const rawCols = node.style?.columns ?? node.with?.columns ?? ''
   const staticCols = rawCols.split(',').map((c: string) => c.trim()).filter(Boolean)
+  const hasBinding = hasConnectorBinding(node)
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!connectorId || !sql) return
+    if (!connectorId || !sql) {
+      setData(null)
+      setLoading(false)
+      setError(null)
+      return
+    }
+
     let cancelled = false
     setLoading(true)
     setError(null)
     runConnectorQuery(workspaceId, connectorId, { sql })
-      .then(res => { if (!cancelled) setData(res) })
-      .catch(err => { if (!cancelled) setError(String(err?.message ?? err)) })
+      .then(res => {
+        if (cancelled) return
+        if (res.error) {
+          setError(res.error)
+          setData(null)
+          return
+        }
+        setData(res)
+      })
+      .catch(err => {
+        if (!cancelled) setError(String(err?.message ?? err))
+      })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [workspaceId, connectorId, sql])
 
   const cols = data?.columns ?? staticCols
   const rows = data?.rows ?? []
-  const hasLiveData = Boolean(connectorId && sql)
 
   return (
     <div style={{ height: '100%', overflow: 'auto', padding: '0.5rem' }}>
-      {loading && (
-        <p style={{ margin: '0.5rem', color: '#555', fontSize: '0.75rem' }}>Loading…</p>
-      )}
-      {error && (
-        <p style={{ margin: '0.5rem', color: '#f87171', fontSize: '0.75rem' }}>{error}</p>
-      )}
-      {!loading && (
+      {loading && <RuntimeStateMessage message="Loading table data…" />}
+      {!loading && error && <RuntimeStateMessage message={error} tone="error" />}
+      {!loading && !error && cols.length > 0 && (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
           <thead>
             <tr>
@@ -237,41 +308,36 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
               ))}
             </tr>
           </thead>
-          <tbody>
-            {hasLiveData
-              ? rows.map((row, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid #111' }}>
-                    {cols.map((col: string) => (
-                      <td key={col} style={{ padding: '6px 8px', color: '#ccc', fontSize: '0.78rem' }}>
-                        {String(row[col] ?? '')}
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              : [1, 2, 3].map(r => (
-                  <tr key={r} style={{ borderBottom: '1px solid #111' }}>
-                    {cols.map((col: string) => (
-                      <td key={col} style={{ padding: '6px 8px' }}>
-                        <div style={{ height: 12, background: '#181818', borderRadius: 2, width: '70%' }} />
-                      </td>
-                    ))}
-                  </tr>
-                ))
-            }
-          </tbody>
+          {rows.length > 0 && (
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i} style={{ borderBottom: '1px solid #111' }}>
+                  {cols.map((col: string) => (
+                    <td key={col} style={{ padding: '6px 8px', color: '#ccc', fontSize: '0.78rem' }}>
+                      {String(row[col] ?? '')}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          )}
         </table>
       )}
-      {!hasLiveData && !loading && (
-        <p style={{ margin: '0.5rem 0 0', color: '#333', fontSize: '0.65rem' }}>
-          Connect a data source to display live data.
-        </p>
+      {!loading && !error && !hasBinding && (
+        <RuntimeStateMessage message="Connect a data source before publishing this table." tone="warning" />
+      )}
+      {!loading && !error && hasBinding && rows.length === 0 && (
+        <RuntimeStateMessage message="Query returned no rows." />
       )}
     </div>
   )
 }
 
 function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
-  const rawFields = node.style?.fields ?? node.with?.fields ?? 'name, email'
+  const missing = getMissingRequiredProps(node)
+  if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
+
+  const rawFields = node.style?.fields ?? node.with?.fields ?? ''
   const fields = rawFields.split(',').map((f: string) => f.trim()).filter(Boolean)
   const [values, setValues] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<'idle' | 'pending' | 'done' | 'error'>('idle')
@@ -344,8 +410,11 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
 }
 
 function RuntimeKPI({ node }: { node: AuraNode }) {
-  const label = node.style?.label ?? node.text ?? 'KPI'
-  const value = node.value ?? '—'
+  const missing = getMissingRequiredProps(node)
+  if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
+
+  const label = node.style?.label ?? node.text ?? ''
+  const value = node.value ?? ''
   const prefix = node.style?.prefix ?? ''
   const suffix = node.style?.suffix ?? ''
   return (
@@ -359,81 +428,102 @@ function RuntimeKPI({ node }: { node: AuraNode }) {
 }
 
 function RuntimeChart({ node, workspaceId }: WidgetProps) {
-  const chartType = node.style?.type ?? 'bar'
+  const chartType = (node.style?.type ?? 'bar').trim() || 'bar'
   const connectorId: string | undefined = node.with?.connector
   const sql: string | undefined = node.with?.sql
   const labelCol: string = node.with?.labelCol ?? node.style?.labelCol ?? ''
   const valueCol: string = node.with?.valueCol ?? node.style?.valueCol ?? ''
+  const hasBinding = hasConnectorBinding(node)
+  const supportedType = isSupportedChartType(chartType)
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!connectorId || !sql) return
+    if (!connectorId || !sql) {
+      setData(null)
+      setLoading(false)
+      setError(null)
+      return
+    }
+
     let cancelled = false
     setLoading(true)
     setError(null)
     runConnectorQuery(workspaceId, connectorId, { sql, limit: 50 })
-      .then(res => { if (!cancelled) setData(res) })
+      .then(res => {
+        if (cancelled) return
+        if (res.error) {
+          setError(res.error)
+          setData(null)
+          return
+        }
+        setData(res)
+      })
       .catch(err => { if (!cancelled) setError(String(err?.message ?? err)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [workspaceId, connectorId, sql])
 
-  // Resolve bar data: use live rows if available, otherwise placeholder heights
-  const hasLiveData = Boolean(connectorId && sql && data && !error)
-  const barData: { label: string; value: number }[] = React.useMemo(() => {
-    if (!hasLiveData || !data) return [40, 65, 50, 80, 55, 75, 45].map((v, i) => ({ label: String(i), value: v }))
-    const vc = valueCol || data.columns[1] || data.columns[0] || ''
-    const lc = labelCol || data.columns[0] || ''
-    const maxVal = Math.max(...data.rows.map(r => Number(r[vc]) || 0), 1)
-    return data.rows.slice(0, 20).map(r => ({
-      label: String(r[lc] ?? ''),
-      value: Math.round(((Number(r[vc]) || 0) / maxVal) * 100),
-    }))
-  }, [hasLiveData, data, labelCol, valueCol])
+  const series = React.useMemo(
+    () => buildChartSeries(data, { labelCol, valueCol, limit: 20 }),
+    [data, labelCol, valueCol],
+  )
+  const maxValue = Math.max(...series.points.map(point => Math.abs(point.value)), 1)
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
       <p style={{ margin: '0 0 0.5rem', color: '#555', fontSize: '0.7rem' }}>{chartType} chart</p>
-      {loading && <p style={{ color: '#555', fontSize: '0.7rem' }}>Loading…</p>}
-      {error && <p style={{ color: '#f87171', fontSize: '0.7rem' }}>{error}</p>}
-      {!loading && (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: 4 }}>
-          {barData.map((bar, i) => (
-            <div key={i} title={`${bar.label}: ${bar.value}`} style={{ flex: 1, height: `${Math.max(bar.value, 4)}%`, background: '#1e40af', borderRadius: '2px 2px 0 0', opacity: 0.8 }} />
+      {loading ? (
+        <RuntimeStateMessage message="Loading chart data…" />
+      ) : error ? (
+        <RuntimeStateMessage message={error} tone="error" />
+      ) : !supportedType ? (
+        <RuntimeStateMessage message={`Chart type "${chartType}" is not supported in the production runtime.`} tone="error" />
+      ) : !hasBinding ? (
+        <RuntimeStateMessage message="Connect a data source before publishing this chart." tone="warning" />
+      ) : series.error ? (
+        <RuntimeStateMessage message={series.error} tone="warning" />
+      ) : series.points.length === 0 ? (
+        <RuntimeStateMessage message="Query returned no rows." />
+      ) : (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: 6, minHeight: 0 }}>
+          {series.points.map((bar, i) => (
+            <div key={`${bar.label}-${i}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', minWidth: 0, height: '100%' }}>
+              <div
+                title={`${bar.label}: ${bar.value}`}
+                style={{
+                  height: `${Math.max((Math.abs(bar.value) / maxValue) * 100, 4)}%`,
+                  background: '#1e40af',
+                  borderRadius: '2px 2px 0 0',
+                  opacity: 0.85,
+                }}
+              />
+              <div
+                style={{
+                  color: '#555',
+                  fontSize: '0.6rem',
+                  marginTop: 4,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {bar.label || ' '}
+              </div>
+            </div>
           ))}
         </div>
       )}
-      {!connectorId && !loading && (
-        <p style={{ margin: '0.5rem 0 0', color: '#333', fontSize: '0.65rem' }}>Connect a data source to display live data.</p>
-      )}
-    </div>
-  )
-}
-
-function RuntimeFilter({ node }: { node: AuraNode }) {
-  const label = node.style?.label ?? node.text ?? 'Filter'
-  const [value, setValue] = useState('')
-  return (
-    <div style={{ height: '100%', display: 'flex', alignItems: 'center', padding: '0.5rem 0.75rem', gap: '0.5rem' }}>
-      <label style={{ color: '#888', fontSize: '0.75rem', flexShrink: 0 }}>{label}</label>
-      <input
-        type="text"
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        placeholder="Filter…"
-        style={{
-          flex: 1, background: '#141414', border: '1px solid #2a2a2a',
-          borderRadius: 4, color: '#e5e5e5', fontSize: '0.8rem', padding: '0.3rem 0.5rem',
-        }}
-      />
     </div>
   )
 }
 
 function RuntimeMarkdown({ node }: { node: AuraNode }) {
+  const missing = getMissingRequiredProps(node)
+  if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
+
   const content = node.style?.content ?? node.text ?? ''
   // Minimal markdown rendering without a library — just paragraphs
   const lines = content.split('\n')
@@ -446,15 +536,6 @@ function RuntimeMarkdown({ node }: { node: AuraNode }) {
         if (line === '') return <br key={i} />
         return <p key={i} style={{ margin: '0 0 0.25rem' }}>{line}</p>
       })}
-    </div>
-  )
-}
-
-function RuntimePlaceholder({ node }: { node: AuraNode }) {
-  const meta = WIDGET_REGISTRY[node.element as WidgetType]
-  return (
-    <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#333', fontSize: '0.75rem' }}>
-      {meta?.displayName ?? node.element}
     </div>
   )
 }

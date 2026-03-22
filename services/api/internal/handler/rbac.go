@@ -42,12 +42,7 @@ func RequireWorkspaceRole(s *store.Store, log *zap.Logger, minimum model.Workspa
 
 // roleAtLeast returns true when actual >= required in the RBAC hierarchy.
 func roleAtLeast(actual, required model.WorkspaceRole) bool {
-	order := map[model.WorkspaceRole]int{
-		model.RoleEndUser:        1,
-		model.RoleAppBuilder:     2,
-		model.RoleWorkspaceAdmin: 3,
-	}
-	return order[actual] >= order[required]
+	return model.WorkspaceRoleRank(actual) >= model.WorkspaceRoleRank(required)
 }
 
 // RequireCompanyClaim checks that the {companyID} path param matches the
@@ -77,12 +72,12 @@ func isCompanyAdminOrResourceAdmin(s *store.Store, w http.ResponseWriter, r *htt
 		respondErr(w, http.StatusUnauthorized, "unauthenticated", "authentication required")
 		return false
 	}
-	binding, err := s.GetCompanyRole(r.Context(), companyID, "user", claims.UserID)
+	hasRole, err := s.SubjectHasAnyCompanyRole(r.Context(), companyID, "user", claims.UserID, "company_admin", "resource_admin")
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, "db_error", "failed to check company role")
 		return false
 	}
-	if binding == nil || (binding.Role != "company_admin" && binding.Role != "resource_admin") {
+	if !hasRole {
 		respondErr(w, http.StatusForbidden, "insufficient_role", "company_admin or resource_admin role required")
 		return false
 	}
@@ -97,13 +92,35 @@ func isCompanyAdmin(s *store.Store, w http.ResponseWriter, r *http.Request, comp
 		respondErr(w, http.StatusUnauthorized, "unauthenticated", "authentication required")
 		return false
 	}
-	binding, err := s.GetCompanyRole(r.Context(), companyID, "user", claims.UserID)
+	hasRole, err := s.SubjectHasCompanyRole(r.Context(), companyID, "user", claims.UserID, "company_admin")
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, "db_error", "failed to check company role")
 		return false
 	}
-	if binding == nil || binding.Role != "company_admin" {
+	if !hasRole {
 		respondErr(w, http.StatusForbidden, "insufficient_role", "company_admin role required")
+		return false
+	}
+	return true
+}
+
+func isCompanyAdminOrWorkspaceAdmin(s *store.Store, w http.ResponseWriter, r *http.Request, companyID, workspaceID string) bool {
+	claims, ok := ClaimsFromContext(r.Context())
+	if !ok {
+		respondErr(w, http.StatusUnauthorized, "unauthenticated", "authentication required")
+		return false
+	}
+	hasCompanyAdmin, err := s.SubjectHasCompanyRole(r.Context(), companyID, "user", claims.UserID, "company_admin")
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, "db_error", "failed to check company role")
+		return false
+	}
+	if hasCompanyAdmin {
+		return true
+	}
+	role, err := s.GetMemberRole(r.Context(), workspaceID, claims.UserID)
+	if err != nil || !roleAtLeast(role, model.RoleWorkspaceAdmin) {
+		respondErr(w, http.StatusForbidden, "insufficient_role", "company_admin or workspace_admin role required")
 		return false
 	}
 	return true

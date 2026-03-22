@@ -20,6 +20,26 @@ function slugify(name: string) {
     .replace(/^-|-$/g, '')
 }
 
+function isReadOnlyGroup(group: CompanyGroup) {
+  return group.source_type !== 'manual'
+}
+
+function formatGroupSource(sourceType: string) {
+  switch (sourceType) {
+    case 'company_synthetic':
+      return 'System'
+    case 'workspace_sync':
+      return 'Workspace Sync'
+    case 'idp':
+    case 'external':
+      return 'IdP'
+    case 'manual':
+      return 'Manual'
+    default:
+      return sourceType.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+  }
+}
+
 const btn: React.CSSProperties = {
   background: 'none',
   border: '1px solid #1e1e1e',
@@ -178,7 +198,7 @@ export default function GroupsPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: '1.5rem' }}>
         <h1 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>Groups</h1>
         <span style={{ color: '#555', fontSize: '0.75rem' }}>
-          Manage company groups and their members.
+          Manage manual company groups and inspect system-managed memberships.
         </span>
         <div style={{ flex: 1 }} />
         <button onClick={load} style={btn}>Refresh</button>
@@ -236,6 +256,7 @@ export default function GroupsPage() {
           {groups.map(group => {
             const isExpanded = expandedId === group.id
             const isDeleting = confirmDeleteId === group.id
+            const isReadOnly = isReadOnlyGroup(group)
 
             return (
               <div
@@ -265,7 +286,17 @@ export default function GroupsPage() {
                   <span style={{ fontSize: '0.65rem', color: '#555', fontFamily: 'monospace' }}>
                     {group.slug}
                   </span>
-                  {group.source_type && group.source_type !== 'manual' && (
+                  {isReadOnly ? (
+                    <span style={{
+                      fontSize: '0.6rem',
+                      color: '#fbbf24',
+                      background: 'rgba(251,191,36,0.12)',
+                      borderRadius: 3,
+                      padding: '1px 5px',
+                    }}>
+                      Read only · {formatGroupSource(group.source_type)}
+                    </span>
+                  ) : (
                     <span style={{
                       fontSize: '0.6rem',
                       color: '#888',
@@ -273,7 +304,7 @@ export default function GroupsPage() {
                       borderRadius: 3,
                       padding: '1px 5px',
                     }}>
-                      {group.source_type}
+                      {formatGroupSource(group.source_type)}
                     </span>
                   )}
                   <div style={{ flex: 1 }} />
@@ -282,30 +313,32 @@ export default function GroupsPage() {
                   </span>
 
                   {/* Delete */}
-                  {isDeleting ? (
-                    <span style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+                  {!isReadOnly && (
+                    isDeleting ? (
+                      <span style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+                        <button
+                          onClick={() => handleDelete(group.id)}
+                          disabled={deleting}
+                          style={{ ...btn, color: '#ef4444', borderColor: '#ef4444', fontSize: '0.65rem' }}
+                        >
+                          {deleting ? '…' : 'Confirm'}
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          style={{ ...btn, fontSize: '0.65rem' }}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
                       <button
-                        onClick={() => handleDelete(group.id)}
-                        disabled={deleting}
-                        style={{ ...btn, color: '#ef4444', borderColor: '#ef4444', fontSize: '0.65rem' }}
+                        onClick={e => { e.stopPropagation(); setConfirmDeleteId(group.id) }}
+                        style={{ ...btn, color: '#555', fontSize: '0.65rem', padding: '2px 6px' }}
+                        title="Delete group"
                       >
-                        {deleting ? '…' : 'Confirm'}
+                        ✕
                       </button>
-                      <button
-                        onClick={() => setConfirmDeleteId(null)}
-                        style={{ ...btn, fontSize: '0.65rem' }}
-                      >
-                        Cancel
-                      </button>
-                    </span>
-                  ) : (
-                    <button
-                      onClick={e => { e.stopPropagation(); setConfirmDeleteId(group.id) }}
-                      style={{ ...btn, color: '#555', fontSize: '0.65rem', padding: '2px 6px' }}
-                      title="Delete group"
-                    >
-                      ✕
-                    </button>
+                    )
                   )}
                 </div>
 
@@ -315,23 +348,37 @@ export default function GroupsPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.5rem' }}>
                       <span style={{ fontSize: '0.75rem', color: '#888', fontWeight: 500 }}>Members</span>
                       <div style={{ flex: 1 }} />
-                      <input
-                        type="text"
-                        placeholder="User ID"
-                        value={addUserId}
-                        onChange={e => setAddUserId(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleAddMember()}
-                        onClick={e => e.stopPropagation()}
-                        style={{ ...inputStyle, width: 180 }}
-                      />
-                      <button
-                        onClick={e => { e.stopPropagation(); handleAddMember() }}
-                        disabled={adding || !addUserId.trim()}
-                        style={{ ...btn, color: adding ? '#333' : '#2563eb', borderColor: '#2563eb', fontSize: '0.65rem' }}
-                      >
-                        {adding ? '…' : 'Add'}
-                      </button>
+                      {isReadOnly ? (
+                        <span style={{ color: '#555', fontSize: '0.72rem' }}>
+                          Membership is managed automatically for this group.
+                        </span>
+                      ) : (
+                        <>
+                          <input
+                            type="text"
+                            placeholder="User ID"
+                            value={addUserId}
+                            onChange={e => setAddUserId(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleAddMember()}
+                            onClick={e => e.stopPropagation()}
+                            style={{ ...inputStyle, width: 180 }}
+                          />
+                          <button
+                            onClick={e => { e.stopPropagation(); handleAddMember() }}
+                            disabled={adding || !addUserId.trim()}
+                            style={{ ...btn, color: adding ? '#333' : '#2563eb', borderColor: '#2563eb', fontSize: '0.65rem' }}
+                          >
+                            {adding ? '…' : 'Add'}
+                          </button>
+                        </>
+                      )}
                     </div>
+
+                    {isReadOnly && (
+                      <p style={{ color: '#555', fontSize: '0.72rem', margin: '0 0 0.5rem' }}>
+                        This group is maintained by Lima or your identity provider, so membership edits are disabled here.
+                      </p>
+                    )}
 
                     {membersError && (
                       <p style={{ color: '#f87171', fontSize: '0.75rem', margin: '0 0 0.5rem' }}>
@@ -353,7 +400,7 @@ export default function GroupsPage() {
                             <th style={{ textAlign: 'left', padding: '4px 6px', color: '#555', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
                               Joined
                             </th>
-                            <th style={{ width: 40 }} />
+                            {!isReadOnly && <th style={{ width: 40 }} />}
                           </tr>
                         </thead>
                         <tbody>
@@ -365,15 +412,17 @@ export default function GroupsPage() {
                               <td style={{ padding: '4px 6px', color: '#888' }}>
                                 {new Date(m.joined_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                               </td>
-                              <td style={{ padding: '4px 6px', textAlign: 'right' }}>
-                                <button
-                                  onClick={e => { e.stopPropagation(); handleRemoveMember(m.user_id) }}
-                                  style={{ ...btn, color: '#ef4444', fontSize: '0.6rem', padding: '1px 5px', borderColor: 'transparent' }}
-                                  title="Remove member"
-                                >
-                                  ✕
-                                </button>
-                              </td>
+                              {!isReadOnly && (
+                                <td style={{ padding: '4px 6px', textAlign: 'right' }}>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); handleRemoveMember(m.user_id) }}
+                                    style={{ ...btn, color: '#ef4444', fontSize: '0.6rem', padding: '1px 5px', borderColor: 'transparent' }}
+                                    title="Remove member"
+                                  >
+                                    ✕
+                                  </button>
+                                </td>
+                              )}
                             </tr>
                           ))}
                         </tbody>

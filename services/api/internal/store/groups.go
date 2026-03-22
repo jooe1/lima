@@ -82,6 +82,22 @@ func (s *Store) CreateCompanyGroup(ctx context.Context, companyID, name, slug, s
 	return g, nil
 }
 
+func (s *Store) FindCompanyAllEmployeesGroup(ctx context.Context, companyID string) (*model.CompanyGroup, error) {
+	return findCompanyAllEmployeesGroup(ctx, s.pool, companyID)
+}
+
+func (s *Store) EnsureCompanyAllEmployeesGroup(ctx context.Context, companyID string) (*model.CompanyGroup, error) {
+	return ensureCompanyAllEmployeesGroup(ctx, s.pool, companyID)
+}
+
+func (s *Store) FindWorkspaceSyncGroup(ctx context.Context, workspaceID string) (*model.CompanyGroup, error) {
+	return findWorkspaceSyncGroup(ctx, s.pool, workspaceID)
+}
+
+func (s *Store) EnsureWorkspaceSyncGroup(ctx context.Context, workspaceID string) (*model.CompanyGroup, error) {
+	return ensureWorkspaceSyncGroup(ctx, s.pool, workspaceID)
+}
+
 // DeleteCompanyGroup deletes a group by ID, enforcing company ownership.
 func (s *Store) DeleteCompanyGroup(ctx context.Context, companyID, groupID string) error {
 	tag, err := s.pool.Exec(ctx,
@@ -121,7 +137,111 @@ func (s *Store) ListGroupMembers(ctx context.Context, groupID string) ([]model.G
 
 // AddGroupMember adds a user to a group. Ignores if already a member.
 func (s *Store) AddGroupMember(ctx context.Context, groupID, userID string) error {
-	_, err := s.pool.Exec(ctx,
+	return addGroupMember(ctx, s.pool, groupID, userID)
+}
+
+// RemoveGroupMember removes a user from a group.
+func (s *Store) RemoveGroupMember(ctx context.Context, groupID, userID string) error {
+	return removeGroupMember(ctx, s.pool, groupID, userID)
+}
+
+func findCompanyAllEmployeesGroup(ctx context.Context, q dbtx, companyID string) (*model.CompanyGroup, error) {
+	row := q.QueryRow(ctx,
+		`SELECT `+companyGroupCols+`
+		 FROM company_groups
+		 WHERE company_id = $1 AND source_type = $2 AND slug = $3`,
+		companyID, model.CompanyGroupSourceCompanySynthetic, model.CompanyAllEmployeesGroupSlug,
+	)
+	g, err := scanCompanyGroup(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find company all employees group: %w", err)
+	}
+	return g, nil
+}
+
+func ensureCompanyAllEmployeesGroup(ctx context.Context, q dbtx, companyID string) (*model.CompanyGroup, error) {
+	row := q.QueryRow(ctx,
+		`INSERT INTO company_groups (company_id, name, slug, source_type, external_ref)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (company_id, slug) DO UPDATE
+		 SET name = EXCLUDED.name,
+		     source_type = EXCLUDED.source_type,
+		     external_ref = EXCLUDED.external_ref,
+		     updated_at = now()
+		 RETURNING `+companyGroupCols,
+		companyID,
+		model.CompanyAllEmployeesGroupName,
+		model.CompanyAllEmployeesGroupSlug,
+		model.CompanyGroupSourceCompanySynthetic,
+		"all-employees",
+	)
+	g, err := scanCompanyGroup(row)
+	if err != nil {
+		return nil, fmt.Errorf("ensure company all employees group: %w", err)
+	}
+	return g, nil
+}
+
+func findWorkspaceSyncGroup(ctx context.Context, q dbtx, workspaceID string) (*model.CompanyGroup, error) {
+	row := q.QueryRow(ctx,
+		`SELECT `+companyGroupCols+`
+		 FROM company_groups
+		 WHERE source_type = $1 AND external_ref = $2
+		 LIMIT 1`,
+		model.CompanyGroupSourceWorkspaceSync,
+		workspaceID,
+	)
+	g, err := scanCompanyGroup(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find workspace sync group: %w", err)
+	}
+	return g, nil
+}
+
+func ensureWorkspaceSyncGroup(ctx context.Context, q dbtx, workspaceID string) (*model.CompanyGroup, error) {
+	row := q.QueryRow(ctx,
+		`INSERT INTO company_groups (company_id, name, slug, source_type, external_ref)
+		 SELECT w.company_id,
+		        'Workspace: ' || w.name,
+		        'ws-' || REPLACE(w.id::text, '-', ''),
+		        $2,
+		        w.id::text
+		 FROM workspaces w
+		 WHERE w.id = $1
+		 ON CONFLICT (company_id, slug) DO UPDATE
+		 SET name = EXCLUDED.name,
+		     source_type = EXCLUDED.source_type,
+		     external_ref = EXCLUDED.external_ref,
+		     updated_at = now()
+		 RETURNING `+companyGroupCols,
+		workspaceID,
+		model.CompanyGroupSourceWorkspaceSync,
+	)
+	g, err := scanCompanyGroup(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ensure workspace sync group: %w", err)
+	}
+	return g, nil
+}
+
+func addGroupMember(ctx context.Context, q dbtx, groupID, userID string) error {
+	valid, err := groupUserCompanyMatch(ctx, q, groupID, userID)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return ErrNotFound
+	}
+	_, err = q.Exec(ctx,
 		`INSERT INTO group_memberships (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		groupID, userID,
 	)
@@ -131,9 +251,15 @@ func (s *Store) AddGroupMember(ctx context.Context, groupID, userID string) erro
 	return nil
 }
 
-// RemoveGroupMember removes a user from a group.
-func (s *Store) RemoveGroupMember(ctx context.Context, groupID, userID string) error {
-	_, err := s.pool.Exec(ctx,
+func removeGroupMember(ctx context.Context, q dbtx, groupID, userID string) error {
+	valid, err := groupUserCompanyMatch(ctx, q, groupID, userID)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return ErrNotFound
+	}
+	_, err = q.Exec(ctx,
 		`DELETE FROM group_memberships WHERE group_id = $1 AND user_id = $2`,
 		groupID, userID,
 	)
@@ -141,4 +267,21 @@ func (s *Store) RemoveGroupMember(ctx context.Context, groupID, userID string) e
 		return fmt.Errorf("remove group member: %w", err)
 	}
 	return nil
+}
+
+func groupUserCompanyMatch(ctx context.Context, q dbtx, groupID, userID string) (bool, error) {
+	var valid bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1
+			FROM company_groups cg
+			JOIN users u ON u.company_id = cg.company_id
+			WHERE cg.id = $1 AND u.id = $2
+		)`,
+		groupID, userID,
+	).Scan(&valid)
+	if err != nil {
+		return false, fmt.Errorf("validate group membership company scope: %w", err)
+	}
+	return valid, nil
 }

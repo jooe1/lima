@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '../../lib/auth'
-import { devLogin, getSSOLoginURL, type Company } from '../../lib/api'
+import { getSSOLoginURL, type Company } from '../../lib/api'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -14,13 +14,14 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const isDev = process.env.NEXT_PUBLIC_DEV_LOGIN === 'true'
+  const isDev = process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_DEV_LOGIN === 'true'
 
   async function handleDevLogin(e: React.FormEvent) {
     e.preventDefault()
     setError('')
     setLoading(true)
     try {
+      const { devLogin } = await import('../../lib/api')
       const res = await devLogin(email, name || email, company)
       await signIn(res.token, res.company as Company)
       router.push('/builder')

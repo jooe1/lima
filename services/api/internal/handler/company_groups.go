@@ -67,7 +67,7 @@ func CreateGroup(s *store.Store, log *zap.Logger) http.HandlerFunc {
 }
 
 // DeleteGroup deletes a manual company group.
-// Synthetic ("workspace_sync" or "external") groups are protected from manual deletion.
+// Synthetic and IdP-managed groups are protected from manual deletion.
 func DeleteGroup(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		companyID := chi.URLParam(r, "companyID")
@@ -83,7 +83,7 @@ func DeleteGroup(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		if group.SourceType == "workspace_sync" || group.SourceType == "external" {
+		if model.IsReadOnlyCompanyGroupSource(group.SourceType) {
 			respondErr(w, http.StatusForbidden, "forbidden", "synthetic groups cannot be deleted manually")
 			return
 		}
@@ -138,9 +138,23 @@ func AddGroupMember(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 
+		group, err := s.GetCompanyGroup(r.Context(), companyID, groupID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		if model.IsReadOnlyCompanyGroupSource(group.SourceType) {
+			respondErr(w, http.StatusForbidden, "forbidden", "synthetic groups cannot be edited manually")
+			return
+		}
+
 		if err := s.AddGroupMember(r.Context(), groupID, body.UserID); err != nil {
-			log.Error("add group member", zap.Error(err))
-			respondErr(w, http.StatusInternalServerError, "db_error", "failed to add member")
+			handleStoreErr(w, err)
+			return
+		}
+		if err := s.ReconcileProvisionedUserAccess(r.Context(), companyID, body.UserID); err != nil {
+			log.Error("reconcile provisioned user access after group add", zap.Error(err), zap.String("company_id", companyID), zap.String("user_id", body.UserID))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to reconcile workspace access")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -158,9 +172,23 @@ func RemoveGroupMember(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 
+		group, err := s.GetCompanyGroup(r.Context(), companyID, groupID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		if model.IsReadOnlyCompanyGroupSource(group.SourceType) {
+			respondErr(w, http.StatusForbidden, "forbidden", "synthetic groups cannot be edited manually")
+			return
+		}
+
 		if err := s.RemoveGroupMember(r.Context(), groupID, userID); err != nil {
-			log.Error("remove group member", zap.Error(err))
-			respondErr(w, http.StatusInternalServerError, "db_error", "failed to remove member")
+			handleStoreErr(w, err)
+			return
+		}
+		if err := s.ReconcileProvisionedUserAccess(r.Context(), companyID, userID); err != nil {
+			log.Error("reconcile provisioned user access after group remove", zap.Error(err), zap.String("company_id", companyID), zap.String("user_id", userID))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to reconcile workspace access")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

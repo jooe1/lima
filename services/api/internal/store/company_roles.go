@@ -20,6 +20,20 @@ func scanCompanyRoleBinding(row pgx.Row) (*model.CompanyRoleBinding, error) {
 	return b, nil
 }
 
+func scanCompanyRoleBindingRows(rows pgx.Rows) ([]model.CompanyRoleBinding, error) {
+	defer rows.Close()
+
+	var out []model.CompanyRoleBinding
+	for rows.Next() {
+		b := model.CompanyRoleBinding{}
+		if err := rows.Scan(&b.CompanyID, &b.SubjectType, &b.SubjectID, &b.Role, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // ListCompanyRoleBindings returns all role bindings for a company.
 func (s *Store) ListCompanyRoleBindings(ctx context.Context, companyID string) ([]model.CompanyRoleBinding, error) {
 	rows, err := s.pool.Query(ctx,
@@ -29,17 +43,11 @@ func (s *Store) ListCompanyRoleBindings(ctx context.Context, companyID string) (
 	if err != nil {
 		return nil, fmt.Errorf("list company role bindings: %w", err)
 	}
-	defer rows.Close()
-
-	var out []model.CompanyRoleBinding
-	for rows.Next() {
-		b := model.CompanyRoleBinding{}
-		if err := rows.Scan(&b.CompanyID, &b.SubjectType, &b.SubjectID, &b.Role, &b.CreatedAt); err != nil {
-			return nil, fmt.Errorf("list company role bindings scan: %w", err)
-		}
-		out = append(out, b)
+	out, err := scanCompanyRoleBindingRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("list company role bindings scan: %w", err)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // GetCompanyRole returns the role binding for a specific subject in a company, or nil if none.
@@ -91,4 +99,90 @@ func (s *Store) DeleteCompanyRoleBinding(ctx context.Context, companyID, subject
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) SubjectHasCompanyRole(ctx context.Context, companyID, subjectType, subjectID, role string) (bool, error) {
+	return subjectHasCompanyRole(ctx, s.pool, companyID, subjectType, subjectID, role)
+}
+
+func (s *Store) SubjectHasAnyCompanyRole(ctx context.Context, companyID, subjectType, subjectID string, roles ...string) (bool, error) {
+	return subjectHasAnyCompanyRole(ctx, s.pool, companyID, subjectType, subjectID, roles...)
+}
+
+func (s *Store) CompanyHasRole(ctx context.Context, companyID, role string) (bool, error) {
+	return companyHasRole(ctx, s.pool, companyID, role)
+}
+
+func subjectHasCompanyRole(ctx context.Context, q dbtx, companyID, subjectType, subjectID, role string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1
+			FROM company_role_bindings
+			WHERE company_id = $1 AND subject_type = $2 AND subject_id = $3 AND role = $4
+		)`,
+		companyID, subjectType, subjectID, role,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("subject has company role: %w", err)
+	}
+	return exists, nil
+}
+
+func subjectHasAnyCompanyRole(ctx context.Context, q dbtx, companyID, subjectType, subjectID string, roles ...string) (bool, error) {
+	if len(roles) == 0 {
+		return false, nil
+	}
+	var exists bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1
+			FROM company_role_bindings
+			WHERE company_id = $1 AND subject_type = $2 AND subject_id = $3 AND role = ANY($4)
+		)`,
+		companyID, subjectType, subjectID, roles,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("subject has any company role: %w", err)
+	}
+	return exists, nil
+}
+
+func companyHasRole(ctx context.Context, q dbtx, companyID, role string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1
+			FROM company_role_bindings
+			WHERE company_id = $1 AND role = $2
+		)`,
+		companyID, role,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("company has role: %w", err)
+	}
+	return exists, nil
+}
+
+func upsertCompanyRoleBinding(ctx context.Context, q dbtx, companyID, subjectType, subjectID, role string) (*model.CompanyRoleBinding, error) {
+	row := q.QueryRow(ctx,
+		`INSERT INTO company_role_bindings (company_id, subject_type, subject_id, role)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (company_id, subject_type, subject_id, role) DO NOTHING
+		 RETURNING `+companyRoleBindingCols,
+		companyID, subjectType, subjectID, role,
+	)
+	b, err := scanCompanyRoleBinding(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return scanCompanyRoleBinding(q.QueryRow(ctx,
+			`SELECT `+companyRoleBindingCols+`
+			 FROM company_role_bindings
+			 WHERE company_id = $1 AND subject_type = $2 AND subject_id = $3 AND role = $4`,
+			companyID, subjectType, subjectID, role,
+		))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("upsert company role binding: %w", err)
+	}
+	return b, nil
 }

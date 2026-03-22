@@ -3,6 +3,7 @@
 import React, { useState } from 'react'
 import { type AuraDocument } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, listWidgets, type WidgetType } from '@lima/widget-catalog'
+import { isProductionReadyWidget } from '../../../lib/appValidation'
 
 interface Props {
   doc: AuraDocument
@@ -36,7 +37,7 @@ const WIDGET_ICONS: Record<string, string> = {
 export function LayersPanel({ doc, selectedId, onSelect, onAdd, onDelete }: Props) {
   const [showAdd, setShowAdd] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const allWidgets = listWidgets()
+  const allWidgets = listWidgets().filter(meta => isProductionReadyWidget(meta.type))
   const filteredDoc = useSearch(doc, searchQuery)
 
   return (
@@ -154,6 +155,7 @@ export function LayersPanel({ doc, selectedId, onSelect, onAdd, onDelete }: Prop
             {filteredDoc.map(node => {
               const meta = WIDGET_REGISTRY[node.element as WidgetType]
               const isSelected = node.id === selectedId
+              const isUnsupported = !isProductionReadyWidget(node.element)
               return (
                 <li
                   key={node.id}
@@ -184,6 +186,7 @@ export function LayersPanel({ doc, selectedId, onSelect, onAdd, onDelete }: Prop
                     <div style={{ fontSize: '0.6rem', color: '#333' }}>
                       {meta?.displayName ?? node.element}
                       {node.manuallyEdited && <span title="Manually edited" style={{ color: '#854d0e', marginLeft: 4 }}>✎</span>}
+                      {isUnsupported && <span title="Blocked from production publish" style={{ color: '#f87171', marginLeft: 4 }}>unsupported</span>}
                     </div>
                   </div>
                   {/* Delete button — shown on hover/selection */}

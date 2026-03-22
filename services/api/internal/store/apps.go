@@ -11,6 +11,7 @@ import (
 )
 
 const appVersionCols = `id, app_id, version_num, dsl_source, node_metadata, published_by, published_at`
+const appVersionColsQualified = `v.id, v.app_id, v.version_num, v.dsl_source, v.node_metadata, v.published_by, v.published_at`
 
 func scanAppVersionRow(row pgx.Row) (*model.AppVersion, error) {
 	v := &model.AppVersion{}
@@ -318,7 +319,7 @@ func (s *Store) GetLatestPublishedVersion(ctx context.Context, workspaceID, appI
 // that the user can launch for a published app.
 func (s *Store) GetLatestUsablePublicationVersion(ctx context.Context, workspaceID, appID, userID string) (*model.AppVersion, error) {
 	v, err := scanAppVersionRow(s.pool.QueryRow(ctx,
-		`SELECT `+appVersionCols+`
+		`SELECT `+appVersionColsQualified+`
 		 FROM app_publications ap
 		 JOIN apps a ON a.id = ap.app_id AND a.workspace_id = ap.workspace_id
 		 JOIN app_versions v ON v.id = ap.app_version_id AND v.app_id = ap.app_id
@@ -356,7 +357,7 @@ func (s *Store) GetLatestUsablePublicationVersion(ctx context.Context, workspace
 // GetPublishedVersionForPublication returns the published app version pinned to a specific active publication.
 func (s *Store) GetPublishedVersionForPublication(ctx context.Context, workspaceID, appID, publicationID string) (*model.AppVersion, error) {
 	v, err := scanAppVersionRow(s.pool.QueryRow(ctx,
-		`SELECT `+appVersionCols+`
+		`SELECT `+appVersionColsQualified+`
 		 FROM app_publications ap
 		 JOIN apps a ON a.id = ap.app_id AND a.workspace_id = ap.workspace_id
 		 JOIN app_versions v ON v.id = ap.app_version_id AND v.app_id = ap.app_id

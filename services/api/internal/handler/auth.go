@@ -201,6 +201,11 @@ func SSOCallback(cfg *config.Config, s *store.Store, log *zap.Logger) http.Handl
 			respondErr(w, http.StatusInternalServerError, "db_error", "failed to resolve user")
 			return
 		}
+		if err := s.ReconcileProvisionedUserAccess(r.Context(), company.ID, user.ID); err != nil {
+			log.Error("reconcile provisioned user access", zap.Error(err), zap.String("company_id", company.ID), zap.String("user_id", user.ID))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to provision company access")
+			return
+		}
 
 		// Issue JWT; workspace is resolved by the frontend after login.
 		tokenStr, err := issueJWT(cfg, user, "", model.RoleEndUser)
@@ -250,6 +255,11 @@ func DevLogin(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 		if err != nil {
 			log.Error("dev login create user", zap.Error(err))
 			respondErr(w, http.StatusInternalServerError, "db_error", "failed to create user")
+			return
+		}
+		if err := s.ReconcileProvisionedUserAccess(r.Context(), company.ID, user.ID); err != nil {
+			log.Error("dev login reconcile provisioned user access", zap.Error(err), zap.String("company_id", company.ID), zap.String("user_id", user.ID))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to provision company access")
 			return
 		}
 

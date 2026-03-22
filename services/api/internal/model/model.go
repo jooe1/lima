@@ -42,6 +42,71 @@ const (
 	RoleEndUser        WorkspaceRole = "end_user"
 )
 
+func WorkspaceRoleRank(role WorkspaceRole) int {
+	switch role {
+	case RoleWorkspaceAdmin:
+		return 3
+	case RoleAppBuilder:
+		return 2
+	case RoleEndUser:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func HighestWorkspaceRole(roles []WorkspaceRole) (WorkspaceRole, bool) {
+	best := WorkspaceRole("")
+	bestRank := 0
+	for _, role := range roles {
+		rank := WorkspaceRoleRank(role)
+		if rank > bestRank {
+			best = role
+			bestRank = rank
+		}
+	}
+	if bestRank == 0 {
+		return "", false
+	}
+	return best, true
+}
+
+type WorkspaceGrantSource string
+
+const (
+	WorkspaceGrantSourceManual          WorkspaceGrantSource = "manual"
+	WorkspaceGrantSourcePolicy          WorkspaceGrantSource = "policy"
+	WorkspaceGrantSourceIDP             WorkspaceGrantSource = "idp"
+	WorkspaceGrantSourceSystemBootstrap WorkspaceGrantSource = "system_bootstrap"
+)
+
+const (
+	WorkspaceGrantSourceRefManual          = "manual"
+	WorkspaceGrantSourceRefSystemBootstrap = "workspace_creator"
+)
+
+type WorkspaceAccessPolicyMatchKind string
+
+const (
+	WorkspaceAccessPolicyMatchAllCompanyMembers WorkspaceAccessPolicyMatchKind = "all_company_members"
+	WorkspaceAccessPolicyMatchCompanyGroup      WorkspaceAccessPolicyMatchKind = "company_group"
+	WorkspaceAccessPolicyMatchIDPGroup          WorkspaceAccessPolicyMatchKind = "idp_group"
+)
+
+func WorkspacePolicyGrantSourceRef(matchKind WorkspaceAccessPolicyMatchKind, groupID *string) string {
+	switch matchKind {
+	case WorkspaceAccessPolicyMatchAllCompanyMembers:
+		return string(WorkspaceAccessPolicyMatchAllCompanyMembers)
+	case WorkspaceAccessPolicyMatchCompanyGroup, WorkspaceAccessPolicyMatchIDPGroup:
+		if groupID == nil {
+			return string(matchKind)
+		}
+		return string(matchKind) + ":" + *groupID
+	default:
+		return string(matchKind)
+	}
+}
+
 type MemberDetail struct {
 	UserID      string        `json:"user_id"`
 	WorkspaceID string        `json:"workspace_id"`
@@ -49,6 +114,46 @@ type MemberDetail struct {
 	Name        string        `json:"name"`
 	Role        WorkspaceRole `json:"role"`
 	JoinedAt    time.Time     `json:"joined_at"`
+	Grants      []MemberGrant `json:"grants,omitempty"`
+}
+
+type MemberGrant struct {
+	Role        WorkspaceRole                   `json:"role"`
+	GrantSource WorkspaceGrantSource            `json:"grant_source"`
+	SourceRef   string                          `json:"source_ref"`
+	Explanation string                          `json:"explanation"`
+	MatchKind   *WorkspaceAccessPolicyMatchKind `json:"match_kind,omitempty"`
+	GroupID     *string                         `json:"group_id,omitempty"`
+	GroupName   *string                         `json:"group_name,omitempty"`
+}
+
+type WorkspaceMemberGrant struct {
+	ID          string               `json:"id"`
+	WorkspaceID string               `json:"workspace_id"`
+	UserID      string               `json:"user_id"`
+	Role        WorkspaceRole        `json:"role"`
+	GrantSource WorkspaceGrantSource `json:"grant_source"`
+	SourceRef   string               `json:"source_ref"`
+	CreatedBy   *string              `json:"created_by,omitempty"`
+	CreatedAt   time.Time            `json:"created_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
+}
+
+type WorkspaceAccessPolicyRule struct {
+	ID          string                         `json:"id"`
+	WorkspaceID string                         `json:"workspace_id"`
+	MatchKind   WorkspaceAccessPolicyMatchKind `json:"match_kind"`
+	GroupID     *string                        `json:"group_id,omitempty"`
+	Role        WorkspaceRole                  `json:"role"`
+	CreatedBy   *string                        `json:"created_by,omitempty"`
+	CreatedAt   time.Time                      `json:"created_at"`
+	UpdatedAt   time.Time                      `json:"updated_at"`
+}
+
+type WorkspaceAccessPolicyRuleInput struct {
+	MatchKind WorkspaceAccessPolicyMatchKind `json:"match_kind"`
+	GroupID   *string                        `json:"group_id,omitempty"`
+	Role      WorkspaceRole                  `json:"role"`
 }
 
 // ---- Apps -------------------------------------------------------------------
@@ -416,13 +521,31 @@ type CompanyRoleBinding struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+const (
+	CompanyGroupSourceManual           = "manual"
+	CompanyGroupSourceCompanySynthetic = "company_synthetic"
+	CompanyGroupSourceWorkspaceSync    = "workspace_sync"
+	CompanyGroupSourceIDP              = "idp"
+	CompanyGroupSourceLegacyExternal   = "external"
+	CompanyAllEmployeesGroupName       = "All Employees"
+	CompanyAllEmployeesGroupSlug       = "system-all-employees"
+)
+
+func IsIDPGroupSource(source string) bool {
+	return source == CompanyGroupSourceIDP || source == CompanyGroupSourceLegacyExternal
+}
+
+func IsReadOnlyCompanyGroupSource(source string) bool {
+	return source == CompanyGroupSourceCompanySynthetic || source == CompanyGroupSourceWorkspaceSync || IsIDPGroupSource(source)
+}
+
 // CompanyGroup is a named set of users within a company, used for audience targeting and grants.
 type CompanyGroup struct {
 	ID          string    `json:"id"`
 	CompanyID   string    `json:"company_id"`
 	Name        string    `json:"name"`
 	Slug        string    `json:"slug"`
-	SourceType  string    `json:"source_type"` // "internal", "workspace_sync", "external"
+	SourceType  string    `json:"source_type"` // "manual", "company_synthetic", "workspace_sync", "idp"
 	ExternalRef *string   `json:"external_ref,omitempty"`
 	ManagedBy   *string   `json:"managed_by,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`

@@ -63,9 +63,7 @@ export type PropSchema = Record<string, PropDef>
 // AI system-prompt context so the model knows which props are valid.
 export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
   table: {
-    data: { type: 'expression', label: 'Data', description: 'Array expression', required: true },
-    columns: { type: 'string', label: 'Columns', description: 'Comma-separated column keys' },
-    pageSize: { type: 'number', label: 'Page size', default: 25 },
+    columns: { type: 'string', label: 'Columns', description: 'Optional comma-separated fallback columns' },
   },
   form: {
     fields: { type: 'string', label: 'Fields', description: 'Comma-separated field names', required: true },
@@ -83,10 +81,7 @@ export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
     disabled: { type: 'expression', label: 'Disabled', default: 'false' },
   },
   chart: {
-    data: { type: 'expression', label: 'Data', required: true },
-    xField: { type: 'string', label: 'X field', required: true },
-    yField: { type: 'string', label: 'Y field', required: true },
-    type: { type: 'string', label: 'Chart type', description: 'bar | line | area | pie', default: 'bar' },
+    type: { type: 'string', label: 'Chart type', description: 'bar', default: 'bar' },
   },
   kpi: {
     value: { type: 'expression', label: 'Value', required: true },
@@ -136,7 +131,7 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
   table: {
     type: 'table',
     displayName: 'Table',
-    description: 'Displays rows from a query or array',
+    description: 'Displays rows from a connector query',
     icon: 'Table',
     defaultSize: { w: 12, h: 6 },
     propSchema: WidgetPropSchemas.table,
@@ -185,14 +180,14 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
   chart: {
     type: 'chart',
     displayName: 'Chart',
-    description: 'Bar, line, area, or pie chart',
+    description: 'Bar chart backed by connector data',
     icon: 'BarChart2',
     defaultSize: { w: 8, h: 6 },
     propSchema: WidgetPropSchemas.chart,
     dashboardHint: {
       pattern: 'categorical',
-      description: 'Feed with a GROUP BY aggregate or time-series query. For line/area charts prefer time_series; for bar/pie charts prefer categorical.',
-      exampleSQL: 'SELECT {{xField}}, COUNT(*) AS {{yField}} FROM {{table}} GROUP BY {{xField}} ORDER BY {{xField}}',
+      description: 'Feed with a grouped query that returns label/value rows suitable for a bar chart.',
+      exampleSQL: 'SELECT {{labelColumn}} AS label, COUNT(*) AS value FROM {{table}} GROUP BY {{labelColumn}} ORDER BY {{labelColumn}}',
     },
   },
   kpi: {

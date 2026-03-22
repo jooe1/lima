@@ -18,7 +18,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const body = await res.json().catch(() => ({ message: res.statusText }))
     throw new ApiError(res.status, body.error ?? 'unknown_error', body.message ?? res.statusText)
   }
-  return res.json()
+
+  if (res.status === 204 || res.status === 205) {
+    return undefined as T
+  }
+
+  const text = await res.text()
+  if (!text.trim()) {
+    return undefined as T
+  }
+
+  return JSON.parse(text) as T
 }
 
 export class ApiError extends Error {
@@ -75,13 +85,59 @@ export interface Workspace {
   updated_at: string
 }
 
+export type WorkspaceRole = 'workspace_admin' | 'app_builder' | 'end_user'
+
+export type WorkspaceGrantSource = 'manual' | 'policy' | 'idp' | 'system_bootstrap'
+
+export type WorkspaceAccessPolicyMatchKind = 'all_company_members' | 'company_group' | 'idp_group'
+
+export interface MemberGrant {
+  role: WorkspaceRole
+  grant_source: WorkspaceGrantSource | string
+  source_ref: string
+  explanation: string
+  match_kind?: WorkspaceAccessPolicyMatchKind
+  group_id?: string
+  group_name?: string
+}
+
+export interface WorkspaceMemberGrant {
+  id: string
+  workspace_id: string
+  user_id: string
+  role: WorkspaceRole
+  grant_source: WorkspaceGrantSource | string
+  source_ref: string
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceAccessPolicyRule {
+  id: string
+  workspace_id: string
+  match_kind: WorkspaceAccessPolicyMatchKind
+  group_id?: string
+  role: WorkspaceRole
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceAccessPolicyRuleInput {
+  match_kind: WorkspaceAccessPolicyMatchKind
+  group_id?: string
+  role: WorkspaceRole
+}
+
 export interface Member {
   user_id: string
   workspace_id: string
   email: string
   name: string
-  role: string
+  role: WorkspaceRole
   joined_at: string
+  grants?: MemberGrant[]
 }
 
 export function getCompany(companyId: string) {
@@ -102,6 +158,53 @@ export function createWorkspace(companyId: string, name: string, slug: string) {
 export function listMembers(companyId: string, workspaceId: string) {
   return request<{ members: Member[] }>(
     `/v1/companies/${companyId}/workspaces/${workspaceId}/members`,
+  )
+}
+
+interface WorkspaceMemberGrantEnvelope {
+  grant: WorkspaceMemberGrant
+}
+
+export function upsertWorkspaceMember(
+  companyId: string,
+  workspaceId: string,
+  data: { user_id: string; role: WorkspaceRole },
+) {
+  return request<WorkspaceMemberGrantEnvelope>(
+    `/v1/companies/${companyId}/workspaces/${workspaceId}/members`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
+    },
+  ).then(res => res.grant)
+}
+
+export function removeWorkspaceMember(companyId: string, workspaceId: string, userId: string) {
+  return request<void>(
+    `/v1/companies/${companyId}/workspaces/${workspaceId}/members/${userId}`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
+export function getWorkspaceAccessPolicy(companyId: string, workspaceId: string) {
+  return request<{ rules: WorkspaceAccessPolicyRule[] }>(
+    `/v1/companies/${companyId}/workspaces/${workspaceId}/access-policy`,
+  )
+}
+
+export function putWorkspaceAccessPolicy(
+  companyId: string,
+  workspaceId: string,
+  rules: WorkspaceAccessPolicyRuleInput[],
+) {
+  return request<{ rules: WorkspaceAccessPolicyRule[] }>(
+    `/v1/companies/${companyId}/workspaces/${workspaceId}/access-policy`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ rules }),
+    },
   )
 }
 
@@ -740,6 +843,10 @@ export interface GroupMembership {
   joined_at: string
 }
 
+interface CompanyGroupEnvelope {
+  group: CompanyGroup
+}
+
 export function listCompanyGroups(companyId: string) {
   return request<{ groups: CompanyGroup[] }>(`/v1/companies/${companyId}/groups`)
 }
@@ -748,10 +855,10 @@ export function createCompanyGroup(
   companyId: string,
   data: { name: string; slug: string; source_type?: string },
 ) {
-  return request<CompanyGroup>(`/v1/companies/${companyId}/groups`, {
+  return request<CompanyGroup | CompanyGroupEnvelope>(`/v1/companies/${companyId}/groups`, {
     method: 'POST',
     body: JSON.stringify(data),
-  })
+  }).then(res => ('group' in res ? res.group : res))
 }
 
 export function deleteCompanyGroup(companyId: string, groupId: string) {

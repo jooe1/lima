@@ -67,6 +67,10 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 					r.Route("/{workspaceID}", func(r chi.Router) {
 						r.Get("/", handler.GetWorkspace(s, log))
 						r.Get("/members", handler.ListMembers(s, log))
+						r.Post("/members", handler.UpsertMember(s, log))
+						r.Delete("/members/{userID}", handler.DeleteMember(s, log))
+						r.Get("/access-policy", handler.GetAccessPolicy(s, log))
+						r.Put("/access-policy", handler.PutAccessPolicy(s, log))
 					})
 				})
 
