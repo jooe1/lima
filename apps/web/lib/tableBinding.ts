@@ -289,5 +289,10 @@ export function getConnectorQuerySQL(
   if (connectorType === 'csv') {
     return trimmed || 'SELECT * FROM csv'
   }
+  if (connectorType === 'rest') {
+    // For REST connectors, sql holds the endpoint path (e.g. "/users").
+    // Default to "/" so widgets always fire a query even with no path configured.
+    return trimmed || '/'
+  }
   return trimmed || null
 }

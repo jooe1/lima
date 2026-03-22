@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -510,15 +512,6 @@ func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 			return
 		}
-		if strings.TrimSpace(req.SQL) == "" {
-			respondErr(w, http.StatusBadRequest, "bad_request", "sql is required")
-			return
-		}
-		if sqlMutationRe.MatchString(req.SQL) {
-			respondErr(w, http.StatusUnprocessableEntity, "mutation_blocked",
-				"only SELECT queries are permitted in dashboard query mode")
-			return
-		}
 
 		limit := req.Limit
 		if limit <= 0 || limit > maxQueryLimit {
@@ -543,6 +536,15 @@ func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 
 		switch rec.Type {
 		case model.ConnectorTypePostgres, model.ConnectorTypeMySQL, model.ConnectorTypeMSSQL:
+			if strings.TrimSpace(req.SQL) == "" {
+				respondErr(w, http.StatusBadRequest, "bad_request", "sql is required")
+				return
+			}
+			if sqlMutationRe.MatchString(req.SQL) {
+				respondErr(w, http.StatusUnprocessableEntity, "mutation_blocked",
+					"only SELECT queries are permitted in dashboard query mode")
+				return
+			}
 			var creds model.RelationalCredentials
 			if err := json.Unmarshal(plainCreds, &creds); err != nil {
 				respondErr(w, http.StatusUnprocessableEntity, "invalid_credentials",
@@ -619,8 +621,30 @@ func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 				RowCount: len(outRows),
 			})
 
+		case model.ConnectorTypeREST:
+			var creds model.RestCredentials
+			if err := json.Unmarshal(plainCreds, &creds); err != nil {
+				respondErr(w, http.StatusUnprocessableEntity, "invalid_credentials", "cannot parse rest credentials")
+				return
+			}
+			// req.SQL carries the endpoint path (e.g. "/users" or "/api/v1/orders").
+			// An empty path defaults to "/" which GETs the base URL.
+			path := strings.TrimSpace(req.SQL)
+			if path == "" {
+				path = "/"
+			}
+			result, err := runRESTQuery(ctx, creds, path, limit)
+			if err != nil {
+				log.Warn("rest query failed",
+					zap.String("connector_id", connectorID),
+					zap.Error(err))
+				respondErr(w, http.StatusInternalServerError, "query_error", err.Error())
+				return
+			}
+			respond(w, http.StatusOK, result)
+
 		default:
-			// GraphQL and REST do not support SQL-style queries.
+			// GraphQL does not support SQL-style queries.
 			respond(w, http.StatusOK, map[string]any{
 				"error": fmt.Sprintf("dashboard queries not supported for %s connectors", rec.Type),
 			})
@@ -695,4 +719,102 @@ func runPostgresQuery(ctx context.Context, creds model.RelationalCredentials, sq
 		Rows:     result,
 		RowCount: len(result),
 	}, nil
+}
+
+// maxRESTBodyBytes caps JSON response bodies from REST connectors to 5 MB.
+const maxRESTBodyBytes = 5 << 20
+
+// runRESTQuery GETs base_url+path, parses the JSON response, and returns a
+// DashboardQueryResponse. The path argument is passed verbatim by the widget
+// (stored in req.SQL) and resolved against the base URL.
+func runRESTQuery(ctx context.Context, creds model.RestCredentials, path string, limit int) (*model.DashboardQueryResponse, error) {
+	base, err := url.Parse(strings.TrimRight(creds.BaseURL, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+	rel, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+	endpoint := base.ResolveReference(rel).String()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	applyRestAuth(req, creds)
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API returned HTTP %d", resp.StatusCode)
+	}
+
+	var body any
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRESTBodyBytes)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decode JSON response: %w", err)
+	}
+
+	rows := extractRESTRows(body)
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	return &model.DashboardQueryResponse{
+		Columns:  extractRESTColumns(rows),
+		Rows:     rows,
+		RowCount: len(rows),
+	}, nil
+}
+
+// extractRESTRows converts a decoded JSON body into a slice of row maps.
+// It handles JSON arrays directly, common envelope keys (data, items, results,
+// records, rows, list), and single-object responses (returned as one row).
+func extractRESTRows(body any) []map[string]any {
+	switch v := body.(type) {
+	case []any:
+		return anySliceToRows(v)
+	case map[string]any:
+		for _, key := range []string{"data", "items", "results", "records", "rows", "list"} {
+			if arr, ok := v[key]; ok {
+				if slice, ok := arr.([]any); ok {
+					return anySliceToRows(slice)
+				}
+			}
+		}
+		// Single object — return as one row so widgets can still render it.
+		return []map[string]any{v}
+	}
+	return []map[string]any{}
+}
+
+func anySliceToRows(slice []any) []map[string]any {
+	rows := make([]map[string]any, 0, len(slice))
+	for _, item := range slice {
+		if m, ok := item.(map[string]any); ok {
+			rows = append(rows, m)
+		}
+	}
+	return rows
+}
+
+// extractRESTColumns derives an ordered column list from the first row.
+// Columns are sorted alphabetically so clients always see a stable order.
+func extractRESTColumns(rows []map[string]any) []string {
+	if len(rows) == 0 {
+		return []string{}
+	}
+	cols := make([]string, 0, len(rows[0]))
+	for k := range rows[0] {
+		cols = append(cols, k)
+	}
+	sort.Strings(cols)
+	return cols
 }
