@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef } from 'react'
 import { type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { WidgetRenderer } from './widgets/WidgetRenderer'
+import { DashboardFilterProvider } from '../../../lib/dashboardFilters'
 
 export const CELL = 40   // pixels per grid unit
 // COLS is no longer a hard cap — the canvas expands to fit content.
@@ -215,116 +216,122 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId 
   )
 
   return (
-    <div
-      ref={containerRef}
-      style={{
-        flex: 1,
-        overflow: 'auto',
-        background: '#080808',
-        position: 'relative',
-      }}
-      onClick={e => {
-        if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.canvasBg === '1') {
-          onSelect(null)
-        }
-      }}
-    >
-      {/* Canvas content — expands to fit widgets */}
+    <DashboardFilterProvider>
       <div
-        data-canvas-bg="1"
+        ref={containerRef}
         style={{
+          flex: 1,
+          overflow: 'auto',
+          background: '#080808',
           position: 'relative',
-          width: canvasWidth,
-          minHeight: canvasHeight,
-          backgroundImage: 'radial-gradient(circle, #1a1a1a 1px, transparent 1px)',
-          backgroundSize: `${CELL}px ${CELL}px`,
-          backgroundPosition: '0 0',
-          margin: '0 auto',
+        }}
+        onClick={e => {
+          if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.canvasBg === '1') {
+            onSelect(null)
+          }
         }}
       >
-        {doc.map(node => {
-          const g = getGrid(node)
-          const isSelected = selectedId === node.id
+        {/* Canvas content — expands to fit widgets */}
+        <div
+          data-canvas-bg="1"
+          style={{
+            position: 'relative',
+            width: canvasWidth,
+            minHeight: canvasHeight,
+            backgroundImage: 'radial-gradient(circle, #1a1a1a 1px, transparent 1px)',
+            backgroundSize: `${CELL}px ${CELL}px`,
+            backgroundPosition: '0 0',
+            margin: '0 auto',
+          }}
+        >
+          {doc.map(node => {
+            const g = getGrid(node)
+            const isSelected = selectedId === node.id
 
-          return (
-            <div
-              key={node.id}
-              data-widget-id={node.id}
-              style={{
-                position: 'absolute',
-                left: g.x * CELL,
-                top: g.y * CELL,
-                width: g.w * CELL,
-                height: g.h * CELL,
-                background: '#111',
-                border: `1px solid ${isSelected ? '#3b82f6' : '#1e1e1e'}`,
-                borderRadius: 4,
-                overflow: 'hidden',
-                cursor: 'grab',
-                boxShadow: isSelected ? '0 0 0 2px #3b82f620' : 'none',
-                zIndex: isSelected ? 10 : 1,
-              }}
-              onMouseDown={e => handleWidgetMouseDown(e, node.id, 'move')}
-              onClick={e => { e.stopPropagation(); onSelect(node.id) }}
-            >
-              <WidgetRenderer node={node} selected={isSelected} workspaceId={workspaceId} />
+            return (
+              <div
+                key={node.id}
+                data-widget-id={node.id}
+                style={{
+                  position: 'absolute',
+                  left: g.x * CELL,
+                  top: g.y * CELL,
+                  width: g.w * CELL,
+                  height: g.h * CELL,
+                  background: '#111',
+                  border: `1px solid ${isSelected ? '#3b82f6' : '#1e1e1e'}`,
+                  borderRadius: 4,
+                  overflow: 'hidden',
+                  cursor: 'grab',
+                  boxShadow: isSelected ? '0 0 0 2px #3b82f620' : 'none',
+                  zIndex: isSelected ? 10 : 1,
+                }}
+                onMouseDown={e => {
+                  const target = e.target as HTMLElement
+                  if (target.closest('[data-interactive-preview="1"]')) return
+                  handleWidgetMouseDown(e, node.id, 'move')
+                }}
+                onClick={e => { e.stopPropagation(); onSelect(node.id) }}
+              >
+                <WidgetRenderer node={node} selected={isSelected} workspaceId={workspaceId} />
 
-              {/* Resize handle — bottom-right corner */}
-              {isSelected && (
-                <div
-                  title="Drag to resize"
-                  style={{
-                    position: 'absolute',
-                    bottom: 0,
-                    right: 0,
-                    width: 14,
-                    height: 14,
-                    cursor: 'se-resize',
-                    display: 'flex',
-                    alignItems: 'flex-end',
-                    justifyContent: 'flex-end',
-                    padding: 2,
-                  }}
-                  onMouseDown={e => {
-                    e.stopPropagation()
-                    handleWidgetMouseDown(e, node.id, 'resize')
-                  }}
-                >
-                  {/* resize grip dots */}
-                  <svg width="8" height="8" fill="#3b82f6" opacity={0.7}>
-                    <circle cx="6" cy="6" r="1.2" />
-                    <circle cx="3" cy="6" r="1.2" />
-                    <circle cx="6" cy="3" r="1.2" />
-                  </svg>
-                </div>
-              )}
+                {/* Resize handle — bottom-right corner */}
+                {isSelected && (
+                  <div
+                    title="Drag to resize"
+                    style={{
+                      position: 'absolute',
+                      bottom: 0,
+                      right: 0,
+                      width: 14,
+                      height: 14,
+                      cursor: 'se-resize',
+                      display: 'flex',
+                      alignItems: 'flex-end',
+                      justifyContent: 'flex-end',
+                      padding: 2,
+                    }}
+                    onMouseDown={e => {
+                      e.stopPropagation()
+                      handleWidgetMouseDown(e, node.id, 'resize')
+                    }}
+                  >
+                    {/* resize grip dots */}
+                    <svg width="8" height="8" fill="#3b82f6" opacity={0.7}>
+                      <circle cx="6" cy="6" r="1.2" />
+                      <circle cx="3" cy="6" r="1.2" />
+                      <circle cx="6" cy="3" r="1.2" />
+                    </svg>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+
+          {/* Empty state */}
+          {doc.length === 0 && (
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+            }}>
+              <div style={{ textAlign: 'center', color: '#2a2a2a' }}>
+                <div style={{ fontSize: '0.85rem', marginBottom: 6 }}>Canvas is empty</div>
+                <div style={{ fontSize: '0.7rem' }}>Add widgets from the panel on the left</div>
+              </div>
             </div>
-          )
-        })}
+          )}
+        </div>
 
-        {/* Empty state */}
-        {doc.length === 0 && (
-          <div style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            pointerEvents: 'none',
-          }}>
-            <div style={{ textAlign: 'center', color: '#2a2a2a' }}>
-              <div style={{ fontSize: '0.85rem', marginBottom: 6 }}>Canvas is empty</div>
-              <div style={{ fontSize: '0.7rem' }}>Add widgets from the panel on the left</div>
-            </div>
-          </div>
+        {/* Minimap — scaled thumbnail of all widgets in bottom-right corner */}
+        {doc.length > 0 && (
+          <MinimapOverlay doc={doc} canvasHeight={canvasHeight} selectedId={selectedId} />
         )}
       </div>
-
-      {/* Minimap — scaled thumbnail of all widgets in bottom-right corner */}
-      {doc.length > 0 && (
-        <MinimapOverlay doc={doc} canvasHeight={canvasHeight} selectedId={selectedId} />
-      )}
-    </div>
+    </DashboardFilterProvider>
   )
 }
 

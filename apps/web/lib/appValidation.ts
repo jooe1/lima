@@ -1,7 +1,7 @@
 import { type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 
-export const PRODUCTION_UNSUPPORTED_WIDGETS = ['filter', 'container', 'modal', 'tabs'] as const
+export const PRODUCTION_UNSUPPORTED_WIDGETS = ['container', 'modal', 'tabs'] as const
 const unsupportedWidgetSet = new Set<WidgetType>(PRODUCTION_UNSUPPORTED_WIDGETS)
 
 export const SUPPORTED_CHART_TYPES = ['bar'] as const
@@ -43,7 +43,10 @@ export function isProductionReadyWidget(element: string): boolean {
 }
 
 export function hasConnectorBinding(node: AuraNode): boolean {
-  return Boolean(node.with?.connector?.trim() && node.with?.sql?.trim())
+  const connectorId = node.with?.connector?.trim()
+  if (!connectorId) return false
+  if (node.with?.connectorType?.trim() === 'csv') return true
+  return Boolean(node.with?.sql?.trim())
 }
 
 export function isSupportedChartType(type: string | undefined): type is SupportedChartType {
@@ -106,7 +109,7 @@ export function getAppProductionIssues(doc: AuraDocument): ProductionIssue[] {
       pushIssue({
         code: 'missing_data_binding',
         nodeId: node.id,
-        message: `${node.id}: ${meta.displayName} requires a connector and SQL query before publish.`,
+        message: `${node.id}: ${meta.displayName} requires a connector and base query before publish.`,
       })
     }
 

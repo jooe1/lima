@@ -63,7 +63,11 @@ export type PropSchema = Record<string, PropDef>
 // AI system-prompt context so the model knows which props are valid.
 export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
   table: {
-    columns: { type: 'string', label: 'Columns', description: 'Optional comma-separated fallback columns' },
+    columns: {
+      type: 'string',
+      label: 'Columns',
+      description: 'Optional visible columns in display order; leave blank to use the bound data columns',
+    },
   },
   form: {
     fields: { type: 'string', label: 'Fields', description: 'Comma-separated field names', required: true },
@@ -92,9 +96,8 @@ export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
   },
   filter: {
     label: { type: 'string', label: 'Label', required: true },
-    options: { type: 'expression', label: 'Options' },
-    value: { type: 'expression', label: 'Value' },
-    onChange: { type: 'action', label: 'On change' },
+    placeholder: { type: 'string', label: 'Placeholder', default: 'Type to filter...' },
+    options: { type: 'string', label: 'Options', description: 'Optional comma-separated preset options; leave blank for a free-text filter' },
   },
   container: {
     direction: { type: 'string', label: 'Direction', description: 'row | column', default: 'column' },
@@ -206,14 +209,13 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
   filter: {
     type: 'filter',
     displayName: 'Filter',
-    description: 'Select or search filter for related widgets',
+    description: 'Interactive search or dropdown filter for related widgets',
     icon: 'Filter',
     defaultSize: { w: 4, h: 2 },
     propSchema: WidgetPropSchemas.filter,
     dashboardHint: {
-      pattern: 'filter_set',
-      description: 'Feed with a SELECT DISTINCT query to populate the options list.',
-      exampleSQL: 'SELECT DISTINCT {{column}} AS value FROM {{table}} ORDER BY value',
+      pattern: 'none',
+      description: 'Filter widgets hold end-user input that can be linked to table and chart widgets.',
     },
   },
   container: {

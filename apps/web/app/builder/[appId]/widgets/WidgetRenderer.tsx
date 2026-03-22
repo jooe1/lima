@@ -6,6 +6,8 @@ import { WIDGET_REGISTRY } from '@lima/widget-catalog'
 import { runConnectorQuery, type DashboardQueryResponse } from '../../../../lib/api'
 import { getMissingRequiredProps, hasConnectorBinding, isSupportedChartType } from '../../../../lib/appValidation'
 import { buildChartSeries } from '../../../../lib/charting'
+import { applyTableDataBinding, getConnectorQuerySQL, getVisibleTableColumns } from '../../../../lib/tableBinding'
+import { useDashboardFilters } from '../../../../lib/dashboardFilters'
 
 interface Props {
   node: AuraNode
@@ -164,7 +166,7 @@ function renderBody(node: AuraNode, workspaceId: string): React.ReactNode {
     }
 
     case 'filter': {
-      return <BuilderUnsupportedPreview node={node} />
+      return <CanvasFilterPreview node={node} workspaceId={workspaceId} />
     }
 
     case 'container': {
@@ -196,23 +198,39 @@ function renderBody(node: AuraNode, workspaceId: string): React.ReactNode {
   }
 }
 
+function parseFilterLinks(
+  filterWidgets: string | undefined,
+  filterWidgetColumns: string | undefined,
+  filterWidget: string | undefined,
+  filterWidgetColumn: string | undefined,
+): Array<{ widgetId: string; column: string }> {
+  const ids = (filterWidgets ?? '').split(';').map(s => s.trim()).filter(Boolean)
+  if (ids.length > 0) {
+    const cols = (filterWidgetColumns ?? '').split(';').map(s => s.trim())
+    return ids.map((id, i) => ({ widgetId: id, column: cols[i] ?? '' }))
+  }
+  if (filterWidget?.trim()) {
+    return [{ widgetId: filterWidget.trim(), column: filterWidgetColumn?.trim() ?? '' }]
+  }
+  return []
+}
+
 function CanvasTablePreview({ node, workspaceId }: { node: AuraNode; workspaceId: string }) {
-  const rawColumns = node.with?.columns ?? node.style?.columns ?? ''
-  const fallbackColumns = rawColumns
-    .split(',')
-    .map(column => column.trim())
-    .filter(Boolean)
-    .slice(0, 4)
+  const configuredColumns = node.style?.columns ?? ''
   const connectorId = node.with?.connector
+  const connectorType = node.with?.connectorType
   const sql = node.with?.sql
+  const filterLinks = parseFilterLinks(node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn)
+  const { values: dashboardFilters } = useDashboardFilters()
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const hasBinding = hasConnectorBinding(node)
+  const querySql = getConnectorQuerySQL(connectorType, sql)
 
   useEffect(() => {
-    if (!workspaceId || !connectorId || !sql) {
+    if (!workspaceId || !connectorId || !querySql) {
       setData(null)
       setLoading(false)
       setError(null)
@@ -223,7 +241,10 @@ function CanvasTablePreview({ node, workspaceId }: { node: AuraNode; workspaceId
     setLoading(true)
     setError(null)
 
-    runConnectorQuery(workspaceId, connectorId, { sql, limit: 3 })
+    runConnectorQuery(workspaceId, connectorId, {
+      sql: querySql,
+      limit: connectorType === 'csv' ? 100 : 3,
+    })
       .then(result => {
         if (cancelled) return
         if (result.error) {
@@ -243,63 +264,69 @@ function CanvasTablePreview({ node, workspaceId }: { node: AuraNode; workspaceId
       })
 
     return () => { cancelled = true }
-  }, [workspaceId, connectorId, sql])
+  }, [workspaceId, connectorId, connectorType, querySql])
 
-  const columns = (data?.columns?.length ? data.columns : fallbackColumns).slice(0, 4)
-  const rows = (data?.rows ?? []).slice(0, 3)
+  const boundData = applyTableDataBinding(data, {
+    filters: filterLinks.map(link => ({ column: link.column, value: dashboardFilters[link.widgetId] ?? '' })),
+    filterColumn: node.with?.filterColumn,
+    filterValue: node.with?.filterValue,
+    aggregate: node.with?.aggregate,
+    groupBy: node.with?.groupBy,
+    aggregateColumn: node.with?.aggregateColumn,
+  })
+  const previewError = boundData?.error ?? error
+  const columns = getVisibleTableColumns(boundData, configuredColumns)
+  const rows = (boundData?.rows ?? []).slice(0, 3)
 
   return (
     <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-      {columns.length > 0 && (
-        <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid #1e1e1e', paddingBottom: 4, marginBottom: 4 }}>
-          {columns.map(column => (
-            <div
-              key={column}
-              style={{
-                flex: 1,
-                color: '#555',
-                fontSize: '0.6rem',
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {column}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div style={{ flex: 1, overflow: 'hidden' }}>
-        {error ? (
-          <div style={{ color: '#f87171', fontSize: '0.62rem', lineHeight: 1.5 }}>{error}</div>
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        {previewError ? (
+          <div style={{ color: '#f87171', fontSize: '0.62rem', lineHeight: 1.5 }}>{previewError}</div>
         ) : loading ? (
           <div style={{ color: '#444', fontSize: '0.62rem' }}>Loading preview…</div>
         ) : hasBinding ? (
-          rows.length > 0 ? (
-            rows.map((row, index) => (
-              <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
-                {columns.map(column => (
-                  <div
-                    key={column}
-                    style={{
-                      flex: 1,
-                      color: '#bdbdbd',
-                      fontSize: '0.65rem',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
+          rows.length > 0 && columns.length > 0 ? (
+            <table style={{ width: 'max-content', minWidth: '100%', borderCollapse: 'collapse', fontSize: '0.62rem' }}>
+              <thead>
+                <tr>
+                  {columns.map(column => (
+                    <th key={column} style={{
+                      textAlign: 'left',
+                      padding: '0 8px 4px 0',
+                      color: '#555',
+                      fontSize: '0.58rem',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
                       whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {String(row[column] ?? '')}
-                  </div>
+                      borderBottom: '1px solid #1e1e1e',
+                    }}>
+                      {column}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, index) => (
+                  <tr key={index}>
+                    {columns.map(column => (
+                      <td key={column} style={{
+                        padding: '5px 8px 0 0',
+                        color: '#bdbdbd',
+                        whiteSpace: 'nowrap',
+                        maxWidth: 180,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}>
+                        {String(row[column] ?? '')}
+                      </td>
+                    ))}
+                  </tr>
                 ))}
-              </div>
-            ))
+              </tbody>
+            </table>
           ) : (
-            <div style={{ color: '#444', fontSize: '0.62rem' }}>Query returned no rows.</div>
+            <div style={{ color: '#444', fontSize: '0.62rem' }}>No rows match the current data binding.</div>
           )
         ) : (
           <div style={{ color: '#333', fontSize: '0.62rem' }}>Connect a data source to preview rows.</div>
@@ -312,18 +339,26 @@ function CanvasTablePreview({ node, workspaceId }: { node: AuraNode; workspaceId
 function CanvasChartPreview({ node, workspaceId }: { node: AuraNode; workspaceId: string }) {
   const chartType = (node.style?.type ?? 'bar').trim() || 'bar'
   const connectorId = node.with?.connector
+  const connectorType = node.with?.connectorType
   const sql = node.with?.sql
+  const filterLinks = parseFilterLinks(node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn)
   const labelCol = node.with?.labelCol ?? node.style?.labelCol ?? ''
   const valueCol = node.with?.valueCol ?? node.style?.valueCol ?? ''
+  const aggregate = node.with?.aggregate ?? 'none'
+  const sortBy = node.with?.sortBy ?? 'none'
+  const sortDirection = node.with?.sortDirection ?? 'desc'
+  const pointLimit = node.with?.limit ?? '8'
   const hasBinding = hasConnectorBinding(node)
   const supportedType = isSupportedChartType(chartType)
+  const querySql = getConnectorQuerySQL(connectorType, sql)
+  const { values: dashboardFilters } = useDashboardFilters()
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!workspaceId || !connectorId || !sql) {
+    if (!workspaceId || !connectorId || !querySql) {
       setData(null)
       setLoading(false)
       setError(null)
@@ -334,7 +369,10 @@ function CanvasChartPreview({ node, workspaceId }: { node: AuraNode; workspaceId
     setLoading(true)
     setError(null)
 
-    runConnectorQuery(workspaceId, connectorId, { sql, limit: 12 })
+    runConnectorQuery(workspaceId, connectorId, {
+      sql: querySql,
+      limit: connectorType === 'csv' ? 100 : 12,
+    })
       .then(result => {
         if (cancelled) return
         if (result.error) {
@@ -354,11 +392,25 @@ function CanvasChartPreview({ node, workspaceId }: { node: AuraNode; workspaceId
       })
 
     return () => { cancelled = true }
-  }, [workspaceId, connectorId, sql])
+  }, [workspaceId, connectorId, connectorType, querySql])
 
   const series = React.useMemo(
-    () => buildChartSeries(data, { labelCol, valueCol, limit: 8 }),
-    [data, labelCol, valueCol],
+    () => buildChartSeries(data, {
+      labelCol,
+      valueCol,
+      aggregate,
+      sortBy,
+      sortDirection,
+      limit: pointLimit,
+      filters: [
+        ...filterLinks.map(link => ({ column: link.column, value: dashboardFilters[link.widgetId] ?? '' })),
+        {
+          column: node.with?.filterColumn,
+          value: node.with?.filterValue,
+        },
+      ],
+    }),
+    [aggregate, dashboardFilters, data, labelCol, pointLimit, sortBy, sortDirection, valueCol, node.with?.filterColumn, node.with?.filterValue, node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn],
   )
   const maxValue = Math.max(...series.points.map(point => Math.abs(point.value)), 1)
 
@@ -376,27 +428,169 @@ function CanvasChartPreview({ node, workspaceId }: { node: AuraNode; workspaceId
       ) : series.error ? (
         <BuilderStateMessage message={series.error} tone="warning" />
       ) : series.points.length === 0 ? (
-        <BuilderStateMessage message="Query returned no rows." />
+        <BuilderStateMessage message="No rows match the current data binding." />
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: 3, paddingBottom: 4, borderBottom: '1px solid #222', minHeight: 0 }}>
-          {series.points.map((bar, i) => (
-            <div key={`${bar.label}-${i}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', minWidth: 0, height: '100%' }}>
+          {series.points.map((bar, i) => {
+            const pct = Math.max((Math.abs(bar.value) / maxValue) * 100, 4)
+            const formatted = Number.isInteger(bar.value)
+              ? bar.value.toLocaleString()
+              : bar.value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+            return (
               <div
-                title={`${bar.label}: ${bar.value}`}
-                style={{
-                  height: `${Math.max((Math.abs(bar.value) / maxValue) * 100, 4)}%`,
-                  background: '#1e3a8a',
-                  borderRadius: '2px 2px 0 0',
-                  opacity: 0.75,
-                }}
-              />
-              <div style={{ color: '#444', fontSize: '0.55rem', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {bar.label || ' '}
+                key={`${bar.label}-${i}`}
+                title={`${bar.label}: ${formatted}`}
+                style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', minWidth: 0, height: '100%', cursor: 'default' }}
+              >
+                <div style={{
+                  color: '#60a5fa',
+                  fontSize: '0.52rem',
+                  fontVariantNumeric: 'tabular-nums',
+                  textAlign: 'center',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  marginBottom: 1,
+                  opacity: pct < 20 ? 0 : 1,
+                }}>
+                  {formatted}
+                </div>
+                <div
+                  style={{
+                    height: `${pct}%`,
+                    background: '#1e3a8a',
+                    borderRadius: '2px 2px 0 0',
+                    opacity: 0.75,
+                    position: 'relative',
+                  }}
+                >
+                  {pct < 20 && (
+                    <div style={{
+                      position: 'absolute',
+                      bottom: '100%',
+                      left: 0,
+                      right: 0,
+                      textAlign: 'center',
+                      color: '#60a5fa',
+                      fontSize: '0.48rem',
+                      fontVariantNumeric: 'tabular-nums',
+                      pointerEvents: 'none',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      padding: '0 1px',
+                    }}>
+                      {formatted}
+                    </div>
+                  )}
+                </div>
+                <div style={{ color: '#444', fontSize: '0.52rem', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }}>
+                  {bar.label || ' '}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
   )
+}
+
+function CanvasFilterPreview({ node, workspaceId }: { node: AuraNode; workspaceId: string }) {
+  const missing = getMissingRequiredProps(node)
+  if (missing.length > 0) return <BuilderConfigurationRequired node={node} missing={missing} />
+
+  const label = node.text ?? node.style?.label ?? 'Filter'
+  const placeholder = node.style?.placeholder ?? 'Type to filter…'
+  const options = parseFilterOptions(node.style?.options)
+  const { values, setFilterValue } = useDashboardFilters()
+  const value = values[node.id] ?? ''
+
+  const optionsConnectorId = node.with?.optionsConnector ?? ''
+  const optionsColumn = node.with?.optionsColumn ?? ''
+  const optionsConnectorType = node.with?.optionsConnectorType ?? ''
+  const [dynamicOptions, setDynamicOptions] = useState<string[]>([])
+
+  useEffect(() => {
+    if (!optionsConnectorId || !optionsColumn || !workspaceId) {
+      setDynamicOptions([])
+      return
+    }
+    const isCSV = optionsConnectorType === 'csv'
+    if (!isCSV) {
+      setDynamicOptions([])
+      return
+    }
+    let cancelled = false
+    runConnectorQuery(workspaceId, optionsConnectorId, { sql: 'SELECT * FROM csv', limit: 200 })
+      .then(res => {
+        if (cancelled || res.error) return
+        const vals = Array.from(
+          new Set(res.rows.map((r: Record<string, unknown>) => String(r[optionsColumn] ?? '')).filter(Boolean))
+        ).sort() as string[]
+        setDynamicOptions(vals)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [workspaceId, optionsConnectorId, optionsColumn, optionsConnectorType])
+
+  const resolvedOptions = dynamicOptions.length > 0 ? dynamicOptions : options
+
+  return (
+    <div data-interactive-preview="1" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <label style={{ color: '#666', fontSize: '0.6rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        {label}
+      </label>
+      {resolvedOptions.length > 0 ? (
+        <select
+          data-interactive-preview="1"
+          value={value}
+          onChange={e => setFilterValue(node.id, e.target.value)}
+          style={{
+            width: '100%',
+            background: '#151515',
+            border: '1px solid #262626',
+            borderRadius: 4,
+            color: '#d4d4d4',
+            fontSize: '0.7rem',
+            padding: '5px 7px',
+            appearance: 'auto',
+          }}
+        >
+          <option value="">All</option>
+          {resolvedOptions.map(option => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+      ) : (
+        <input
+          data-interactive-preview="1"
+          type="text"
+          value={value}
+          onChange={e => setFilterValue(node.id, e.target.value)}
+          placeholder={placeholder}
+          style={{
+            width: '100%',
+            boxSizing: 'border-box',
+            background: '#151515',
+            border: '1px solid #262626',
+            borderRadius: 4,
+            color: '#d4d4d4',
+            fontSize: '0.7rem',
+            padding: '5px 7px',
+          }}
+        />
+      )}
+      <div style={{ color: '#444', fontSize: '0.58rem', lineHeight: 1.4 }}>
+        Link this filter from a table or chart to let end users narrow that widget without SQL.
+      </div>
+    </div>
+  )
+}
+
+function parseFilterOptions(rawOptions: string | undefined): string[] {
+  return (rawOptions ?? '')
+    .split(',')
+    .map(option => option.trim())
+    .filter(Boolean)
 }

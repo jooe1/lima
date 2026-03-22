@@ -5,6 +5,7 @@ import { type AuraNode, type AuraDocument } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType, type PropDef } from '@lima/widget-catalog'
 import { getGrid, CELL, COLS } from './CanvasEditor'
 import { listConnectors, runConnectorQuery, type Connector, type DashboardQueryResponse } from '../../../lib/api'
+import { applyTableDataBinding, getConnectorQuerySQL, getConnectorSchemaColumns, mergeColumns } from '../../../lib/tableBinding'
 
 interface Props {
   node: AuraNode | null
@@ -57,7 +58,7 @@ function setPropValue(node: AuraNode, propName: string, value: string): AuraNode
   return updated
 }
 
-export function Inspector({ node, doc: _doc, onUpdate, onDelete, workspaceId }: Props) {
+export function Inspector({ node, doc, onUpdate, onDelete, workspaceId }: Props) {
   if (!node) {
     return (
       <aside style={panelStyle}>
@@ -74,6 +75,12 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete, workspaceId }: 
 
   const meta = WIDGET_REGISTRY[n.element as WidgetType]
   const g = getGrid(n)
+  const filterWidgets = doc
+    .filter(candidate => candidate.element === 'filter' && candidate.id !== n.id)
+    .map(candidate => ({
+      id: candidate.id,
+      label: candidate.text ?? candidate.style?.label ?? candidate.id,
+    }))
 
   const handleGridChange = (field: 'gridX' | 'gridY' | 'gridW' | 'gridH', raw: string) => {
     const v = parseInt(raw, 10)
@@ -104,6 +111,26 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete, workspaceId }: 
       updated.with = Object.keys(rest).length > 0 ? rest : undefined
     }
     onUpdate(updated)
+  }
+
+  // Atomic multi-key update — avoids the stale-closure issue where calling
+  // onWithChange multiple times in the same event handler causes each call
+  // to overwrite the previous (all read the same n reference).
+  const handleWithChangeMany = (updates: Record<string, string>) => {
+    let withMap: Record<string, string> = { ...(n.with ?? {}) }
+    for (const [key, value] of Object.entries(updates)) {
+      if (value) {
+        withMap[key] = value
+      } else {
+        const { [key]: _removed, ...rest } = withMap
+        withMap = rest
+      }
+    }
+    onUpdate({
+      ...n,
+      manuallyEdited: true,
+      with: Object.keys(withMap).length > 0 ? withMap : undefined,
+    })
   }
 
   const isDataWidget = n.element === 'table' || n.element === 'chart'
@@ -165,10 +192,27 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete, workspaceId }: 
         </Section>
       )}
 
+      {/* Filter data source */}
+      {n.element === 'filter' && (
+        <Section title="Filter data source">
+          <FilterDataSourceEditor
+            node={n}
+            workspaceId={workspaceId}
+            onWithChange={handleWithChange}
+          />
+        </Section>
+      )}
+
       {/* Data binding (with clause) */}
       {isDataWidget ? (
         <Section title="Data binding">
-          <DataBindingEditor node={n} workspaceId={workspaceId} onWithChange={handleWithChange} />
+          <DataBindingEditor
+            node={n}
+            workspaceId={workspaceId}
+            filterWidgets={filterWidgets}
+            onWithChange={handleWithChange}
+            onWithChangeMany={handleWithChangeMany}
+          />
         </Section>
       ) : n.with && Object.keys(n.with).length > 0 ? (
         <Section title="Data binding">
@@ -201,10 +245,104 @@ export function Inspector({ node, doc: _doc, onUpdate, onDelete, workspaceId }: 
 
 /* ---- Sub-components --------------------------------------------------- */
 
-function DataBindingEditor({ node, workspaceId, onWithChange }: {
+/* ---- Query-builder helpers -------------------------------------------- */
+
+function getConnectorTables(connector: { schema_cache?: Record<string, unknown> } | undefined): string[] {
+  const tables = connector?.schema_cache?.tables
+  if (!Array.isArray(tables)) return []
+  return tables.flatMap(t => {
+    if (typeof t === 'string') return [t]
+    if (t && typeof t === 'object' && 'name' in t) {
+      const name = (t as Record<string, unknown>).name
+      return typeof name === 'string' && name.trim() ? [name] : []
+    }
+    return []
+  })
+}
+
+function getTableColumns(
+  connector: { schema_cache?: Record<string, unknown> } | undefined,
+  tableName: string,
+): string[] {
+  if (!tableName) return []
+  const tables = connector?.schema_cache?.tables
+  if (!Array.isArray(tables)) return []
+  const found = tables.find(t => {
+    if (!t || typeof t !== 'object') return false
+    return (t as Record<string, unknown>).name === tableName
+  })
+  if (!found || typeof found !== 'object') return []
+  const cols = (found as Record<string, unknown>).columns
+  if (!Array.isArray(cols)) return []
+  return cols.flatMap(c => {
+    if (typeof c === 'string') return [c]
+    if (c && typeof c === 'object' && 'name' in c) {
+      const name = (c as Record<string, unknown>).name
+      return typeof name === 'string' && name.trim() ? [name] : []
+    }
+    return []
+  })
+}
+
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`
+}
+
+function quoteVal(val: string): string {
+  return `'${val.replace(/'/g, "''")}'`
+}
+
+type WhereOp = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'like' | 'is_null' | 'not_null'
+
+function buildCondition(col: string, op: WhereOp, val: string): string {
+  const qc = quoteIdent(col)
+  switch (op) {
+    case 'eq':       return `${qc} = ${quoteVal(val)}`
+    case 'neq':      return `${qc} != ${quoteVal(val)}`
+    case 'gt':       return `${qc} > ${quoteVal(val)}`
+    case 'gte':      return `${qc} >= ${quoteVal(val)}`
+    case 'lt':       return `${qc} < ${quoteVal(val)}`
+    case 'lte':      return `${qc} <= ${quoteVal(val)}`
+    case 'like':     return `${qc} ILIKE ${quoteVal('%' + val + '%')}`
+    case 'is_null':  return `${qc} IS NULL`
+    case 'not_null': return `${qc} IS NOT NULL`
+    default:         return `${qc} = ${quoteVal(val)}`
+  }
+}
+
+interface WhereClause {
+  col: string
+  op: WhereOp
+  val: string
+}
+
+function generateQBSQL(
+  table: string,
+  wheres: WhereClause[],
+  groupBy: string,
+  orderBy: string,
+  dir: string,
+  limit: string,
+): string {
+  if (!table.trim()) return ''
+  let sql = `SELECT * FROM ${quoteIdent(table)}`
+  const conditions = wheres
+    .filter(w => w.col.trim() && (w.op === 'is_null' || w.op === 'not_null' || w.val.trim()))
+    .map(w => buildCondition(w.col, w.op, w.val))
+  if (conditions.length > 0) sql += ` WHERE ${conditions.join(' AND ')}`
+  if (groupBy.trim()) sql += ` GROUP BY ${quoteIdent(groupBy)}`
+  if (orderBy.trim()) sql += ` ORDER BY ${quoteIdent(orderBy)} ${dir === 'desc' ? 'DESC' : 'ASC'}`
+  const lim = parseInt(limit, 10)
+  if (lim > 0) sql += ` LIMIT ${lim}`
+  return sql
+}
+
+function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onWithChangeMany }: {
   node: AuraNode
   workspaceId: string
+  filterWidgets: Array<{ id: string; label: string }>
   onWithChange: (key: string, value: string) => void
+  onWithChangeMany: (updates: Record<string, string>) => void
 }) {
   const [connectors, setConnectors] = useState<Connector[]>([])
   const [preview, setPreview] = useState<DashboardQueryResponse | null>(null)
@@ -220,15 +358,32 @@ function DataBindingEditor({ node, workspaceId, onWithChange }: {
     return () => { cancelled = true }
   }, [workspaceId])
 
+  const connectorId = node.with?.connector ?? ''
+  const sql = node.with?.sql ?? ''
+  const selectedConnector = connectors.find(connector => connector.id === connectorId)
+  const connectorType = selectedConnector?.type ?? node.with?.connectorType ?? ''
+  const isCSVConnector = connectorType === 'csv'
+  const isChart = node.element === 'chart'
+  const widgetMeta = WIDGET_REGISTRY[node.element as WidgetType]
+
+  useEffect(() => {
+    if (!selectedConnector?.type) return
+    if (node.with?.connectorType === selectedConnector.type) return
+    onWithChange('connectorType', selectedConnector.type)
+  }, [selectedConnector?.type, node.with?.connectorType, onWithChange])
+
+  const querySql = getConnectorQuerySQL(connectorType, sql)
+
   const handlePreview = useCallback(async () => {
-    const connectorId = node.with?.connector
-    const sql = node.with?.sql
-    if (!connectorId || !sql || !workspaceId) return
+    if (!connectorId || !querySql || !workspaceId) return
     setPreviewLoading(true)
     setPreviewError('')
     setPreview(null)
     try {
-      const res = await runConnectorQuery(workspaceId, connectorId, { sql, limit: 10 })
+      const res = await runConnectorQuery(workspaceId, connectorId, {
+        sql: querySql,
+        limit: isCSVConnector ? 100 : 10,
+      })
       if (res.error) {
         setPreviewError(res.error)
       } else {
@@ -239,16 +394,72 @@ function DataBindingEditor({ node, workspaceId, onWithChange }: {
     } finally {
       setPreviewLoading(false)
     }
-  }, [workspaceId, node.with?.connector, node.with?.sql])
+  }, [workspaceId, connectorId, querySql, isCSVConnector])
 
-  const connectorId = node.with?.connector ?? ''
-  const sql = node.with?.sql ?? ''
-  const selectedConnector = connectors.find(connector => connector.id === connectorId)
-  const isChart = node.element === 'chart'
+  const schemaColumns = getConnectorSchemaColumns(selectedConnector)
   const previewColumns = preview?.columns ?? []
+  const availableColumns = mergeColumns(previewColumns, schemaColumns)
+  const transformedPreview = node.element === 'table'
+    ? applyTableDataBinding(preview, {
+      filterColumn: node.with?.filterColumn,
+      filterValue: node.with?.filterValue,
+      aggregate: node.with?.aggregate,
+      groupBy: node.with?.groupBy,
+      aggregateColumn: node.with?.aggregateColumn,
+    })
+    : preview
+  const previewResult = transformedPreview ?? preview
+  const effectivePreviewError = transformedPreview?.error ?? previewError
+  const aggregateMode = (node.with?.aggregate ?? 'none').trim() || 'none'
+  const needsAggregateColumn = ['sum', 'avg', 'min', 'max'].includes(aggregateMode)
+  const sortBy = node.with?.sortBy ?? 'none'
+  const sortDirection = node.with?.sortDirection ?? 'desc'
+  const canPreview = Boolean(connectorId && querySql)
+
+  const renderColumnField = (
+    label: string,
+    bindingKey: string,
+    value: string,
+    placeholder: string,
+    includeAnyOption = false,
+  ) => (
+    <div>
+      <label style={labelStyle}>{label}</label>
+      {availableColumns.length > 0 ? (
+        <select
+          value={value}
+          onChange={e => onWithChange(bindingKey, e.target.value)}
+          style={{ ...inputStyle, appearance: 'auto' }}
+        >
+          <option value="">{includeAnyOption ? 'Any column' : '— select column —'}</option>
+          {availableColumns.map(column => (
+            <option key={column} value={column}>{column}</option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={e => onWithChange(bindingKey, e.target.value)}
+          placeholder={placeholder}
+          style={inputStyle}
+        />
+      )}
+    </div>
+  )
 
   return (
     <>
+      <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+        Props control how the widget renders. Data binding controls where its data comes from and how that data is shaped before rendering.
+      </div>
+
+      {(node.element === 'table' || node.element === 'chart') && (
+        <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+          Start with base rows from a connector, then use the controls below to filter, group, summarize, and sort them without writing SQL. Use Advanced SQL only when you need joins or server-side logic.
+        </div>
+      )}
+
       {/* Connector picker */}
       <div>
         <label style={labelStyle}>Connector</label>
@@ -264,123 +475,237 @@ function DataBindingEditor({ node, workspaceId, onWithChange }: {
         </select>
       </div>
 
-      {/* SQL input */}
-      <div>
-        <label style={labelStyle}>SQL query</label>
-        <textarea
-          value={sql}
-          onChange={e => onWithChange('sql', e.target.value)}
-          rows={4}
-          style={{
-            ...inputStyle,
-            fontFamily: 'monospace',
-            fontSize: '0.65rem',
-            resize: 'vertical',
-            minHeight: 60,
-          }}
-        />
-        {selectedConnector?.type === 'csv' && (
-          <div style={{ marginTop: 6, fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
-            CSV widgets render rows that were uploaded on the Connectors page. The columns field only controls fallback headers when preview data is unavailable.
-          </div>
-        )}
-      </div>
-
-      {/* Table-specific: columns */}
-      {node.element === 'table' && (
-        <div>
-          <label style={labelStyle}>Columns (comma-separated)</label>
-          <input
-            type="text"
-            value={node.with?.columns ?? node.style?.columns ?? ''}
-            onChange={e => onWithChange('columns', e.target.value)}
-            placeholder="col1, col2, col3"
-            style={inputStyle}
-          />
+      {isCSVConnector ? (
+        <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+          CSV connectors use the imported rows directly. SQL is not used here.
         </div>
+      ) : (
+        <>
+          <VisualQueryBuilder
+            node={node}
+            selectedConnector={selectedConnector}
+            availableColumns={availableColumns}
+            onWithChange={onWithChange}
+          />
+        <details open={!sql} style={{ border: '1px solid #1a1a1a', borderRadius: 4, background: '#0d0d0d' }}>
+          <summary style={{ padding: '8px 10px', cursor: 'pointer', color: '#cbd5e1', fontSize: '0.68rem', fontWeight: 600 }}>
+            Advanced SQL
+          </summary>
+          <div style={{ padding: '0 10px 10px' }}>
+            <label style={labelStyle}>Base query</label>
+            <textarea
+              value={sql}
+              onChange={e => onWithChange('sql', e.target.value)}
+              rows={4}
+              style={{
+                ...inputStyle,
+                fontFamily: 'monospace',
+                fontSize: '0.65rem',
+                resize: 'vertical',
+                minHeight: 60,
+              }}
+            />
+            <div style={{ marginTop: 6, fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+              Lima sends this read-only query to the selected database connector. Only <span style={{ fontFamily: 'monospace' }}>SELECT</span> and <span style={{ fontFamily: 'monospace' }}>WITH</span> queries are allowed.
+            </div>
+            {widgetMeta?.dashboardHint.exampleSQL && (
+              <pre style={{
+                margin: '8px 0 0',
+                padding: '8px 10px',
+                borderRadius: 4,
+                background: '#090909',
+                border: '1px solid #1a1a1a',
+                color: '#7dd3fc',
+                fontSize: '0.6rem',
+                fontFamily: 'monospace',
+                whiteSpace: 'pre-wrap',
+              }}>
+                {widgetMeta.dashboardHint.exampleSQL}
+              </pre>
+            )}
+          </div>
+        </details>
+        </>
+      )}
+
+      {node.element === 'table' && (
+        <>
+          {renderColumnField(
+            'Filter this column',
+            'filterColumn',
+            node.with?.filterColumn ?? '',
+            'e.g. status',
+            true,
+          )}
+          <div>
+            <label style={labelStyle}>Match text</label>
+            <input
+              type="text"
+              value={node.with?.filterValue ?? ''}
+              onChange={e => onWithChange('filterValue', e.target.value)}
+              placeholder="Contains text..."
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Summarize rows</label>
+            <select
+              value={aggregateMode}
+              onChange={e => onWithChange('aggregate', e.target.value)}
+              style={{ ...inputStyle, appearance: 'auto' }}
+            >
+              <option value="none">None</option>
+              <option value="count">Count rows</option>
+              <option value="sum">Sum column</option>
+              <option value="avg">Average column</option>
+              <option value="min">Minimum column</option>
+              <option value="max">Maximum column</option>
+            </select>
+          </div>
+          {aggregateMode !== 'none' && renderColumnField(
+            'Group rows by',
+            'groupBy',
+            node.with?.groupBy ?? '',
+            'e.g. region',
+            true,
+          )}
+          {aggregateMode !== 'none' && needsAggregateColumn && renderColumnField(
+            'Value column',
+            'aggregateColumn',
+            node.with?.aggregateColumn ?? '',
+            'e.g. revenue',
+          )}
+        </>
       )}
 
       {/* Chart-specific: labelCol, valueCol */}
       {isChart && (
         <>
           <div>
-            <label style={labelStyle}>Label column</label>
-            {previewColumns.length > 0 ? (
-              <select
-                value={node.with?.labelCol ?? node.style?.labelCol ?? ''}
-                onChange={e => onWithChange('labelCol', e.target.value)}
-                style={{ ...inputStyle, appearance: 'auto' }}
-              >
-                <option value="">— select column —</option>
-                {previewColumns.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={node.with?.labelCol ?? node.style?.labelCol ?? ''}
-                onChange={e => onWithChange('labelCol', e.target.value)}
-                placeholder="e.g. name"
-                style={inputStyle}
-              />
-            )}
+            <label style={labelStyle}>Metric calculation</label>
+            <select
+              value={aggregateMode}
+              onChange={e => onWithChange('aggregate', e.target.value)}
+              style={{ ...inputStyle, appearance: 'auto' }}
+            >
+              <option value="none">Use row values as-is</option>
+              <option value="count">Count rows per category</option>
+              <option value="sum">Sum values per category</option>
+              <option value="avg">Average values per category</option>
+              <option value="min">Minimum value per category</option>
+              <option value="max">Maximum value per category</option>
+            </select>
+          </div>
+          {renderColumnField(
+            'Category / X-axis column',
+            'labelCol',
+            node.with?.labelCol ?? node.style?.labelCol ?? '',
+            'e.g. month',
+          )}
+          {aggregateMode !== 'count' && renderColumnField(
+            aggregateMode === 'none' ? 'Value / Y-axis column' : 'Value column',
+            'valueCol',
+            node.with?.valueCol ?? node.style?.valueCol ?? '',
+            'e.g. total',
+          )}
+          {renderColumnField(
+            'Filter this column',
+            'filterColumn',
+            node.with?.filterColumn ?? '',
+            'e.g. region',
+            true,
+          )}
+          <div>
+            <label style={labelStyle}>Match text</label>
+            <input
+              type="text"
+              value={node.with?.filterValue ?? ''}
+              onChange={e => onWithChange('filterValue', e.target.value)}
+              placeholder="Contains text..."
+              style={inputStyle}
+            />
           </div>
           <div>
-            <label style={labelStyle}>Value column</label>
-            {previewColumns.length > 0 ? (
+            <label style={labelStyle}>Sort points by</label>
+            <select
+              value={sortBy}
+              onChange={e => onWithChange('sortBy', e.target.value)}
+              style={{ ...inputStyle, appearance: 'auto' }}
+            >
+              <option value="none">Keep source order</option>
+              <option value="label">Category</option>
+              <option value="value">Value</option>
+            </select>
+          </div>
+          {sortBy !== 'none' && (
+            <div>
+              <label style={labelStyle}>Sort direction</label>
               <select
-                value={node.with?.valueCol ?? node.style?.valueCol ?? ''}
-                onChange={e => onWithChange('valueCol', e.target.value)}
+                value={sortDirection}
+                onChange={e => onWithChange('sortDirection', e.target.value)}
                 style={{ ...inputStyle, appearance: 'auto' }}
               >
-                <option value="">— select column —</option>
-                {previewColumns.map(c => <option key={c} value={c}>{c}</option>)}
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
               </select>
-            ) : (
-              <input
-                type="text"
-                value={node.with?.valueCol ?? node.style?.valueCol ?? ''}
-                onChange={e => onWithChange('valueCol', e.target.value)}
-                placeholder="e.g. count"
-                style={inputStyle}
-              />
-            )}
+            </div>
+          )}
+          <div>
+            <label style={labelStyle}>Max points</label>
+            <input
+              type="number"
+              min="1"
+              value={node.with?.limit ?? '20'}
+              onChange={e => onWithChange('limit', e.target.value)}
+              placeholder="20"
+              style={inputStyle}
+            />
           </div>
         </>
+      )}
+
+      {(node.element === 'table' || node.element === 'chart') && (
+        <FilterLinksEditor
+          node={node}
+          filterWidgets={filterWidgets}
+          availableColumns={availableColumns}
+          onWithChangeMany={onWithChangeMany}
+        />
       )}
 
       {/* Preview button + results */}
       <div>
         <button
           onClick={handlePreview}
-          disabled={!connectorId || !sql || previewLoading}
+          disabled={!canPreview || previewLoading}
           style={{
             width: '100%',
             padding: '5px 10px',
             borderRadius: 4,
             fontSize: '0.7rem',
             fontWeight: 600,
-            background: (!connectorId || !sql) ? '#111' : '#1e3a8a',
+            background: !canPreview ? '#111' : '#1e3a8a',
             border: '1px solid #222',
-            color: (!connectorId || !sql) ? '#444' : '#93c5fd',
-            cursor: (!connectorId || !sql || previewLoading) ? 'default' : 'pointer',
+            color: !canPreview ? '#444' : '#93c5fd',
+            cursor: (!canPreview || previewLoading) ? 'default' : 'pointer',
           }}
         >
-          {previewLoading ? 'Running…' : 'Preview (10 rows)'}
+          {previewLoading ? 'Running…' : isCSVConnector ? 'Preview imported rows' : 'Preview (10 rows)'}
         </button>
       </div>
 
-      {previewError && (
+      {effectivePreviewError && (
         <div style={{ fontSize: '0.65rem', color: '#f87171', background: '#1a0a0a', borderRadius: 4, padding: 8 }}>
-          {previewError}
+          {effectivePreviewError}
         </div>
       )}
 
-      {preview && preview.rows.length > 0 && (
+      {previewResult && previewResult.rows.length > 0 && (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.6rem' }}>
             <thead>
               <tr>
-                {preview.columns.map(col => (
+                {previewResult.columns.map(col => (
                   <th key={col} style={{
                     textAlign: 'left', padding: '3px 6px', color: '#888',
                     borderBottom: '1px solid #222', fontWeight: 600, whiteSpace: 'nowrap',
@@ -391,9 +716,9 @@ function DataBindingEditor({ node, workspaceId, onWithChange }: {
               </tr>
             </thead>
             <tbody>
-              {preview.rows.map((row, i) => (
+              {previewResult.rows.map((row, i) => (
                 <tr key={i}>
-                  {preview.columns.map(col => (
+                  {previewResult.columns.map(col => (
                     <td key={col} style={{
                       padding: '2px 6px', color: '#bbb',
                       borderBottom: '1px solid #151515', whiteSpace: 'nowrap',
@@ -407,11 +732,461 @@ function DataBindingEditor({ node, workspaceId, onWithChange }: {
             </tbody>
           </table>
           <div style={{ fontSize: '0.6rem', color: '#444', marginTop: 4 }}>
-            {preview.row_count} row{preview.row_count !== 1 ? 's' : ''} returned
+            {previewResult.row_count} row{previewResult.row_count !== 1 ? 's' : ''} returned
           </div>
         </div>
       )}
+
+      {previewResult && previewResult.rows.length === 0 && !effectivePreviewError && (
+        <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+          No rows match the current data binding.
+        </div>
+      )}
     </>
+  )
+}
+
+function FilterLinksEditor({
+  node,
+  filterWidgets,
+  availableColumns,
+  onWithChangeMany,
+}: {
+  node: AuraNode
+  filterWidgets: Array<{ id: string; label: string }>
+  availableColumns: string[]
+  onWithChangeMany: (updates: Record<string, string>) => void
+}) {
+  // Parse stored semicolon-separated values into rows
+  function parseRows(): Array<{ widgetId: string; column: string }> {
+    const rawIds = node.with?.filterWidgets ?? ''
+    const ids = rawIds.split(';').map((s: string) => s.trim()).filter(Boolean)
+    if (ids.length > 0) {
+      const cols = (node.with?.filterWidgetColumns ?? '').split(';').map((s: string) => s.trim())
+      return ids.map((id, i) => ({ widgetId: id, column: cols[i] ?? '' }))
+    }
+    // Legacy single-filter fallback
+    if (node.with?.filterWidget) {
+      return [{ widgetId: node.with.filterWidget, column: node.with?.filterWidgetColumn ?? '' }]
+    }
+    return [{ widgetId: '', column: '' }]
+  }
+
+  const [rows, setRows] = React.useState<Array<{ widgetId: string; column: string }>>(parseRows)
+
+  // Keep rows in sync when node changes (e.g. after undo or AI edit)
+  React.useEffect(() => {
+    setRows(parseRows())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn])
+
+  function save(nextRows: Array<{ widgetId: string; column: string }>) {
+    setRows(nextRows)
+    const filled = nextRows.filter(r => r.widgetId.trim())
+    // Use a single atomic update to avoid the stale-closure bug where multiple
+    // sequential onWithChange calls each spread the same old node reference and
+    // the last one overwrites all previous changes.
+    onWithChangeMany({
+      filterWidgets: filled.length > 0 ? filled.map(r => r.widgetId).join(';') : '',
+      filterWidgetColumns: filled.length > 0 ? filled.map(r => r.column).join(';') : '',
+      filterWidget: '',
+      filterWidgetColumn: '',
+    })
+  }
+
+  function updateRow(index: number, field: 'widgetId' | 'column', value: string) {
+    const next = rows.map((r, i) => i === index ? { ...r, [field]: value } : r)
+    save(next)
+  }
+
+  function addRow() {
+    save([...rows, { widgetId: '', column: '' }])
+  }
+
+  function removeRow(index: number) {
+    const next = rows.filter((_, i) => i !== index)
+    save(next.length > 0 ? next : [{ widgetId: '', column: '' }])
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+        Link filter widgets to let end users narrow this widget interactively. Each row matches one filter.
+      </div>
+      {filterWidgets.length === 0 && (
+        <div style={{ fontSize: '0.62rem', color: '#444', lineHeight: 1.5 }}>
+          Add a Filter widget to the canvas to enable interactive filtering.
+        </div>
+      )}
+      {rows.map((row, index) => (
+        <div key={index} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px', background: '#0d0d0d', borderRadius: 4, border: '1px solid #1a1a1a' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ flex: 1 }}>
+              <label style={labelStyle}>Filter widget</label>
+              <select
+                value={row.widgetId}
+                onChange={e => updateRow(index, 'widgetId', e.target.value)}
+                style={{ ...inputStyle, appearance: 'auto' }}
+              >
+                <option value="">— select —</option>
+                {filterWidgets.map(fw => (
+                  <option key={fw.id} value={fw.id}>{fw.label}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={() => removeRow(index)}
+              title="Remove"
+              style={{
+                alignSelf: 'flex-end',
+                marginBottom: 0,
+                background: 'transparent',
+                border: '1px solid #2a1010',
+                borderRadius: 4,
+                color: '#ef4444',
+                cursor: 'pointer',
+                fontSize: '0.7rem',
+                padding: '4px 8px',
+                flexShrink: 0,
+              }}
+            >
+              ×
+            </button>
+          </div>
+          {row.widgetId && (
+            <div>
+              <label style={labelStyle}>Match column (optional)</label>
+              {availableColumns.length > 0 ? (
+                <select
+                  value={row.column}
+                  onChange={e => updateRow(index, 'column', e.target.value)}
+                  style={{ ...inputStyle, appearance: 'auto' }}
+                >
+                  <option value="">Any column</option>
+                  {availableColumns.map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={row.column}
+                  onChange={e => updateRow(index, 'column', e.target.value)}
+                  placeholder="e.g. region"
+                  style={inputStyle}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+      {filterWidgets.length > 0 && (
+        <button
+          onClick={addRow}
+          style={{
+            background: 'transparent',
+            border: '1px solid #1e3a8a',
+            borderRadius: 4,
+            color: '#60a5fa',
+            cursor: 'pointer',
+            fontSize: '0.68rem',
+            padding: '4px 10px',
+            textAlign: 'left',
+          }}
+        >
+          + Link another filter
+        </button>
+      )}
+    </div>
+  )
+}
+
+function VisualQueryBuilder({
+  node,
+  selectedConnector,
+  availableColumns,
+  onWithChange,
+}: {
+  node: AuraNode
+  selectedConnector: Connector | undefined
+  availableColumns: string[]
+  onWithChange: (key: string, value: string) => void
+}) {
+  const tables = getConnectorTables(selectedConnector)
+  const qbTable = node.with?.qbTable ?? ''
+  const tableColumns = getTableColumns(selectedConnector, qbTable)
+  const cols = tableColumns.length > 0 ? tableColumns : availableColumns
+
+  const rawWheres = node.with?.qbWheres ?? '[]'
+  let wheres: WhereClause[] = []
+  try { wheres = JSON.parse(rawWheres) } catch { wheres = [] }
+  if (!Array.isArray(wheres) || wheres.length === 0) wheres = [{ col: '', op: 'eq', val: '' }]
+
+  const qbGroupBy = node.with?.qbGroupBy ?? ''
+  const qbOrderBy = node.with?.qbOrderBy ?? ''
+  const qbDir = node.with?.qbDir ?? 'asc'
+  const qbLimit = node.with?.qbLimit ?? ''
+
+  function applyQB(
+    table: string,
+    nextWheres: WhereClause[],
+    groupBy: string,
+    orderBy: string,
+    dir: string,
+    limit: string,
+  ) {
+    const sql = generateQBSQL(table, nextWheres, groupBy, orderBy, dir, limit)
+    onWithChange('qbTable', table)
+    onWithChange('qbWheres', JSON.stringify(nextWheres))
+    onWithChange('qbGroupBy', groupBy)
+    onWithChange('qbOrderBy', orderBy)
+    onWithChange('qbDir', dir)
+    onWithChange('qbLimit', limit)
+    if (sql) onWithChange('sql', sql)
+  }
+
+  function updateWhere(index: number, field: keyof WhereClause, value: string) {
+    const next = wheres.map((w, i) => i === index ? { ...w, [field]: value } : w)
+    applyQB(qbTable, next, qbGroupBy, qbOrderBy, qbDir, qbLimit)
+  }
+
+  function addWhere() {
+    applyQB(qbTable, [...wheres, { col: '', op: 'eq', val: '' }], qbGroupBy, qbOrderBy, qbDir, qbLimit)
+  }
+
+  function removeWhere(index: number) {
+    const next = wheres.filter((_, i) => i !== index)
+    applyQB(qbTable, next.length > 0 ? next : [{ col: '', op: 'eq', val: '' }], qbGroupBy, qbOrderBy, qbDir, qbLimit)
+  }
+
+  if (tables.length === 0) return null
+
+  const opLabels: Record<WhereOp, string> = {
+    eq: 'equals', neq: 'not equals', gt: '>', gte: '>=', lt: '<', lte: '<=',
+    like: 'contains', is_null: 'is empty', not_null: 'is not empty',
+  }
+
+  return (
+    <details open={!!qbTable} style={{ border: '1px solid #1a1a1a', borderRadius: 4, background: '#0d0d0d' }}>
+      <summary style={{ padding: '8px 10px', cursor: 'pointer', color: '#cbd5e1', fontSize: '0.68rem', fontWeight: 600 }}>
+        Query builder
+      </summary>
+      <div style={{ padding: '0 10px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+          Choose a table and optional filters. The generated SQL is applied to the base query below.
+        </div>
+
+        {/* Table picker */}
+        <div>
+          <label style={labelStyle}>Source table</label>
+          <select
+            value={qbTable}
+            onChange={e => applyQB(e.target.value, [{ col: '', op: 'eq', val: '' }], '', '', 'asc', qbLimit)}
+            style={{ ...inputStyle, appearance: 'auto' }}
+          >
+            <option value="">— select table —</option>
+            {tables.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+
+        {/* WHERE conditions */}
+        {qbTable && (
+          <>
+            <div style={{ fontSize: '0.62rem', color: '#555' }}>Filter rows (WHERE)</div>
+            {wheres.map((w, i) => (
+              <div key={i} style={{ display: 'flex', gap: 4, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                {/* Column */}
+                <div style={{ flex: '1 1 80px' }}>
+                  {cols.length > 0 ? (
+                    <select
+                      value={w.col}
+                      onChange={e => updateWhere(i, 'col', e.target.value)}
+                      style={{ ...inputStyle, appearance: 'auto', fontSize: '0.65rem' }}
+                    >
+                      <option value="">— column —</option>
+                      {cols.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={w.col}
+                      onChange={e => updateWhere(i, 'col', e.target.value)}
+                      placeholder="column"
+                      style={{ ...inputStyle, fontSize: '0.65rem' }}
+                    />
+                  )}
+                </div>
+                {/* Operator */}
+                <div style={{ flex: '0 0 90px' }}>
+                  <select
+                    value={w.op}
+                    onChange={e => updateWhere(i, 'op', e.target.value as WhereOp)}
+                    style={{ ...inputStyle, appearance: 'auto', fontSize: '0.65rem' }}
+                  >
+                    {(Object.keys(opLabels) as WhereOp[]).map(op => (
+                      <option key={op} value={op}>{opLabels[op]}</option>
+                    ))}
+                  </select>
+                </div>
+                {/* Value (hidden for null checks) */}
+                {w.op !== 'is_null' && w.op !== 'not_null' && (
+                  <div style={{ flex: '1 1 80px' }}>
+                    <input
+                      type="text"
+                      value={w.val}
+                      onChange={e => updateWhere(i, 'val', e.target.value)}
+                      placeholder="value"
+                      style={{ ...inputStyle, fontSize: '0.65rem' }}
+                    />
+                  </div>
+                )}
+                {/* Remove */}
+                <button
+                  onClick={() => removeWhere(i)}
+                  style={{ background: 'transparent', border: '1px solid #2a1010', borderRadius: 3, color: '#ef4444', cursor: 'pointer', fontSize: '0.65rem', padding: '3px 7px', flexShrink: 0 }}
+                >×</button>
+              </div>
+            ))}
+            <button
+              onClick={addWhere}
+              style={{ background: 'transparent', border: '1px solid #1a1a1a', borderRadius: 3, color: '#555', cursor: 'pointer', fontSize: '0.65rem', padding: '3px 8px', textAlign: 'left' }}
+            >+ Add condition</button>
+
+            {/* ORDER BY */}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Order by</label>
+                {cols.length > 0 ? (
+                  <select
+                    value={qbOrderBy}
+                    onChange={e => applyQB(qbTable, wheres, qbGroupBy, e.target.value, qbDir, qbLimit)}
+                    style={{ ...inputStyle, appearance: 'auto' }}
+                  >
+                    <option value="">None</option>
+                    {cols.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={qbOrderBy}
+                    onChange={e => applyQB(qbTable, wheres, qbGroupBy, e.target.value, qbDir, qbLimit)}
+                    placeholder="column"
+                    style={inputStyle}
+                  />
+                )}
+              </div>
+              {qbOrderBy && (
+                <div style={{ flex: '0 0 70px' }}>
+                  <label style={labelStyle}>Direction</label>
+                  <select
+                    value={qbDir}
+                    onChange={e => applyQB(qbTable, wheres, qbGroupBy, qbOrderBy, e.target.value, qbLimit)}
+                    style={{ ...inputStyle, appearance: 'auto' }}
+                  >
+                    <option value="asc">ASC</option>
+                    <option value="desc">DESC</option>
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* LIMIT */}
+            <div>
+              <label style={labelStyle}>Row limit</label>
+              <input
+                type="number"
+                min="1"
+                value={qbLimit}
+                onChange={e => applyQB(qbTable, wheres, qbGroupBy, qbOrderBy, qbDir, e.target.value)}
+                placeholder="None"
+                style={inputStyle}
+              />
+            </div>
+          </>
+        )}
+      </div>
+    </details>
+  )
+}
+
+function FilterDataSourceEditor({
+  node,
+  workspaceId,
+  onWithChange,
+}: {
+  node: AuraNode
+  workspaceId: string
+  onWithChange: (key: string, value: string) => void
+}) {
+  const [connectors, setConnectors] = useState<Connector[]>([])
+
+  useEffect(() => {
+    if (!workspaceId) return
+    let cancelled = false
+    listConnectors(workspaceId)
+      .then(res => { if (!cancelled) setConnectors(res.connectors ?? []) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [workspaceId])
+
+  const connectorId = node.with?.optionsConnector ?? ''
+  const selectedConnector = connectors.find(c => c.id === connectorId)
+  const schemaColumns = getConnectorSchemaColumns(selectedConnector)
+  const optionsColumn = node.with?.optionsColumn ?? ''
+
+  // Sync optionsConnectorType whenever the selected connector changes — mirrors
+  // the same pattern DataBindingEditor uses for connectorType to avoid the
+  // double-onWithChange overwrite bug (both calls share the same stale node ref).
+  useEffect(() => {
+    if (!selectedConnector?.type) return
+    if (node.with?.optionsConnectorType === selectedConnector.type) return
+    onWithChange('optionsConnectorType', selectedConnector.type)
+  }, [selectedConnector?.type, node.with?.optionsConnectorType, onWithChange])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+        Connect this filter to a CSV connector to auto-populate its dropdown from a data column. Overrides manual options in Props.
+      </div>
+      <div>
+        <label style={labelStyle}>Connector (CSV only)</label>
+        <select
+          value={connectorId}
+          onChange={e => onWithChange('optionsConnector', e.target.value)}
+          style={{ ...inputStyle, appearance: 'auto' }}
+        >
+          <option value="">— select connector —</option>
+          {connectors.filter(c => c.type === 'csv').map(c => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+      </div>
+      {connectorId && (
+        <div>
+          <label style={labelStyle}>Options column</label>
+          {schemaColumns.length > 0 ? (
+            <select
+              value={optionsColumn}
+              onChange={e => onWithChange('optionsColumn', e.target.value)}
+              style={{ ...inputStyle, appearance: 'auto' }}
+            >
+              <option value="">— select column —</option>
+              {schemaColumns.map(col => (
+                <option key={col} value={col}>{col}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={optionsColumn}
+              onChange={e => onWithChange('optionsColumn', e.target.value)}
+              placeholder="e.g. category"
+              style={inputStyle}
+            />
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
