@@ -1,14 +1,17 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { useAuth } from '../../lib/auth'
 import { listCompanyTools, type CompanyTool } from '../../lib/api'
 
 export default function ToolsPage() {
-  const { company } = useAuth()
+  const router = useRouter()
+  const { company, workspace, workspaces, selectWorkspace } = useAuth()
   const [tools, setTools] = useState<CompanyTool[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [launchError, setLaunchError] = useState('')
   const [search, setSearch] = useState('')
 
   const load = useCallback(() => {
@@ -26,8 +29,44 @@ export default function ToolsPage() {
   const filtered = useMemo(() => {
     if (!search) return tools
     const q = search.toLowerCase()
-    return tools.filter(t => t.app_name.toLowerCase().includes(q))
+    return tools.filter(tool => {
+      const nameMatch = tool.app_name.toLowerCase().includes(q)
+      const descriptionMatch = tool.app_description.toLowerCase().includes(q)
+      return nameMatch || descriptionMatch
+    })
   }, [tools, search])
+
+  const workspaceNamesByID = useMemo(() => {
+    return workspaces.reduce<Record<string, string>>((next, candidate) => {
+      next[candidate.id] = candidate.name
+      return next
+    }, {})
+  }, [workspaces])
+
+  const handleOpenTool = useCallback((tool: CompanyTool) => {
+    if (tool.capability !== 'use') {
+      return
+    }
+
+    const targetWorkspace = workspaces.find(candidate => candidate.id === tool.workspace_id)
+      ?? (workspace?.id === tool.workspace_id ? workspace : null)
+
+    if (!targetWorkspace) {
+      setLaunchError('You no longer have access to the workspace that owns this tool.')
+      return
+    }
+
+    setLaunchError('')
+    if (workspace?.id !== targetWorkspace.id) {
+      selectWorkspace(targetWorkspace)
+    }
+
+    const params = new URLSearchParams({
+      workspace: targetWorkspace.id,
+      publication: tool.publication_id,
+    })
+    router.push(`/app/${tool.app_id}?${params.toString()}`)
+  }, [router, selectWorkspace, workspace, workspaces])
 
   return (
     <div style={{ padding: '2rem', maxWidth: 1000 }}>
@@ -53,6 +92,7 @@ export default function ToolsPage() {
         )}
       </div>
       {error && <p style={{ color: '#f87171', fontSize: '0.8rem' }}>{error}</p>}
+      {launchError && <p style={{ color: '#f87171', fontSize: '0.8rem' }}>{launchError}</p>}
       {loading ? (
         <p style={{ color: '#555' }}>Loading…</p>
       ) : tools.length === 0 ? (
@@ -68,7 +108,12 @@ export default function ToolsPage() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
           {filtered.map(tool => (
-            <ToolCard key={tool.publication_id} tool={tool} />
+            <ToolCard
+              key={tool.publication_id}
+              tool={tool}
+              workspaceName={workspaceNamesByID[tool.workspace_id]}
+              onOpen={() => handleOpenTool(tool)}
+            />
           ))}
         </div>
       )}
@@ -76,35 +121,106 @@ export default function ToolsPage() {
   )
 }
 
-function ToolCard({ tool }: { tool: CompanyTool }) {
+function ToolCard({
+  tool,
+  workspaceName,
+  onOpen,
+}: {
+  tool: CompanyTool
+  workspaceName?: string
+  onOpen: () => void
+}) {
   const [hovered, setHovered] = useState(false)
-  return (
-    <a
-      href={`/app/${tool.app_id}`}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: 'block',
-        background: '#111',
-        border: `1px solid ${hovered ? '#333' : '#1f1f1f'}`,
-        borderRadius: 10,
-        padding: '1.25rem',
-        textDecoration: 'none',
-        color: '#e5e5e5',
-        transition: 'border-color 0.15s',
-      }}
-    >
-      <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: 4 }}>
-        {tool.app_name}
+  const canLaunch = tool.capability === 'use'
+
+  const cardStyles = {
+    display: 'block',
+    width: '100%',
+    background: '#111',
+    border: `1px solid ${hovered && canLaunch ? '#333' : '#1f1f1f'}`,
+    borderRadius: 10,
+    padding: '1.25rem',
+    color: '#e5e5e5',
+    transition: 'border-color 0.15s',
+    textAlign: 'left' as const,
+    cursor: canLaunch ? 'pointer' : 'default',
+  }
+
+  const content = (
+    <>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+        <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+          {tool.app_name}
+        </div>
+        <span style={capabilityPill(tool.capability)}>
+          {tool.capability === 'use' ? 'Can launch' : 'Listed only'}
+        </span>
       </div>
       {tool.app_description && (
         <div style={{ color: '#888', fontSize: '0.8rem', marginBottom: 8 }}>
           {tool.app_description}
         </div>
       )}
+      {workspaceName && (
+        <div style={{ color: '#666', fontSize: '0.72rem', marginBottom: 8 }}>
+          Workspace {workspaceName}
+        </div>
+      )}
       <div style={{ color: '#555', fontSize: '0.75rem' }}>
         Published {new Date(tool.published_at).toLocaleDateString()}
       </div>
-    </a>
+      <div style={{ color: canLaunch ? '#93c5fd' : '#555', fontSize: '0.72rem', marginTop: 10 }}>
+        {canLaunch ? 'Open tool' : 'Listed for discovery only'}
+      </div>
+    </>
   )
+
+  if (!canLaunch) {
+    return (
+      <div
+        style={cardStyles}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
+        {content}
+      </div>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        ...cardStyles,
+        appearance: 'none',
+      }}
+    >
+      {content}
+    </button>
+  )
+}
+
+function capabilityPill(capability: CompanyTool['capability']) {
+  if (capability === 'use') {
+    return {
+      background: '#16653433',
+      borderRadius: 99,
+      color: '#4ade80',
+      fontSize: '0.62rem',
+      padding: '2px 8px',
+      whiteSpace: 'nowrap' as const,
+    }
+  }
+
+  return {
+    background: '#1e3a8a33',
+    borderRadius: 99,
+    color: '#93c5fd',
+    fontSize: '0.62rem',
+    padding: '2px 8px',
+    whiteSpace: 'nowrap' as const,
+  }
 }

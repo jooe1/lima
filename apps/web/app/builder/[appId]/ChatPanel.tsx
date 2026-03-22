@@ -26,6 +26,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
   const [threadListOpen, setThreadListOpen] = useState(false)
   const [messages, setMessages] = useState<ThreadMessage[]>([])
   const [input, setInput] = useState('')
+  const [forceOverwrite, setForceOverwrite] = useState(false)
   const [sending, setSending] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
@@ -132,20 +133,35 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
   useEffect(() => () => stopPolling(), [])
 
   // -- Send message -------------------------------------------------------
-  const handleSend = async () => {
-    const content = input.trim()
-    if (!content || sending) return
+  const sendMessage = async (
+    rawContent: string,
+    options?: { forceOverwrite?: boolean; clearInput?: boolean },
+  ) => {
+    const content = rawContent.trim()
+    if (!content || sending || generating) return
+
+    const shouldForceOverwrite = options?.forceOverwrite ?? false
+    const shouldClearInput = options?.clearInput ?? false
+
     setSending(true)
     setError('')
-    setInput('')
+    if (shouldClearInput) {
+      setInput('')
+    }
 
     try {
       const t = await ensureThread()
-      const { message, queued, queue_error } = await postMessage(workspaceId, appId, t.id, content)
+      const { message, queued, queue_error } = await postMessage(workspaceId, appId, t.id, content, {
+        forceOverwrite: shouldForceOverwrite,
+      })
 
       // Optimistically add the user message.
       setMessages(prev => [...prev, message])
       lastMsgIdRef.current = message.id
+
+      if (shouldForceOverwrite) {
+        setForceOverwrite(false)
+      }
 
       if (queued) {
         setGenerating(true)
@@ -158,6 +174,17 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
     } finally {
       setSending(false)
     }
+  }
+
+  const handleSend = () => {
+    void sendMessage(input, { forceOverwrite, clearInput: true })
+  }
+
+  const lastUserPrompt = [...messages].reverse().find(message => message.role === 'user')?.content ?? ''
+
+  const handleRetryWithOverwrite = () => {
+    if (!lastUserPrompt) return
+    void sendMessage(lastUserPrompt, { forceOverwrite: true })
   }
 
   const switchThread = useCallback(async (t: ConversationThread) => {
@@ -396,6 +423,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
             disabled={!input.trim() || sending || generating}
             style={{
               alignSelf: 'flex-end',
+              minWidth: 84,
               padding: '8px 14px',
               borderRadius: 6,
               background: (!input.trim() || sending || generating) ? '#1e3a8a44' : '#1d4ed8',
@@ -407,11 +435,52 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
               flexShrink: 0,
             }}
           >
-            {sending ? '…' : '↑'}
+            {sending ? 'Sending…' : forceOverwrite ? 'Overwrite' : 'Send'}
           </button>
         </div>
-        <div style={{ marginTop: 4, fontSize: '0.6rem', color: '#2a2a2a' }}>
-          Shift+Enter for newline
+        <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
+          <label style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            color: forceOverwrite ? '#fcd34d' : '#555',
+            fontSize: '0.65rem',
+            cursor: (sending || generating) ? 'default' : 'pointer',
+          }}>
+            <input
+              type="checkbox"
+              checked={forceOverwrite}
+              onChange={e => setForceOverwrite(e.target.checked)}
+              disabled={sending || generating}
+            />
+            Overwrite manually protected nodes for this send
+          </label>
+          {forceOverwrite && (
+            <div style={{ color: '#444', fontSize: '0.6rem', lineHeight: 1.4 }}>
+              This bypasses the builder protection on manually edited nodes for the next request only.
+            </div>
+          )}
+          {lastUserPrompt && (
+            <button
+              onClick={handleRetryWithOverwrite}
+              disabled={sending || generating}
+              style={{
+                justifySelf: 'start',
+                background: 'none',
+                border: '1px solid #1f2937',
+                borderRadius: 4,
+                color: (sending || generating) ? '#374151' : '#93c5fd',
+                cursor: (sending || generating) ? 'default' : 'pointer',
+                fontSize: '0.65rem',
+                padding: '3px 8px',
+              }}
+            >
+              Retry last with overwrite
+            </button>
+          )}
+          <div style={{ fontSize: '0.6rem', color: '#2a2a2a' }}>
+            Shift+Enter for newline
+          </div>
         </div>
       </div>
     </div>

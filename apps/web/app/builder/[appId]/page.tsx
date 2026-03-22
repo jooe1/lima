@@ -11,6 +11,7 @@ import {
   listCompanyGroups, createPublication,
   listPublications, archivePublication, listPublicationAudiences,
   type App, type AppPublication, type CompanyGroup,
+  type PublicationAudience, type PublicationCapability,
 } from '../../../lib/api'
 import { useDocumentHistory } from './hooks/useDocumentHistory'
 import { useAutosave } from './hooks/useAutosave'
@@ -20,6 +21,8 @@ import { Inspector } from './Inspector'
 import { LayersPanel } from './LayersPanel'
 import { VersionHistory } from './VersionHistory'
 import { WorkflowEditor } from './WorkflowEditor'
+
+type PublicationAudienceSelection = PublicationCapability | ''
 
 export default function AppEditorPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
@@ -34,7 +37,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [showPublishDialog, setShowPublishDialog] = useState(false)
   const [publishGroups, setPublishGroups] = useState<CompanyGroup[]>([])
   const [publishGroupsLoading, setPublishGroupsLoading] = useState(false)
-  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set())
+  const [publishAudienceSelections, setPublishAudienceSelections] = useState<Record<string, PublicationAudienceSelection>>({})
   const [showPublications, setShowPublications] = useState(false)
   const [publications, setPublications] = useState<AppPublication[]>([])
   const [pubLoading, setPubLoading] = useState(false)
@@ -196,7 +199,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     history.set(newDoc)
   }, [history, markManual])
 
-  const loadPublications = async () => {
+  const loadPublications = useCallback(async () => {
     if (!workspace) return
     setPubLoading(true)
     try {
@@ -204,7 +207,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
       setPublications(res.publications ?? [])
     } catch { /* ignore */ }
     finally { setPubLoading(false) }
-  }
+  }, [workspace, appId])
 
   // Open publish dialog — load groups + latest version
   const handleOpenPublishDialog = async () => {
@@ -212,11 +215,15 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     setPublishError('')
     setShowPublishDialog(true)
     setPublishGroupsLoading(true)
+    setPublishAudienceSelections({})
     try {
       const groupsRes = await listCompanyGroups(company.id)
       const groups = groupsRes.groups ?? []
       setPublishGroups(groups)
-      setSelectedGroupIds(new Set(groups.map(g => g.id)))
+      setPublishAudienceSelections(groups.reduce<Record<string, PublicationAudienceSelection>>((next, group) => {
+        next[group.id] = 'use'
+        return next
+      }, {}))
     } catch {
       // non-fatal: dialog still usable
     } finally {
@@ -231,14 +238,20 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     setPublishError('')
     try {
       const source = serialize(history.doc)
+      const audiences = Object.entries(publishAudienceSelections).reduce<PublicationAudience[]>((next, [groupId, capability]) => {
+        if (capability === 'discover' || capability === 'use') {
+          next.push({ group_id: groupId, capability })
+        }
+        return next
+      }, [])
+
       await patchApp(workspace.id, appId, { dsl_source: source })
       const version = await publishApp(workspace.id, appId)
       setApp(prev => prev ? { ...prev, status: 'published' } : prev)
-      // Also create a publication record if groups are selected
-      if (selectedGroupIds.size > 0) {
+      if (audiences.length > 0) {
         await createPublication(workspace.id, appId, {
           app_version_id: version.id,
-          audiences: [...selectedGroupIds].map(gid => ({ group_id: gid, capability: 'use' })),
+          audiences,
         }).catch(() => { /* non-blocking */ })
       }
       setShowPublishDialog(false)
@@ -250,6 +263,13 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   }
 
   const selectedNode = history.doc.find(n => n.id === selectedId) ?? null
+  const workflowTriggerTargets = history.doc
+    .filter(node => node.id !== 'root')
+    .map(node => ({
+      id: node.id,
+      label: `${node.id} (${node.element})`,
+      element: node.element,
+    }))
 
   if (loading) return null
 
@@ -511,6 +531,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           workspaceId={workspace?.id ?? ''}
           appId={appId}
           companyId={company?.id ?? ''}
+          onRefresh={loadPublications}
           onArchive={async (pubId) => {
             if (!workspace) return
             await archivePublication(workspace.id, appId, pubId)
@@ -534,6 +555,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           selectedId={selectedId}
           onChange={handleCanvasChange}
           onSelect={setSelectedId}
+          workspaceId={workspace?.id ?? ''}
         />
         {/* Right panel: Inspector, AI Chat, or Workflows */}
         {rightPanel === 'inspector' ? (
@@ -561,7 +583,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           </div>
         ) : rightPanel === 'workflows' ? (
           <div style={{ width: 340, flexShrink: 0, borderLeft: '1px solid #1a1a1a', overflow: 'hidden' }}>
-            <WorkflowEditor appId={appId} />
+            <WorkflowEditor appId={appId} triggerTargets={workflowTriggerTargets} />
           </div>
         ) : null}
       </div>
@@ -579,36 +601,63 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             <h2 style={{ margin: '0 0 1rem', fontSize: '1rem', fontWeight: 600 }}>
               Publish &ldquo;{app?.name}&rdquo;
             </h2>
-            <p style={{ margin: '0 0 0.75rem', fontSize: '0.75rem', color: '#888' }}>
-              Select the groups that can discover and use this app.
+            <p style={{ margin: '0 0 0.5rem', fontSize: '0.75rem', color: '#888' }}>
+              Assign a publication capability to each audience group.
+            </p>
+            <p style={{ margin: '0 0 0.75rem', fontSize: '0.7rem', color: '#555', lineHeight: 1.5 }}>
+              Discover lists the app for that group. Use grants launch access.
             </p>
             {publishGroupsLoading ? (
               <p style={{ fontSize: '0.75rem', color: '#555' }}>Loading groups…</p>
             ) : publishGroups.length === 0 ? (
               <p style={{ fontSize: '0.75rem', color: '#555' }}>No groups found. The app will be published without audience targeting.</p>
             ) : (
-              <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: '1rem' }}>
+              <div style={{ maxHeight: 240, overflowY: 'auto', marginBottom: '1rem', display: 'grid', gap: 8 }}>
                 {publishGroups.map(g => (
-                  <label key={g.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '4px 0', fontSize: '0.8rem', cursor: 'pointer',
+                  <div key={g.id} style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(0, 1fr) 132px',
+                    gap: 12,
+                    alignItems: 'center',
+                    padding: '6px 0',
+                    borderBottom: '1px solid #1a1a1a',
                   }}>
-                    <input
-                      type="checkbox"
-                      checked={selectedGroupIds.has(g.id)}
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <span style={{ fontSize: '0.8rem', color: '#e5e5e5', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {g.name}
+                        </span>
+                        {g.source_type === 'workspace_synthetic' && (
+                          <span style={{ fontSize: '0.65rem', color: '#555' }}>(workspace)</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.65rem', color: '#444', marginTop: 2 }}>
+                        {g.slug}
+                      </div>
+                    </div>
+                    <select
+                      value={publishAudienceSelections[g.id] ?? ''}
                       onChange={e => {
-                        setSelectedGroupIds(prev => {
-                          const next = new Set(prev)
-                          if (e.target.checked) next.add(g.id); else next.delete(g.id)
-                          return next
-                        })
+                        setPublishAudienceSelections(prev => ({
+                          ...prev,
+                          [g.id]: e.target.value as PublicationAudienceSelection,
+                        }))
                       }}
-                    />
-                    <span>{g.name}</span>
-                    {g.source_type === 'workspace_synthetic' && (
-                      <span style={{ fontSize: '0.65rem', color: '#555' }}>(workspace)</span>
-                    )}
-                  </label>
+                      style={{
+                        background: '#0a0a0a',
+                        border: '1px solid #333',
+                        borderRadius: 4,
+                        color: '#e5e5e5',
+                        fontSize: '0.72rem',
+                        padding: '5px 8px',
+                        outline: 'none',
+                      }}
+                    >
+                      <option value="">Not included</option>
+                      <option value="discover">Discover</option>
+                      <option value="use">Use</option>
+                    </select>
+                  </div>
                 ))}
               </div>
             )}
@@ -662,16 +711,42 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   )
 }
 
-function PublicationsPanel({ publications, loading, workspaceId, appId, companyId, onArchive, onClose }: {
+function PublicationsPanel({ publications, loading, workspaceId, appId, companyId, onRefresh, onArchive, onClose }: {
   publications: AppPublication[]
   loading: boolean
   workspaceId: string
   appId: string
   companyId: string
+  onRefresh: () => Promise<void>
   onArchive: (pubId: string) => Promise<void>
   onClose: () => void
 }) {
   const [archiving, setArchiving] = useState<string | null>(null)
+  const [groups, setGroups] = useState<CompanyGroup[]>([])
+  const groupNamesById = groups.reduce<Record<string, string>>((next, group) => {
+    next[group.id] = group.name
+    return next
+  }, {})
+
+  useEffect(() => {
+    let cancelled = false
+    if (!companyId) return
+
+    listCompanyGroups(companyId)
+      .then(res => {
+        if (cancelled) return
+        setGroups(res.groups ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setGroups([])
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [companyId])
 
   return (
     <div style={{
@@ -698,11 +773,17 @@ function PublicationsPanel({ publications, loading, workspaceId, appId, companyI
               pub={pub}
               workspaceId={workspaceId}
               appId={appId}
+              groups={groups}
+              groupNamesById={groupNamesById}
+              onRefresh={onRefresh}
               archiving={archiving === pub.id}
               onArchive={async () => {
                 setArchiving(pub.id)
-                await onArchive(pub.id)
-                setArchiving(null)
+                try {
+                  await onArchive(pub.id)
+                } finally {
+                  setArchiving(null)
+                }
               }}
             />
           ))}
@@ -712,28 +793,107 @@ function PublicationsPanel({ publications, loading, workspaceId, appId, companyI
   )
 }
 
-function PublicationRow({ pub, workspaceId, appId, archiving, onArchive }: {
+function PublicationRow({ pub, workspaceId, appId, groups, groupNamesById, onRefresh, archiving, onArchive }: {
   pub: AppPublication
   workspaceId: string
   appId: string
+  groups: CompanyGroup[]
+  groupNamesById: Record<string, string>
+  onRefresh: () => Promise<void>
   archiving: boolean
   onArchive: () => Promise<void>
 }) {
-  const [audiences, setAudiences] = useState<{ group_id: string; capability: string }[]>([])
+  const [audiences, setAudiences] = useState<PublicationAudience[]>([])
   const [showAudiences, setShowAudiences] = useState(false)
   const [loadingAud, setLoadingAud] = useState(false)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editSelections, setEditSelections] = useState<Record<string, PublicationAudienceSelection>>({})
+  const [archiveOriginal, setArchiveOriginal] = useState(pub.status === 'active')
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editError, setEditError] = useState('')
 
-  const loadAudiences = async () => {
+  const loadAudiences = useCallback(async () => {
     setLoadingAud(true)
     try {
       const res = await listPublicationAudiences(workspaceId, appId, pub.id)
-      setAudiences(res.audiences ?? [])
-    } catch { /* ignore */ }
-    finally { setLoadingAud(false) }
-  }
+      const nextAudiences = res.audiences ?? []
+      setAudiences(nextAudiences)
+      return nextAudiences
+    } catch {
+      return []
+    } finally { setLoadingAud(false) }
+  }, [workspaceId, appId, pub.id])
+
+  useEffect(() => {
+    void loadAudiences()
+  }, [loadAudiences])
 
   const statusColor = pub.status === 'active' ? '#4ade80' : '#555'
   const statusBg = pub.status === 'active' ? '#16653433' : '#1a1a1a'
+  const discoverAudiences = audiences.filter(a => a.capability === 'discover')
+  const useAudiences = audiences.filter(a => a.capability === 'use')
+
+  const summarizeAudienceNames = (items: PublicationAudience[]) => {
+    const names = items.map(a => groupNamesById[a.group_id] ?? `Group ${a.group_id.slice(0, 8)}...`)
+    if (names.length <= 2) {
+      return names.join(', ')
+    }
+    return `${names.slice(0, 2).join(', ')} +${names.length - 2} more`
+  }
+
+  const openEditor = async () => {
+    const currentAudiences = audiences.length > 0 ? audiences : await loadAudiences()
+    setEditSelections(currentAudiences.reduce<Record<string, PublicationAudienceSelection>>((next, audience) => {
+      next[audience.group_id] = audience.capability
+      return next
+    }, groups.reduce<Record<string, PublicationAudienceSelection>>((next, group) => {
+      next[group.id] = ''
+      return next
+    }, {})))
+    setArchiveOriginal(pub.status === 'active')
+    setEditError('')
+    setEditorOpen(true)
+  }
+
+  const handleRepublish = async () => {
+    setSavingEdit(true)
+    setEditError('')
+    try {
+      const nextAudiences = Object.entries(editSelections).reduce<PublicationAudience[]>((next, [groupId, capability]) => {
+        if (capability === 'discover' || capability === 'use') {
+          next.push({ group_id: groupId, capability })
+        }
+        return next
+      }, [])
+
+      await createPublication(workspaceId, appId, {
+        app_version_id: pub.app_version_id,
+        audiences: nextAudiences,
+      })
+
+      let archiveError = ''
+      if (archiveOriginal && pub.status === 'active') {
+        try {
+          await onArchive()
+        } catch (e: unknown) {
+          archiveError = e instanceof Error ? e.message : 'Failed to archive the previous publication'
+        }
+      }
+
+      await onRefresh()
+
+      if (archiveError) {
+        setEditError(`Republished successfully, but the previous publication was not archived: ${archiveError}`)
+        return
+      }
+
+      setEditorOpen(false)
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : 'Failed to republish audiences')
+    } finally {
+      setSavingEdit(false)
+    }
+  }
 
   return (
     <div style={{ padding: '8px 10px', background: '#111', border: '1px solid #1e1e1e', borderRadius: 6, fontSize: '0.75rem' }}>
@@ -744,12 +904,56 @@ function PublicationRow({ pub, workspaceId, appId, archiving, onArchive }: {
           {new Date(pub.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
         </span>
       </div>
+      <div style={{ display: 'grid', gap: 4, marginTop: 6 }}>
+        {useAudiences.length > 0 && (
+          <div style={{ color: '#ccc', fontSize: '0.68rem' }}>
+            <span style={{ color: '#4ade80' }}>{publicationCapabilityLabel('use')}:</span>{' '}
+            {summarizeAudienceNames(useAudiences)}
+          </div>
+        )}
+        {discoverAudiences.length > 0 && (
+          <div style={{ color: '#ccc', fontSize: '0.68rem' }}>
+            <span style={{ color: '#93c5fd' }}>{publicationCapabilityLabel('discover')}:</span>{' '}
+            {summarizeAudienceNames(discoverAudiences)}
+          </div>
+        )}
+        {loadingAud && audiences.length === 0 && (
+          <div style={{ color: '#555', fontSize: '0.68rem' }}>
+            Loading audience summary…
+          </div>
+        )}
+        {!loadingAud && audiences.length === 0 && (
+          <div style={{ color: '#555', fontSize: '0.68rem' }}>
+            No audience targeting is attached to this publication.
+          </div>
+        )}
+      </div>
+      {(discoverAudiences.length > 0 || useAudiences.length > 0) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+          {discoverAudiences.length > 0 && (
+            <span style={publicationCapabilityPill('discover')}>
+              {publicationCapabilityLabel('discover')} x {discoverAudiences.length}
+            </span>
+          )}
+          {useAudiences.length > 0 && (
+            <span style={publicationCapabilityPill('use')}>
+              {publicationCapabilityLabel('use')} x {useAudiences.length}
+            </span>
+          )}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
         <button
           onClick={() => { setShowAudiences(!showAudiences); if (!showAudiences && audiences.length === 0) loadAudiences() }}
           style={{ background: 'none', border: '1px solid #1e1e1e', borderRadius: 4, color: '#888', cursor: 'pointer', fontSize: '0.65rem', padding: '2px 8px' }}
         >
           {showAudiences ? 'Hide audiences' : 'Audiences'}
+        </button>
+        <button
+          onClick={() => { void openEditor() }}
+          style={{ background: 'none', border: '1px solid #1e1e1e', borderRadius: 4, color: '#93c5fd', cursor: 'pointer', fontSize: '0.65rem', padding: '2px 8px' }}
+        >
+          Edit / republish
         </button>
         {pub.status === 'active' && (
           <button
@@ -768,10 +972,93 @@ function PublicationRow({ pub, workspaceId, appId, archiving, onArchive }: {
           ) : audiences.length === 0 ? (
             <span style={{ color: '#444', fontSize: '0.6rem' }}>No audiences</span>
           ) : audiences.map(a => (
-            <div key={a.group_id} style={{ color: '#888', fontSize: '0.6rem' }}>
-              Group {a.group_id.slice(0, 8)}… ({a.capability})
+            <div
+              key={`${a.group_id}-${a.capability}`}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '4px 0' }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: '#ccc', fontSize: '0.65rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {groupNamesById[a.group_id] ?? `Group ${a.group_id.slice(0, 8)}...`}
+                </div>
+                {!groupNamesById[a.group_id] && (
+                  <div style={{ color: '#444', fontFamily: 'monospace', fontSize: '0.55rem' }}>
+                    {a.group_id}
+                  </div>
+                )}
+              </div>
+              <span style={publicationCapabilityPill(a.capability)}>{publicationCapabilityLabel(a.capability)}</span>
             </div>
           ))}
+        </div>
+      )}
+      {editorOpen && (
+        <div style={{ marginTop: 8, padding: '8px 10px', background: '#0d0d0d', border: '1px solid #1e1e1e', borderRadius: 6, display: 'grid', gap: 8 }}>
+          <div style={{ display: 'grid', gap: 4 }}>
+            <span style={{ color: '#ccc', fontSize: '0.68rem' }}>
+              Republish version {pub.app_version_id.slice(0, 8)} with updated audiences.
+            </span>
+            <span style={{ color: '#555', fontSize: '0.65rem', lineHeight: 1.5 }}>
+              Editing creates a new publication record. Archive the existing one after republishing if this should replace it.
+            </span>
+          </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: pub.status === 'active' ? '#888' : '#555', fontSize: '0.68rem' }}>
+            <input
+              type="checkbox"
+              checked={archiveOriginal}
+              onChange={e => setArchiveOriginal(e.target.checked)}
+              disabled={pub.status !== 'active'}
+            />
+            Archive this publication after the new one is created
+          </label>
+
+          {groups.length === 0 ? (
+            <div style={{ color: '#555', fontSize: '0.68rem' }}>No company groups available for audience targeting.</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+              {groups.map(group => (
+                <div key={group.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 148px', gap: 10, alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #151515' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ color: '#e5e5e5', fontSize: '0.72rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.name}</div>
+                    <div style={{ color: '#555', fontSize: '0.6rem' }}>{group.slug}</div>
+                  </div>
+                  <select
+                    value={editSelections[group.id] ?? ''}
+                    onChange={e => setEditSelections(prev => ({
+                      ...prev,
+                      [group.id]: e.target.value as PublicationAudienceSelection,
+                    }))}
+                    style={{ background: '#0a0a0a', border: '1px solid #333', borderRadius: 4, color: '#e5e5e5', fontSize: '0.68rem', padding: '4px 8px' }}
+                  >
+                    <option value="">Not included</option>
+                    <option value="discover">{publicationCapabilityLabel('discover')}</option>
+                    <option value="use">{publicationCapabilityLabel('use')}</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {editError && (
+            <div style={{ color: '#f87171', fontSize: '0.68rem' }}>{editError}</div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+            <button
+              onClick={() => setEditorOpen(false)}
+              disabled={savingEdit}
+              style={{ background: 'none', border: '1px solid #1e1e1e', borderRadius: 4, color: '#888', cursor: savingEdit ? 'default' : 'pointer', fontSize: '0.65rem', padding: '2px 8px' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => { void handleRepublish() }}
+              disabled={savingEdit}
+              style={{ background: '#1d4ed8', border: 'none', borderRadius: 4, color: '#fff', cursor: savingEdit ? 'default' : 'pointer', fontSize: '0.65rem', padding: '2px 10px' }}
+            >
+              {savingEdit ? 'Republishing…' : 'Republish'}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -792,5 +1079,29 @@ function iconBtn(enabled: boolean): React.CSSProperties {
     alignItems: 'center',
     justifyContent: 'center',
   }
+}
+
+function publicationCapabilityPill(capability: PublicationCapability): React.CSSProperties {
+  if (capability === 'use') {
+    return {
+      fontSize: '0.6rem',
+      padding: '2px 7px',
+      borderRadius: 99,
+      background: '#16653433',
+      color: '#4ade80',
+    }
+  }
+
+  return {
+    fontSize: '0.6rem',
+    padding: '2px 7px',
+    borderRadius: 99,
+    background: '#1e3a8a33',
+    color: '#93c5fd',
+  }
+}
+
+function publicationCapabilityLabel(capability: PublicationCapability) {
+  return capability === 'use' ? 'Can launch' : 'Listed only'
 }
 

@@ -1,11 +1,13 @@
 'use client'
 
 import React, { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import {
   type Workflow,
   type WorkflowWithSteps,
   type WorkflowStep,
   type WorkflowRun,
+  type WorkflowRunStatus,
   type WorkflowStepType,
   type WorkflowTrigger,
   type WorkflowStepInput,
@@ -83,14 +85,201 @@ const STEP_TYPE_LABELS: Record<WorkflowStepType, string> = {
   notification:  'Notification',
 }
 
+const ACTIVE_RUN_STATUSES: WorkflowRunStatus[] = ['pending', 'running', 'awaiting_approval']
+
+const SCHEDULE_PRESETS = [
+  { label: 'Hourly', cron: '0 * * * *', description: 'At minute 0 every hour' },
+  { label: 'Daily 09:00', cron: '0 9 * * *', description: 'Every day at 09:00' },
+  { label: 'Weekdays 09:00', cron: '0 9 * * 1-5', description: 'Monday through Friday at 09:00' },
+  { label: 'Mondays 09:00', cron: '0 9 * * 1', description: 'Every Monday at 09:00' },
+]
+
+interface WorkflowTriggerTarget {
+  id: string
+  label: string
+  element: string
+}
+
 interface Props {
   appId: string
+  triggerTargets?: WorkflowTriggerTarget[]
+}
+
+function getStringConfigValue(config: Record<string, unknown>, key: string) {
+  const value = config[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function getTriggerConfigDraft(triggerType: WorkflowTrigger, source: Record<string, unknown>) {
+  switch (triggerType) {
+    case 'schedule':
+      return { cron: getStringConfigValue(source, 'cron') }
+    case 'webhook':
+      return { secret_token_hash: getStringConfigValue(source, 'secret_token_hash') }
+    case 'form_submit':
+    case 'button_click':
+      return { widget_id: getStringConfigValue(source, 'widget_id') }
+    case 'manual':
+    default:
+      return {}
+  }
+}
+
+function buildTriggerConfig(triggerType: WorkflowTrigger, source: Record<string, unknown>) {
+  const nextConfig: Record<string, unknown> = {}
+
+  const assignIfPresent = (key: string) => {
+    const value = getStringConfigValue(source, key).trim()
+    if (value) nextConfig[key] = value
+  }
+
+  switch (triggerType) {
+    case 'schedule':
+      assignIfPresent('cron')
+      break
+    case 'webhook':
+      assignIfPresent('secret_token_hash')
+      break
+    case 'form_submit':
+    case 'button_click':
+      assignIfPresent('widget_id')
+      break
+    case 'manual':
+    default:
+      break
+  }
+
+  return nextConfig
+}
+
+function getTriggerTargetsForType(triggerType: WorkflowTrigger, triggerTargets: WorkflowTriggerTarget[]) {
+  switch (triggerType) {
+    case 'form_submit':
+      return triggerTargets.filter(target => target.element === 'form')
+    case 'button_click':
+      return triggerTargets.filter(target => target.element === 'button')
+    default:
+      return triggerTargets
+  }
+}
+
+function createWebhookSecret() {
+  return `whsec_${crypto.randomUUID().replace(/-/g, '')}`
+}
+
+function getDefaultTriggerConfigDraft(
+  triggerType: WorkflowTrigger,
+  source: Record<string, unknown>,
+  triggerTargets: WorkflowTriggerTarget[],
+) {
+  const currentDraft = getTriggerConfigDraft(triggerType, source)
+
+  switch (triggerType) {
+    case 'schedule':
+      return {
+        cron: getStringConfigValue(currentDraft, 'cron') || SCHEDULE_PRESETS[0].cron,
+      }
+    case 'webhook':
+      return {
+        secret_token_hash: getStringConfigValue(currentDraft, 'secret_token_hash') || createWebhookSecret(),
+      }
+    case 'form_submit':
+    case 'button_click': {
+      const validTargets = getTriggerTargetsForType(triggerType, triggerTargets)
+      const currentWidgetId = getStringConfigValue(currentDraft, 'widget_id')
+      return {
+        widget_id: validTargets.some(target => target.id === currentWidgetId)
+          ? currentWidgetId
+          : validTargets[0]?.id || '',
+      }
+    }
+    case 'manual':
+    default:
+      return {}
+  }
+}
+
+function validateCronExpression(cron: string) {
+  const trimmed = cron.trim()
+  if (!trimmed) {
+    return 'Choose or enter a cron expression.'
+  }
+
+  const fields = trimmed.split(/\s+/)
+  if (fields.length !== 5) {
+    return 'Use five cron fields: minute hour day-of-month month day-of-week.'
+  }
+
+  const allowedTokenPattern = /^[0-9*/,-]+$/
+  const invalidField = fields.find(field => !allowedTokenPattern.test(field))
+  if (invalidField) {
+    return `Cron field "${invalidField}" contains unsupported characters.`
+  }
+
+  return undefined
+}
+
+function validateTriggerConfig(
+  triggerType: WorkflowTrigger,
+  source: Record<string, unknown>,
+  triggerTargets: WorkflowTriggerTarget[],
+) {
+  switch (triggerType) {
+    case 'schedule': {
+      const cronError = validateCronExpression(getStringConfigValue(source, 'cron'))
+      return cronError ? [cronError] : []
+    }
+    case 'webhook': {
+      const secret = getStringConfigValue(source, 'secret_token_hash').trim()
+      if (!secret) {
+        return ['Generate or enter a shared secret for webhook authentication.']
+      }
+      if (secret.includes(' ')) {
+        return ['Webhook secrets cannot contain spaces.']
+      }
+      if (secret.length < 8) {
+        return ['Webhook secrets should be at least 8 characters long.']
+      }
+      return []
+    }
+    case 'form_submit':
+    case 'button_click': {
+      const validTargets = getTriggerTargetsForType(triggerType, triggerTargets)
+      const widgetId = getStringConfigValue(source, 'widget_id').trim()
+      if (!widgetId) {
+        return [`Choose a ${triggerType === 'form_submit' ? 'form' : 'button'} widget.`]
+      }
+      if (!validTargets.some(target => target.id === widgetId)) {
+        return [`The selected ${triggerType === 'form_submit' ? 'form' : 'button'} widget is missing from the canvas.`]
+      }
+      return []
+    }
+    case 'manual':
+    default:
+      return []
+  }
+}
+
+function getTriggerHelperText(triggerType: WorkflowTrigger) {
+  switch (triggerType) {
+    case 'schedule':
+      return 'Five-field cron format: minute hour day-of-month month day-of-week.'
+    case 'webhook':
+      return 'Use a strong shared secret so inbound webhook authentication has a value to validate against.'
+    case 'form_submit':
+      return 'Choose the form widget that should emit this trigger. Removing the widget breaks the link.'
+    case 'button_click':
+      return 'Choose the button widget that should emit this trigger. Removing the widget breaks the link.'
+    case 'manual':
+    default:
+      return 'Manual workflows run from the builder and can accept JSON input from the Run drawer.'
+  }
 }
 
 // ============================================================================
 // WorkflowEditor
 // ============================================================================
-export function WorkflowEditor({ appId }: Props) {
+export function WorkflowEditor({ appId, triggerTargets = [] }: Props) {
   const { workspace, user } = useAuth()
   const isAdmin   = user?.role === 'workspace_admin'
   const isBuilder = user?.role === 'app_builder' || isAdmin
@@ -136,6 +325,29 @@ export function WorkflowEditor({ appId }: Props) {
       setRuns([])
     }
   }, [workspace, appId])
+
+  const refreshRuns = useCallback(async (workflowId: string, suppressErrors = false) => {
+    if (!workspace) return
+    try {
+      const runsRes = await listWorkflowRuns(workspace.id, appId, workflowId)
+      setRuns(runsRes.runs)
+    } catch (e) {
+      if (!suppressErrors) {
+        setActionErr(e instanceof Error ? e.message : 'Failed to load workflow runs')
+      }
+    }
+  }, [workspace, appId])
+
+  useEffect(() => {
+    if (!selected?.id) return
+    if (!runs.some(run => ACTIVE_RUN_STATUSES.includes(run.status))) return
+
+    const intervalId = window.setInterval(() => {
+      void refreshRuns(selected.id, true)
+    }, 3000)
+
+    return () => window.clearInterval(intervalId)
+  }, [selected?.id, runs, refreshRuns])
 
   // Create new workflow
   const handleCreate = useCallback(async () => {
@@ -192,15 +404,17 @@ export function WorkflowEditor({ appId }: Props) {
     }
   }, [workspace, appId, selected, reload])
 
-  // Manual trigger
-  const handleTrigger = useCallback(async () => {
+  // Trigger a manual run with optional input data.
+  const handleTrigger = useCallback(async (inputData?: Record<string, unknown>) => {
     if (!workspace || !selected) return
     setActionErr('')
     try {
-      const run = await triggerWorkflow(workspace.id, appId, selected.id)
-      setRuns(prev => [run, ...prev])
+      const run = await triggerWorkflow(workspace.id, appId, selected.id, inputData)
+      setRuns(prev => [run, ...prev.filter(existing => existing.id !== run.id)])
     } catch (e) {
-      setActionErr(e instanceof Error ? e.message : 'Failed to trigger workflow')
+      const message = e instanceof Error ? e.message : 'Failed to trigger workflow'
+      setActionErr(message)
+      throw e instanceof Error ? e : new Error(message)
     }
   }, [workspace, appId, selected])
 
@@ -310,10 +524,12 @@ export function WorkflowEditor({ appId }: Props) {
           onActivate={handleActivate}
           onArchive={handleArchive}
           onTrigger={handleTrigger}
+          onRefreshRuns={() => refreshRuns(selected.id)}
           onDelete={() => handleDelete(selected.id)}
           onReviewStep={handleReviewStep}
           onSaveSteps={handleSaveSteps}
           onPatchWorkflow={handlePatchWorkflow}
+          triggerTargets={triggerTargets}
         />
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted }}>
@@ -335,11 +551,13 @@ interface DetailProps {
   actionErr: string
   onActivate: () => void
   onArchive: () => void
-  onTrigger: () => void
+  onTrigger: (inputData?: Record<string, unknown>) => Promise<void>
+  onRefreshRuns: () => Promise<void>
   onDelete: () => void
   onReviewStep: (stepId: string) => void
   onSaveSteps: (steps: WorkflowStepInput[]) => Promise<void>
   onPatchWorkflow: (patch: Parameters<typeof patchWorkflow>[3]) => Promise<void>
+  triggerTargets: WorkflowTriggerTarget[]
 }
 
 const STEP_TYPES: WorkflowStepType[] = ['query', 'mutation', 'condition', 'approval_gate', 'notification']
@@ -356,7 +574,7 @@ interface DraftStep {
   ai_generated: boolean
 }
 
-function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, onArchive, onTrigger, onDelete, onReviewStep, onSaveSteps, onPatchWorkflow }: DetailProps) {
+function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, onArchive, onTrigger, onRefreshRuns, onDelete, onReviewStep, onSaveSteps, onPatchWorkflow, triggerTargets }: DetailProps) {
   const unreviewedCount = wf.steps.filter(s => s.ai_generated && !s.reviewed_by).length
 
   const [editingSteps, setEditingSteps] = useState(false)
@@ -367,10 +585,34 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
   // Metadata local state (save on blur)
   const [metaName, setMetaName]         = useState(wf.name)
   const [metaDesc, setMetaDesc]         = useState(wf.description ?? '')
+  const [metaTriggerType, setMetaTriggerType] = useState<WorkflowTrigger>(wf.trigger_type)
+  const [triggerConfigDraft, setTriggerConfigDraft] = useState<Record<string, unknown>>(
+    getTriggerConfigDraft(wf.trigger_type, wf.trigger_config),
+  )
+  const [runDialogOpen, setRunDialogOpen] = useState(false)
+  const [runInputText, setRunInputText] = useState('{}')
+  const [runInputError, setRunInputError] = useState('')
+  const [running, setRunning] = useState(false)
+
+  const triggerTargetsForType = getTriggerTargetsForType(metaTriggerType, triggerTargets)
+  const currentWidgetId = getStringConfigValue(triggerConfigDraft, 'widget_id')
+  const widgetTargetMissing = Boolean(
+    currentWidgetId
+      && (metaTriggerType === 'form_submit' || metaTriggerType === 'button_click')
+      && !triggerTargetsForType.some(target => target.id === currentWidgetId),
+  )
+  const widgetTargetOptions = widgetTargetMissing
+    ? [{ id: currentWidgetId, label: `Missing widget (${currentWidgetId})`, element: 'missing' }, ...triggerTargetsForType]
+    : triggerTargetsForType
+  const triggerConfigErrors = validateTriggerConfig(metaTriggerType, triggerConfigDraft, triggerTargets)
 
   // Sync local state when the workflow prop changes (e.g. after patch)
   useEffect(() => { setMetaName(wf.name) }, [wf.name])
   useEffect(() => { setMetaDesc(wf.description ?? '') }, [wf.description])
+  useEffect(() => { setMetaTriggerType(wf.trigger_type) }, [wf.trigger_type])
+  useEffect(() => {
+    setTriggerConfigDraft(getTriggerConfigDraft(wf.trigger_type, wf.trigger_config))
+  }, [wf.trigger_type, wf.trigger_config])
 
   const startEditing = () => {
     setDraftSteps(wf.steps.map(s => ({
@@ -429,8 +671,64 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
       return arr
     })
 
+  const persistTriggerConfig = async (triggerType: WorkflowTrigger, nextDraft: Record<string, unknown>) => {
+    if (validateTriggerConfig(triggerType, nextDraft, triggerTargets).length > 0) {
+      return false
+    }
+
+    await onPatchWorkflow({
+      trigger_type: triggerType,
+      trigger_config: buildTriggerConfig(triggerType, nextDraft),
+    })
+
+    return true
+  }
+
+  const handleTriggerTypeChange = (nextTriggerType: WorkflowTrigger) => {
+    const nextDraft = getDefaultTriggerConfigDraft(nextTriggerType, triggerConfigDraft, triggerTargets)
+    setMetaTriggerType(nextTriggerType)
+    setTriggerConfigDraft(nextDraft)
+    void persistTriggerConfig(nextTriggerType, nextDraft)
+  }
+
+  const updateTriggerConfigField = (key: string, value: string) => {
+    setTriggerConfigDraft(prev => ({ ...prev, [key]: value }))
+  }
+
+  const openRunDialog = () => {
+    setRunInputText(JSON.stringify(runs[0]?.input_data ?? {}, null, 2))
+    setRunInputError('')
+    setRunDialogOpen(true)
+  }
+
+  const handleRun = async () => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(runInputText || '{}')
+    } catch {
+      setRunInputError('Run input must be valid JSON.')
+      return
+    }
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      setRunInputError('Run input must be a JSON object.')
+      return
+    }
+
+    setRunning(true)
+    setRunInputError('')
+    try {
+      await onTrigger(parsed as Record<string, unknown>)
+      setRunDialogOpen(false)
+    } catch (e) {
+      setRunInputError(e instanceof Error ? e.message : 'Failed to trigger workflow')
+    } finally {
+      setRunning(false)
+    }
+  }
+
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
 
       {/* Header */}
       <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -441,7 +739,7 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
         <span style={{ color: C.muted }}>{TRIGGER_LABELS[wf.trigger_type]}</span>
 
         {isBuilder && wf.status !== 'archived' && (
-          <button style={btn()} onClick={onTrigger} title="Create a manual run">▶ Run</button>
+          <button style={btn()} onClick={openRunDialog} title="Create a manual run with input data">▶ Run...</button>
         )}
         {isAdmin && wf.status === 'draft' && (
           <button
@@ -500,8 +798,8 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
               <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <span style={{ color: C.muted, fontSize: '0.65rem' }}>Trigger Type</span>
                 <select
-                  value={wf.trigger_type}
-                  onChange={e => onPatchWorkflow({ trigger_type: e.target.value as WorkflowTrigger })}
+                  value={metaTriggerType}
+                  onChange={e => handleTriggerTypeChange(e.target.value as WorkflowTrigger)}
                   style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, fontSize: '0.72rem', padding: '3px 7px' }}
                 >
                   {(Object.keys(TRIGGER_LABELS) as WorkflowTrigger[]).map(t => (
@@ -509,6 +807,113 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
                   ))}
                 </select>
               </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <span style={{ color: C.muted, fontSize: '0.65rem' }}>Trigger Config</span>
+                {metaTriggerType === 'manual' && (
+                  <div style={{ color: C.muted, fontSize: '0.72rem', lineHeight: 1.5 }}>
+                    {getTriggerHelperText(metaTriggerType)}
+                  </div>
+                )}
+                {metaTriggerType === 'schedule' && (
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ color: C.muted, fontSize: '0.65rem' }}>Cron Expression</span>
+                    <input
+                      value={getStringConfigValue(triggerConfigDraft, 'cron')}
+                      onChange={e => updateTriggerConfigField('cron', e.target.value)}
+                      onBlur={() => { void persistTriggerConfig(metaTriggerType, triggerConfigDraft) }}
+                      placeholder="0 * * * *"
+                      spellCheck={false}
+                      style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, fontSize: '0.72rem', padding: '3px 7px' }}
+                    />
+                    <span style={{ color: C.muted, fontSize: '0.65rem', lineHeight: 1.5 }}>
+                      {getTriggerHelperText(metaTriggerType)}
+                    </span>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {SCHEDULE_PRESETS.map(preset => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          style={btn()}
+                          title={preset.description}
+                          onClick={() => {
+                            const nextDraft = { ...triggerConfigDraft, cron: preset.cron }
+                            setTriggerConfigDraft(nextDraft)
+                            void persistTriggerConfig(metaTriggerType, nextDraft)
+                          }}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </label>
+                )}
+                {metaTriggerType === 'webhook' && (
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ color: C.muted, fontSize: '0.65rem' }}>Secret Token / Hash</span>
+                    <input
+                      value={getStringConfigValue(triggerConfigDraft, 'secret_token_hash')}
+                      onChange={e => updateTriggerConfigField('secret_token_hash', e.target.value)}
+                      onBlur={() => { void persistTriggerConfig(metaTriggerType, triggerConfigDraft) }}
+                      placeholder="whsec_..."
+                      spellCheck={false}
+                      style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, fontSize: '0.72rem', padding: '3px 7px' }}
+                    />
+                    <span style={{ color: C.muted, fontSize: '0.65rem', lineHeight: 1.5 }}>
+                      {getTriggerHelperText(metaTriggerType)} Stored under <code>secret_token_hash</code>.
+                    </span>
+                    <button
+                      type="button"
+                      style={btn()}
+                      onClick={() => {
+                        const nextDraft = { ...triggerConfigDraft, secret_token_hash: createWebhookSecret() }
+                        setTriggerConfigDraft(nextDraft)
+                        void persistTriggerConfig(metaTriggerType, nextDraft)
+                      }}
+                    >
+                      Generate secret
+                    </button>
+                  </label>
+                )}
+                {(metaTriggerType === 'form_submit' || metaTriggerType === 'button_click') && (
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ color: C.muted, fontSize: '0.65rem' }}>
+                      {metaTriggerType === 'form_submit' ? 'Form Widget' : 'Button Widget'}
+                    </span>
+                    {widgetTargetOptions.length > 0 ? (
+                      <select
+                        value={getStringConfigValue(triggerConfigDraft, 'widget_id')}
+                        onChange={e => {
+                          const nextDraft = { ...triggerConfigDraft, widget_id: e.target.value }
+                          setTriggerConfigDraft(nextDraft)
+                          void persistTriggerConfig(metaTriggerType, nextDraft)
+                        }}
+                        style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3, color: C.text, fontSize: '0.72rem', padding: '3px 7px' }}
+                      >
+                        <option value="">
+                          Select a {metaTriggerType === 'form_submit' ? 'form' : 'button'} widget...
+                        </option>
+                        {widgetTargetOptions.map(target => (
+                          <option key={target.id} value={target.id}>{target.label}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div style={{ color: C.dangerFg, fontSize: '0.72rem', lineHeight: 1.5 }}>
+                        Add a {metaTriggerType === 'form_submit' ? 'form' : 'button'} widget to the canvas before saving this trigger.
+                      </div>
+                    )}
+                    <span style={{ color: C.muted, fontSize: '0.65rem', lineHeight: 1.5 }}>
+                      {getTriggerHelperText(metaTriggerType)}
+                    </span>
+                  </label>
+                )}
+                {triggerConfigErrors.length > 0 && (
+                  <div style={{ display: 'grid', gap: 4, padding: '8px 10px', borderRadius: 4, background: '#450a0a55', color: C.dangerFg, fontSize: '0.68rem' }}>
+                    {triggerConfigErrors.map(error => (
+                      <span key={error}>{error}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input
                   type="checkbox"
@@ -580,13 +985,27 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
         </Section>
 
         {/* Recent runs */}
-        <Section title={`Recent Runs (${runs.length})`}>
+        <Section
+          title={`Recent Runs (${runs.length})`}
+          action={<button style={btn()} onClick={() => { void onRefreshRuns() }}>Refresh</button>}
+        >
           {runs.length === 0 && <div style={{ color: C.muted }}>No runs yet.</div>}
           {runs.map(run => (
             <RunRow key={run.id} run={run} />
           ))}
         </Section>
       </div>
+
+      {runDialogOpen && (
+        <RunDialog
+          inputText={runInputText}
+          error={runInputError}
+          running={running}
+          onChange={setRunInputText}
+          onClose={() => { if (!running) setRunDialogOpen(false) }}
+          onSubmit={handleRun}
+        />
+      )}
     </div>
   )
 }
@@ -704,16 +1123,216 @@ function StepRow({ step, index, isBuilder, onReview }: StepRowProps) {
 
 // ---- RunRow ----------------------------------------------------------------
 function RunRow({ run }: { run: WorkflowRun }) {
+  const [expanded, setExpanded] = useState(Boolean(run.error_message || run.output_data || run.approval_id))
   const started = new Date(run.started_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const completed = run.completed_at
+    ? new Date(run.completed_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'In progress'
+  const approvalState = run.approval_id ? getRunApprovalState(run.status) : null
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
-      <span style={pill(run.status)}>{run.status}</span>
-      <span style={{ color: C.muted, fontSize: '0.65rem', flex: 1 }}>{started}</span>
-      {run.error_message && (
-        <span style={{ color: C.dangerFg, fontSize: '0.65rem', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {run.error_message}
-        </span>
+    <div style={{ borderBottom: `1px solid ${C.border}`, padding: '8px 0' }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(prev => !prev)}
+        style={{
+          background: 'transparent',
+          border: 'none',
+          color: C.text,
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: 0,
+          textAlign: 'left',
+          width: '100%',
+        }}
+      >
+        <span style={{ color: C.muted, width: 12, flexShrink: 0 }}>{expanded ? 'v' : '>'}</span>
+        <span style={pill(run.status)}>{run.status}</span>
+        <span style={{ color: C.muted, fontSize: '0.65rem', flex: 1 }}>{started}</span>
+        {approvalState && (
+          <span style={{ background: approvalState.background, color: approvalState.color, fontSize: '0.6rem', padding: '1px 6px', borderRadius: 99 }}>
+            {approvalState.label}
+          </span>
+        )}
+        {run.error_message && !expanded && (
+          <span style={{ color: C.dangerFg, fontSize: '0.65rem', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {run.error_message}
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 8, paddingLeft: 20, display: 'grid', gap: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
+            <RunMetaItem label="Run ID">
+              <span style={{ fontFamily: 'monospace', fontSize: '0.65rem', wordBreak: 'break-all' }}>{run.id}</span>
+            </RunMetaItem>
+            <RunMetaItem label="Started">{started}</RunMetaItem>
+            <RunMetaItem label="Completed">{completed}</RunMetaItem>
+            <RunMetaItem label="Approval">
+              {run.approval_id ? (
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {approvalState && (
+                    <span style={{
+                      background: approvalState.background,
+                      color: approvalState.color,
+                      fontSize: '0.6rem',
+                      padding: '2px 7px',
+                      borderRadius: 99,
+                      justifySelf: 'start',
+                    }}>
+                      {approvalState.label}
+                    </span>
+                  )}
+                  <span style={{ fontFamily: 'monospace', fontSize: '0.65rem', wordBreak: 'break-all' }}>{run.approval_id}</span>
+                  <Link
+                    href={`/builder/approvals?approval=${run.approval_id}&filter=${approvalState?.filter ?? 'all'}`}
+                    style={{ color: '#93c5fd', fontSize: '0.68rem', textDecoration: 'none' }}
+                  >
+                    Open approval
+                  </Link>
+                </div>
+              ) : 'None'}
+            </RunMetaItem>
+          </div>
+
+          <JsonBlock label="Input Data" value={run.input_data} emptyMessage="{}" />
+          <JsonBlock label="Output Data" value={run.output_data} emptyMessage="No output data recorded." />
+
+          <div>
+            <div style={{ fontSize: '0.65rem', color: C.muted, marginBottom: 4 }}>Error</div>
+            {run.error_message ? (
+              <div style={{ color: C.dangerFg, fontSize: '0.72rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {run.error_message}
+              </div>
+            ) : (
+              <div style={{ color: C.muted, fontSize: '0.72rem' }}>No error recorded.</div>
+            )}
+          </div>
+        </div>
       )}
+    </div>
+  )
+}
+
+function getRunApprovalState(status: WorkflowRunStatus) {
+  if (status === 'awaiting_approval') {
+    return {
+      label: 'Awaiting approval',
+      background: '#92400e33',
+      color: '#fcd34d',
+      filter: 'pending' as const,
+    }
+  }
+
+  return {
+    label: 'Resumed from approval',
+    background: '#1e3a8a33',
+    color: '#93c5fd',
+    filter: 'all' as const,
+  }
+}
+
+function RunMetaItem({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ background: '#0d0d0d', border: `1px solid ${C.border}`, borderRadius: 4, padding: '6px 8px' }}>
+      <div style={{ fontSize: '0.65rem', color: C.muted, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: '0.72rem', color: C.text }}>{children}</div>
+    </div>
+  )
+}
+
+function JsonBlock({ label, value, emptyMessage }: { label: string; value: unknown; emptyMessage: string }) {
+  const hasValue = value !== undefined && value !== null
+
+  return (
+    <div>
+      <div style={{ fontSize: '0.65rem', color: C.muted, marginBottom: 4 }}>{label}</div>
+      {hasValue ? (
+        <pre style={{ margin: 0, background: '#0d0d0d', border: `1px solid ${C.border}`, borderRadius: 4, padding: '8px 10px', color: C.text, fontSize: '0.65rem', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      ) : (
+        <div style={{ color: C.muted, fontSize: '0.72rem' }}>{emptyMessage}</div>
+      )}
+    </div>
+  )
+}
+
+interface RunDialogProps {
+  inputText: string
+  error: string
+  running: boolean
+  onChange: (value: string) => void
+  onClose: () => void
+  onSubmit: () => void
+}
+
+function RunDialog({ inputText, error, running, onChange, onClose, onSubmit }: RunDialogProps) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        background: 'rgba(0, 0, 0, 0.6)',
+        display: 'flex',
+        justifyContent: 'flex-end',
+        zIndex: 10,
+      }}
+    >
+      <div
+        onClick={event => event.stopPropagation()}
+        style={{
+          width: 'min(380px, 100%)',
+          height: '100%',
+          background: C.surface,
+          borderLeft: `1px solid ${C.border}`,
+          padding: 14,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '0.8rem', color: C.text }}>Run Workflow</div>
+            <div style={{ color: C.muted, fontSize: '0.68rem' }}>Send a JSON object as input_data for this test run.</div>
+          </div>
+          <button style={btn()} onClick={onClose} disabled={running}>Close</button>
+        </div>
+
+        <textarea
+          value={inputText}
+          onChange={event => onChange(event.target.value)}
+          rows={16}
+          spellCheck={false}
+          style={{
+            flex: 1,
+            minHeight: 220,
+            background: '#0d0d0d',
+            border: `1px solid ${C.border}`,
+            borderRadius: 4,
+            color: C.text,
+            padding: '10px 12px',
+            resize: 'vertical',
+            fontFamily: 'monospace',
+            fontSize: '0.7rem',
+          }}
+        />
+
+        {error && (
+          <div style={{ color: C.dangerFg, fontSize: '0.7rem' }}>{error}</div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button style={btn()} onClick={onClose} disabled={running}>Cancel</button>
+          <button style={btn(true)} onClick={onSubmit} disabled={running}>
+            {running ? 'Running...' : 'Run Workflow'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

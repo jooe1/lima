@@ -12,7 +12,8 @@ package handler
 //   3. Same-tenant workspace access: a legitimate member gets through (200).
 //   4. GET /workspaces/:wid/apps/:id/published returns 404 for a draft app
 //      and 200 for a published app (uses real handleStoreErr + respond helpers).
-//   5. end_user role can access the /published endpoint (no extra role gate).
+//   5. discover-only publications return 403 for launch attempts.
+//   6. end_user role can access the /published endpoint (no extra role gate).
 
 import (
 	"context"
@@ -59,6 +60,7 @@ func buildTenantTestRouter(t *testing.T, getRole getRoleFn) http.Handler {
 // identical to production code.
 func testPublishedHandler(
 	getPublished func(ctx context.Context, workspaceID, appID string) (*model.AppVersion, error),
+	getAccess func(ctx context.Context, workspaceID, appID, userID string) (bool, bool, error),
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		wsID := chi.URLParam(r, "workspaceID")
@@ -67,6 +69,18 @@ func testPublishedHandler(
 		if err != nil {
 			handleStoreErr(w, err)
 			return
+		}
+		if getAccess != nil {
+			claims, _ := ClaimsFromContext(r.Context())
+			hasPublications, hasUseAccess, err := getAccess(r.Context(), wsID, appID, claims.UserID)
+			if err != nil {
+				respondErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+			if hasPublications && !hasUseAccess {
+				respondErr(w, http.StatusForbidden, "publication_access_denied", "this app is published for discovery only")
+				return
+			}
 		}
 		respond(w, http.StatusOK, v)
 	}
@@ -155,7 +169,7 @@ func TestTenantIsolation_SameTenantWorkspace(t *testing.T) {
 func TestPublishedOnlyRuntime_DraftReturns404(t *testing.T) {
 	published := testPublishedHandler(func(_ context.Context, _, _ string) (*model.AppVersion, error) {
 		return nil, store.ErrNotFound // simulates: no published version exists
-	})
+	}, nil)
 	token := makeTestJWT(t, "user-eu", "company-1")
 	h := buildPublishedTestRouter(t, staticRole(model.RoleEndUser), published)
 
@@ -176,6 +190,8 @@ func TestPublishedOnlyRuntime_PublishedReturns200(t *testing.T) {
 			PublishedBy: "user-admin",
 			PublishedAt: time.Now(),
 		}, nil
+	}, func(_ context.Context, _, _, _ string) (bool, bool, error) {
+		return true, true, nil
 	})
 	token := makeTestJWT(t, "user-eu", "company-1")
 	h := buildPublishedTestRouter(t, staticRole(model.RoleEndUser), published)
@@ -185,13 +201,45 @@ func TestPublishedOnlyRuntime_PublishedReturns200(t *testing.T) {
 	}
 }
 
+// TestPublishedOnlyRuntime_DiscoverOnlyReturns403 verifies that a publication
+// can list a tool without granting launch access.
+func TestPublishedOnlyRuntime_DiscoverOnlyReturns403(t *testing.T) {
+	published := testPublishedHandler(func(_ context.Context, _, appID string) (*model.AppVersion, error) {
+		return &model.AppVersion{ID: "ver-1", AppID: appID}, nil
+	}, func(_ context.Context, _, _, _ string) (bool, bool, error) {
+		return true, false, nil
+	})
+	token := makeTestJWT(t, "user-eu", "company-1")
+	h := buildPublishedTestRouter(t, staticRole(model.RoleEndUser), published)
+
+	if got := doRequest(t, h, "GET", "/workspaces/ws-1/apps/pub-app/published", token); got != http.StatusForbidden {
+		t.Errorf("discover-only app GET /published = %d, want 403", got)
+	}
+}
+
+// TestPublishedOnlyRuntime_NoPublicationFallsBackToPublishedApp verifies that
+// published apps without active publication records remain launchable.
+func TestPublishedOnlyRuntime_NoPublicationFallsBackToPublishedApp(t *testing.T) {
+	published := testPublishedHandler(func(_ context.Context, _, appID string) (*model.AppVersion, error) {
+		return &model.AppVersion{ID: "ver-1", AppID: appID}, nil
+	}, func(_ context.Context, _, _, _ string) (bool, bool, error) {
+		return false, false, nil
+	})
+	token := makeTestJWT(t, "user-eu", "company-1")
+	h := buildPublishedTestRouter(t, staticRole(model.RoleEndUser), published)
+
+	if got := doRequest(t, h, "GET", "/workspaces/ws-1/apps/pub-app/published", token); got != http.StatusOK {
+		t.Errorf("unpublished-targeted app GET /published = %d, want 200", got)
+	}
+}
+
 // TestPublishedOnlyRuntime_EndUserCanAccess verifies that end_user role is
 // permitted to reach the /published endpoint (no extra role gate on that route
 // in the production router — any workspace member may view published apps).
 func TestPublishedOnlyRuntime_EndUserCanAccess(t *testing.T) {
 	published := testPublishedHandler(func(_ context.Context, _, appID string) (*model.AppVersion, error) {
 		return &model.AppVersion{ID: "v1", AppID: appID}, nil
-	})
+	}, nil)
 	token := makeTestJWT(t, "user-eu", "company-1")
 	h := buildPublishedTestRouter(t, staticRole(model.RoleEndUser), published)
 

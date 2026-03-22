@@ -1,6 +1,7 @@
 'use client'
 
-import { use, useEffect, useState } from 'react'
+import { use, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { parse } from '@lima/aura-dsl'
 import { useAuth } from '../../../lib/auth'
 import { getPublishedApp, type AppVersion, ApiError } from '../../../lib/api'
@@ -8,36 +9,69 @@ import { RuntimeRenderer } from './RuntimeRenderer'
 
 export default function RuntimeAppPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
-  const { workspace, token, isLoading: authLoading } = useAuth()
+  const searchParams = useSearchParams()
+  const requestedWorkspaceId = searchParams.get('workspace')
+  const requestedPublicationId = searchParams.get('publication') ?? undefined
+  const { workspace, workspaces, selectWorkspace, token, isLoading: authLoading } = useAuth()
 
   const [version, setVersion] = useState<AppVersion | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  const activeWorkspace = useMemo(() => {
+    if (requestedWorkspaceId) {
+      return workspaces.find(candidate => candidate.id === requestedWorkspaceId)
+        ?? (workspace?.id === requestedWorkspaceId ? workspace : null)
+    }
+
+    return workspace
+  }, [requestedWorkspaceId, workspace, workspaces])
+
+  const activeWorkspaceId = activeWorkspace?.id ?? ''
+
+  useEffect(() => {
+    if (authLoading || !requestedWorkspaceId || !activeWorkspace) return
+    if (workspace?.id === activeWorkspace.id) return
+
+    selectWorkspace(activeWorkspace)
+  }, [activeWorkspace, authLoading, requestedWorkspaceId, selectWorkspace, workspace])
+
   useEffect(() => {
     if (authLoading) return
-    if (!workspace) return
+    if (!activeWorkspaceId) {
+      setVersion(null)
+      setError('workspace_unavailable')
+      setLoading(false)
+      return
+    }
 
     let cancelled = false
     setLoading(true)
     setError(null)
+    setVersion(null)
 
-    getPublishedApp(workspace.id, appId)
+    getPublishedApp(activeWorkspaceId, appId, requestedPublicationId ? { publicationId: requestedPublicationId } : undefined)
       .then(v => {
         if (!cancelled) setVersion(v)
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        if (e instanceof ApiError && e.status === 404) {
-          setError('not_published')
-        } else {
-          setError('load_failed')
+        if (e instanceof ApiError) {
+          if (e.status === 403) {
+            setError('access_denied')
+            return
+          }
+          if (e.status === 404) {
+            setError('not_published')
+            return
+          }
         }
+        setError('load_failed')
       })
       .finally(() => { if (!cancelled) setLoading(false) })
 
     return () => { cancelled = true }
-  }, [authLoading, workspace, appId])
+  }, [activeWorkspaceId, appId, authLoading, requestedPublicationId])
 
   // Redirect to login if not authenticated
   if (!authLoading && !token) {
@@ -53,12 +87,32 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
     )
   }
 
+  if (error === 'workspace_unavailable') {
+    return (
+      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', gap: '0.75rem' }}>
+        <p style={{ color: '#555', fontSize: '0.875rem', margin: 0 }}>The workspace for this app is not available in your session.</p>
+        <p style={{ color: '#333', fontSize: '0.75rem', margin: 0 }}>Open the app from Your Tools so Lima can select the correct workspace automatically.</p>
+        <a href="/tools" style={{ marginTop: '0.5rem', color: '#1d4ed8', fontSize: '0.8rem', textDecoration: 'none' }}>← Back to tools</a>
+      </div>
+    )
+  }
+
   if (error === 'not_published') {
     return (
       <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', gap: '0.75rem' }}>
         <p style={{ color: '#555', fontSize: '0.875rem', margin: 0 }}>This app is not published yet.</p>
         <p style={{ color: '#333', fontSize: '0.75rem', margin: 0 }}>An admin must publish the app before it can be used here.</p>
         <a href="/builder" style={{ marginTop: '0.5rem', color: '#1d4ed8', fontSize: '0.8rem', textDecoration: 'none' }}>← Back to builder</a>
+      </div>
+    )
+  }
+
+  if (error === 'access_denied') {
+    return (
+      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', gap: '0.75rem' }}>
+        <p style={{ color: '#555', fontSize: '0.875rem', margin: 0 }}>This app is listed for discovery only.</p>
+        <p style={{ color: '#333', fontSize: '0.75rem', margin: 0 }}>Your publication access does not include launch permission.</p>
+        <a href="/tools" style={{ marginTop: '0.5rem', color: '#1d4ed8', fontSize: '0.8rem', textDecoration: 'none' }}>← Back to tools</a>
       </div>
     )
   }
@@ -110,7 +164,7 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
       </header>
 
       {/* Canvas */}
-      <RuntimeRenderer doc={doc} workspaceId={workspace!.id} appId={appId} />
+      <RuntimeRenderer doc={doc} workspaceId={activeWorkspaceId} appId={appId} />
     </div>
   )
 }

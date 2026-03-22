@@ -11,6 +11,11 @@ import (
 
 const pubCols = `id, app_id, app_version_id, workspace_id, company_id, status, published_by, policy_profile_id, runtime_identity_id, created_at, updated_at`
 
+type PublishedAppAccess struct {
+	HasActivePublications bool
+	HasUseAccess          bool
+}
+
 func scanPublication(row pgx.Row) (*model.AppPublication, error) {
 	p := &model.AppPublication{}
 	err := row.Scan(
@@ -156,19 +161,35 @@ func (s *Store) ListPublicationAudiences(ctx context.Context, publicationID stri
 func (s *Store) ListCompanyPublishedTools(ctx context.Context, companyID, userID string) ([]model.CompanyTool, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT ap.id, ap.app_id, a.name, COALESCE(a.description, ''), ap.app_version_id,
-		        ap.workspace_id, ap.company_id, ap.published_by, ap.created_at
+		        ap.workspace_id, ap.company_id,
+		        MAX(
+				CASE
+					WHEN apa.publication_id IS NULL THEN 2
+					WHEN gm.user_id IS NOT NULL AND apa.capability = $3 THEN 2
+					WHEN gm.user_id IS NOT NULL AND apa.capability = $4 THEN 1
+					ELSE 0
+				END
+			) AS capability_level,
+		        ap.published_by, ap.created_at
 		 FROM app_publications ap
 		 JOIN apps a ON a.id = ap.app_id
+		 JOIN workspace_members wm ON wm.workspace_id = ap.workspace_id AND wm.user_id = $2
+		 LEFT JOIN app_publication_audiences apa ON apa.publication_id = ap.id
+		 LEFT JOIN group_memberships gm ON gm.group_id = apa.group_id AND gm.user_id = $2
 		 WHERE ap.company_id = $1
 		   AND ap.status = 'active'
-		   AND ap.id IN (
-		       SELECT DISTINCT apa.publication_id
-		       FROM app_publication_audiences apa
-		       JOIN group_memberships gm ON gm.group_id = apa.group_id AND gm.user_id = $2
-		       WHERE apa.capability = 'use'
-		   )
+		 GROUP BY ap.id, ap.app_id, a.name, COALESCE(a.description, ''), ap.app_version_id,
+		          ap.workspace_id, ap.company_id, ap.published_by, ap.created_at
+		 HAVING MAX(
+				CASE
+					WHEN apa.publication_id IS NULL THEN 2
+					WHEN gm.user_id IS NOT NULL AND apa.capability = $3 THEN 2
+					WHEN gm.user_id IS NOT NULL AND apa.capability = $4 THEN 1
+					ELSE 0
+				END
+			) > 0
 		 ORDER BY ap.created_at DESC`,
-		companyID, userID,
+		companyID, userID, model.PublicationCapabilityUse, model.PublicationCapabilityDiscover,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list company published tools: %w", err)
@@ -178,13 +199,97 @@ func (s *Store) ListCompanyPublishedTools(ctx context.Context, companyID, userID
 	var out []model.CompanyTool
 	for rows.Next() {
 		t := model.CompanyTool{}
+		var capabilityLevel int
 		if err := rows.Scan(
 			&t.PublicationID, &t.AppID, &t.AppName, &t.AppDescription, &t.AppVersionID,
-			&t.WorkspaceID, &t.CompanyID, &t.PublishedBy, &t.PublishedAt,
+			&t.WorkspaceID, &t.CompanyID, &capabilityLevel, &t.PublishedBy, &t.PublishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("list company published tools scan: %w", err)
+		}
+		switch capabilityLevel {
+		case 2:
+			t.Capability = model.PublicationCapabilityUse
+		case 1:
+			t.Capability = model.PublicationCapabilityDiscover
+		default:
+			return nil, fmt.Errorf("list company published tools: unexpected capability level %d", capabilityLevel)
 		}
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// GetPublishedAppAccess returns whether an app has active publications and whether
+// the user can launch at least one of them.
+func (s *Store) GetPublishedAppAccess(ctx context.Context, workspaceID, appID, userID string) (PublishedAppAccess, error) {
+	access := PublishedAppAccess{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT
+			EXISTS(
+				SELECT 1
+				FROM app_publications ap
+				WHERE ap.workspace_id = $1
+				  AND ap.app_id = $2
+				  AND ap.status = 'active'
+			) AS has_active_publications,
+			EXISTS(
+				SELECT 1
+				FROM app_publications ap
+				WHERE ap.workspace_id = $1
+				  AND ap.app_id = $2
+				  AND ap.status = 'active'
+				  AND (
+					NOT EXISTS (
+						SELECT 1
+						FROM app_publication_audiences apa
+						WHERE apa.publication_id = ap.id
+					)
+					OR EXISTS (
+						SELECT 1
+						FROM app_publication_audiences apa
+						JOIN group_memberships gm ON gm.group_id = apa.group_id AND gm.user_id = $3
+						WHERE apa.publication_id = ap.id
+						  AND apa.capability = $4
+					)
+				  )
+			) AS has_use_access`,
+		workspaceID, appID, userID, model.PublicationCapabilityUse,
+	).Scan(&access.HasActivePublications, &access.HasUseAccess)
+	if err != nil {
+		return PublishedAppAccess{}, fmt.Errorf("get published app access: %w", err)
+	}
+	return access, nil
+}
+
+// CanUsePublication returns whether the user may launch the specific publication.
+// Publications without any audience rows are treated as unrestricted within the workspace.
+func (s *Store) CanUsePublication(ctx context.Context, publicationID, userID string) (bool, error) {
+	var allowed bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1
+			FROM app_publications ap
+			WHERE ap.id = $1
+			  AND ap.status = 'active'
+			  AND (
+				NOT EXISTS (
+					SELECT 1
+					FROM app_publication_audiences apa
+					WHERE apa.publication_id = ap.id
+				)
+				OR EXISTS (
+					SELECT 1
+					FROM app_publication_audiences apa
+					JOIN group_memberships gm ON gm.group_id = apa.group_id AND gm.user_id = $2
+					WHERE apa.publication_id = ap.id
+					  AND apa.capability = $3
+				)
+			  )
+		)`,
+		publicationID, userID, model.PublicationCapabilityUse,
+	).Scan(&allowed)
+	if err != nil {
+		return false, fmt.Errorf("can use publication: %w", err)
+	}
+	return allowed, nil
 }

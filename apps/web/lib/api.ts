@@ -243,6 +243,10 @@ export interface PostMessageResponse {
   queue_error?: string
 }
 
+export interface PostMessageOptions {
+  forceOverwrite?: boolean
+}
+
 export function listThreads(workspaceId: string, appId: string) {
   return request<{ threads: ConversationThread[] }>(
     `/v1/workspaces/${workspaceId}/apps/${appId}/threads`,
@@ -261,10 +265,22 @@ export function listMessages(workspaceId: string, appId: string, threadId: strin
   )
 }
 
-export function postMessage(workspaceId: string, appId: string, threadId: string, content: string) {
+export function postMessage(
+  workspaceId: string,
+  appId: string,
+  threadId: string,
+  content: string,
+  options?: PostMessageOptions,
+) {
   return request<PostMessageResponse>(
     `/v1/workspaces/${workspaceId}/apps/${appId}/threads/${threadId}/messages`,
-    { method: 'POST', body: JSON.stringify({ content }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        content,
+        ...(options?.forceOverwrite ? { force_overwrite: true } : {}),
+      }),
+    },
   )
 }
 
@@ -320,10 +336,18 @@ export function rejectAction(workspaceId: string, approvalId: string, reason?: s
 
 // ---- Runtime (Phase 5) -----------------------------------------------------
 
-// getPublishedApp fetches the latest published AppVersion for use in the runtime shell.
-// Returns a 404 ApiError if the app is not in 'published' status (hard enforcement).
-export function getPublishedApp(workspaceId: string, appId: string) {
-  return request<AppVersion>(`/v1/workspaces/${workspaceId}/apps/${appId}/published`)
+export interface GetPublishedAppOptions {
+  publicationId?: string
+}
+
+// getPublishedApp fetches the published AppVersion for use in the runtime shell.
+// Returns 404 when the app is not published and 403 when the publication grants discovery only.
+export function getPublishedApp(workspaceId: string, appId: string, options?: GetPublishedAppOptions) {
+  const query = options?.publicationId
+    ? `?publication_id=${encodeURIComponent(options.publicationId)}`
+    : ''
+
+  return request<AppVersion>(`/v1/workspaces/${workspaceId}/apps/${appId}/published${query}`)
 }
 
 // previewDraftApp fetches the current draft App (DSL + node_metadata) for builder preview.
@@ -573,6 +597,10 @@ export interface ConnectorSchemaResponse {
   refreshing?: boolean
 }
 
+interface ConnectorEnvelope {
+  connector: Connector
+}
+
 export function listConnectors(workspaceId: string) {
   return request<{ connectors: Connector[] }>(`/v1/workspaces/${workspaceId}/connectors`)
 }
@@ -581,14 +609,15 @@ export function createConnector(
   workspaceId: string,
   data: { name: string; type: ConnectorType; credentials: Record<string, unknown> },
 ) {
-  return request<Connector>(`/v1/workspaces/${workspaceId}/connectors`, {
+  return request<ConnectorEnvelope>(`/v1/workspaces/${workspaceId}/connectors`, {
     method: 'POST',
     body: JSON.stringify(data),
-  })
+  }).then(res => res.connector)
 }
 
 export function getConnector(workspaceId: string, connectorId: string) {
-  return request<Connector>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}`)
+  return request<ConnectorEnvelope>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}`)
+    .then(res => res.connector)
 }
 
 export function patchConnector(
@@ -596,10 +625,10 @@ export function patchConnector(
   connectorId: string,
   data: { name?: string; credentials?: Record<string, unknown> },
 ) {
-  return request<Connector>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}`, {
+  return request<ConnectorEnvelope>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}`, {
     method: 'PATCH',
-    body: JSON.stringify(data),
-  })
+    body: JSON.stringify(data)
+  }).then(res => res.connector)
 }
 
 export function deleteConnector(workspaceId: string, connectorId: string) {
@@ -764,6 +793,10 @@ export interface CompanyResource {
   owner_scope: string
 }
 
+interface CompanyResourceEnvelope {
+  resource: CompanyResource
+}
+
 export function listCompanyResources(companyId: string) {
   return request<{ resources: CompanyResource[] }>(`/v1/companies/${companyId}/resources`)
 }
@@ -772,14 +805,15 @@ export function createCompanyResource(
   companyId: string,
   data: { workspace_id: string; name: string; type: ConnectorType; credentials: Record<string, unknown> },
 ) {
-  return request<CompanyResource>(`/v1/companies/${companyId}/resources`, {
+  return request<CompanyResourceEnvelope>(`/v1/companies/${companyId}/resources`, {
     method: 'POST',
     body: JSON.stringify(data),
-  })
+  }).then(res => res.resource)
 }
 
 export function getCompanyResource(companyId: string, resourceId: string) {
-  return request<CompanyResource>(`/v1/companies/${companyId}/resources/${resourceId}`)
+  return request<CompanyResourceEnvelope>(`/v1/companies/${companyId}/resources/${resourceId}`)
+    .then(res => res.resource)
 }
 
 export function patchCompanyResource(
@@ -787,10 +821,10 @@ export function patchCompanyResource(
   resourceId: string,
   data: { name?: string; credentials?: Record<string, unknown> },
 ) {
-  return request<CompanyResource>(`/v1/companies/${companyId}/resources/${resourceId}`, {
+  return request<CompanyResourceEnvelope>(`/v1/companies/${companyId}/resources/${resourceId}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
-  })
+  }).then(res => res.resource)
 }
 
 export function deleteCompanyResource(companyId: string, resourceId: string) {
@@ -815,6 +849,10 @@ export interface ResourceGrant {
   created_at: string
 }
 
+interface ResourceGrantEnvelope {
+  grant: ResourceGrant
+}
+
 export function listResourceGrants(companyId: string, resourceId: string) {
   return request<{ grants: ResourceGrant[] }>(
     `/v1/companies/${companyId}/resources/${resourceId}/grants`,
@@ -832,10 +870,10 @@ export function createResourceGrant(
     scope_json?: string
   },
 ) {
-  return request<ResourceGrant>(
+  return request<ResourceGrantEnvelope>(
     `/v1/companies/${companyId}/resources/${resourceId}/grants`,
     { method: 'POST', body: JSON.stringify(data) },
-  )
+  ).then(res => res.grant)
 }
 
 export function deleteResourceGrant(companyId: string, resourceId: string, grantId: string) {
@@ -861,9 +899,11 @@ export interface AppPublication {
   updated_at: string
 }
 
+export type PublicationCapability = 'discover' | 'use'
+
 export interface PublicationAudience {
   group_id: string
-  capability: string
+  capability: PublicationCapability
 }
 
 export function createPublication(
@@ -906,6 +946,7 @@ export interface CompanyTool {
   app_version_id: string
   workspace_id: string
   company_id: string
+  capability: PublicationCapability
   published_by: string
   published_at: string
 }

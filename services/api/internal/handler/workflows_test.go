@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/lima/api/internal/model"
@@ -107,5 +108,35 @@ func TestCleanupTriggeredWorkflowRunReturnsErrorWhenCleanupFails(t *testing.T) {
 	}
 	if !errors.Is(err, updateErr) {
 		t.Fatalf("cleanupTriggeredWorkflowRun() error = %v, want update error", err)
+	}
+}
+
+func TestNormalizeWorkflowTriggerConfigRejectsInvalidCron(t *testing.T) {
+	_, err := normalizeWorkflowTriggerConfig(model.TriggerSchedule, map[string]any{"cron": "0 * *"})
+	if err == nil {
+		t.Fatal("normalizeWorkflowTriggerConfig() error = nil, want cron validation error")
+	}
+	if !strings.Contains(err.Error(), "five cron fields") {
+		t.Fatalf("normalizeWorkflowTriggerConfig() error = %v, want five cron fields message", err)
+	}
+}
+
+func TestNormalizeWorkflowTriggerConfigRejectsUnexpectedKeys(t *testing.T) {
+	_, err := normalizeWorkflowTriggerConfig(model.TriggerManual, map[string]any{"cron": "0 * * * *"})
+	if err == nil {
+		t.Fatal("normalizeWorkflowTriggerConfig() error = nil, want unexpected key error")
+	}
+	if !strings.Contains(err.Error(), "unsupported trigger_config fields") {
+		t.Fatalf("normalizeWorkflowTriggerConfig() error = %v, want unexpected key message", err)
+	}
+}
+
+func TestNormalizeWorkflowTriggerConfigAcceptsWebhookSecret(t *testing.T) {
+	config, err := normalizeWorkflowTriggerConfig(model.TriggerWebhook, map[string]any{"secret_token_hash": "whsec_12345678"})
+	if err != nil {
+		t.Fatalf("normalizeWorkflowTriggerConfig() error = %v, want nil", err)
+	}
+	if got := config["secret_token_hash"]; got != "whsec_12345678" {
+		t.Fatalf("normalizeWorkflowTriggerConfig() secret = %v, want %q", got, "whsec_12345678")
 	}
 }

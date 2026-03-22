@@ -1,15 +1,17 @@
 'use client'
 
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY } from '@lima/widget-catalog'
+import { runConnectorQuery, type DashboardQueryResponse } from '../../../../lib/api'
 
 interface Props {
   node: AuraNode
   selected: boolean
+  workspaceId: string
 }
 
-export function WidgetRenderer({ node }: Props) {
+export function WidgetRenderer({ node, workspaceId }: Props) {
   const meta = WIDGET_REGISTRY[node.element as keyof typeof WIDGET_REGISTRY]
 
   return (
@@ -33,35 +35,18 @@ export function WidgetRenderer({ node }: Props) {
       </div>
       {/* Widget body */}
       <div style={{ flex: 1, overflow: 'hidden', padding: 6 }}>
-        {renderBody(node)}
+        {renderBody(node, workspaceId)}
       </div>
     </div>
   )
 }
 
-function renderBody(node: AuraNode): React.ReactNode {
+function renderBody(node: AuraNode, workspaceId: string): React.ReactNode {
   const dim: React.CSSProperties = { color: '#444', fontSize: '0.65rem' }
 
   switch (node.element) {
     case 'table': {
-      const cols = (node.style?.columns ?? 'id, name, status')
-        .split(',').map(c => c.trim()).slice(0, 4)
-      return (
-        <div style={{ height: '100%', overflow: 'hidden' }}>
-          <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid #1e1e1e', paddingBottom: 4, marginBottom: 4 }}>
-            {cols.map(c => (
-              <div key={c} style={{ flex: 1, color: '#555', fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.05em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c}</div>
-            ))}
-          </div>
-          {[0, 1, 2].map(i => (
-            <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
-              {cols.map((c, ci) => (
-                <div key={ci} style={{ flex: 1, height: 10, background: '#161616', borderRadius: 2 }} />
-              ))}
-            </div>
-          ))}
-        </div>
-      )
+      return <CanvasTablePreview node={node} workspaceId={workspaceId} />
     }
 
     case 'form': {
@@ -210,4 +195,134 @@ function renderBody(node: AuraNode): React.ReactNode {
     default:
       return <div style={dim}>{node.element}</div>
   }
+}
+
+function CanvasTablePreview({ node, workspaceId }: { node: AuraNode; workspaceId: string }) {
+  const rawColumns = node.with?.columns ?? node.style?.columns ?? 'id, name, status'
+  const fallbackColumns = rawColumns
+    .split(',')
+    .map(column => column.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+  const connectorId = node.with?.connector
+  const sql = node.with?.sql
+
+  const [data, setData] = useState<DashboardQueryResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspaceId || !connectorId || !sql) {
+      setData(null)
+      setLoading(false)
+      setError(null)
+      return
+    }
+
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+
+    runConnectorQuery(workspaceId, connectorId, { sql, limit: 3 })
+      .then(result => {
+        if (cancelled) return
+        if (result.error) {
+          setError(result.error)
+          setData(null)
+          return
+        }
+        setData(result)
+      })
+      .catch(err => {
+        if (cancelled) return
+        setError(String(err instanceof Error ? err.message : err))
+        setData(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+
+    return () => { cancelled = true }
+  }, [workspaceId, connectorId, sql])
+
+  const columns = (data?.columns?.length ? data.columns : fallbackColumns).slice(0, 4)
+  const rows = (data?.rows ?? []).slice(0, 3)
+  const hasBinding = Boolean(workspaceId && connectorId && sql)
+  const emptyColumns = columns.length === 0 ? ['value'] : columns
+
+  return (
+    <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid #1e1e1e', paddingBottom: 4, marginBottom: 4 }}>
+        {emptyColumns.map(column => (
+          <div
+            key={column}
+            style={{
+              flex: 1,
+              color: '#555',
+              fontSize: '0.6rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {column}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        {error ? (
+          <div style={{ color: '#f87171', fontSize: '0.62rem', lineHeight: 1.5 }}>{error}</div>
+        ) : loading ? (
+          [0, 1, 2].map(index => (
+            <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+              {emptyColumns.map((column, columnIndex) => (
+                <div key={`${column}-${columnIndex}`} style={{ flex: 1, height: 10, background: '#161616', borderRadius: 2 }} />
+              ))}
+            </div>
+          ))
+        ) : hasBinding ? (
+          rows.length > 0 ? (
+            rows.map((row, index) => (
+              <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                {emptyColumns.map(column => (
+                  <div
+                    key={column}
+                    style={{
+                      flex: 1,
+                      color: '#bdbdbd',
+                      fontSize: '0.65rem',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {String(row[column] ?? '')}
+                  </div>
+                ))}
+              </div>
+            ))
+          ) : (
+            <div style={{ color: '#444', fontSize: '0.62rem' }}>Query returned no rows.</div>
+          )
+        ) : (
+          [0, 1, 2].map(index => (
+            <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+              {emptyColumns.map((column, columnIndex) => (
+                <div key={`${column}-${columnIndex}`} style={{ flex: 1, height: 10, background: '#161616', borderRadius: 2 }} />
+              ))}
+            </div>
+          ))
+        )}
+      </div>
+
+      {!hasBinding && !loading && !error && (
+        <div style={{ color: '#333', fontSize: '0.6rem', marginTop: 4 }}>
+          Connect a data source to display live rows.
+        </div>
+      )}
+    </div>
+  )
 }

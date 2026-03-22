@@ -1,17 +1,36 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useAuth } from '../../../lib/auth'
 import { listApprovals, approveAction, rejectAction, type Approval } from '../../../lib/api'
 
+type ApprovalFilter = 'all' | 'pending' | 'approved' | 'rejected'
+
+function parseApprovalFilter(value: string | null): ApprovalFilter | null {
+  if (value === 'all' || value === 'pending' || value === 'approved' || value === 'rejected') {
+    return value
+  }
+
+  return null
+}
+
 export default function ApprovalsPage() {
+  const searchParams = useSearchParams()
+  const linkedApprovalId = searchParams.get('approval') ?? ''
+  const requestedFilter = parseApprovalFilter(searchParams.get('filter'))
   const { workspace, user } = useAuth()
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending')
+  const [filter, setFilter] = useState<ApprovalFilter>(() => requestedFilter ?? (linkedApprovalId ? 'all' : 'pending'))
   const [error, setError] = useState('')
 
   const isAdmin = user?.role === 'workspace_admin'
+
+  useEffect(() => {
+    const nextFilter = requestedFilter ?? (linkedApprovalId ? 'all' : 'pending')
+    setFilter(prev => prev === nextFilter ? prev : nextFilter)
+  }, [requestedFilter, linkedApprovalId])
 
   const load = useCallback(() => {
     if (!workspace) return
@@ -24,6 +43,12 @@ export default function ApprovalsPage() {
   }, [workspace, filter])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (!linkedApprovalId || loading) return
+    const element = document.getElementById(`approval-${linkedApprovalId}`)
+    element?.scrollIntoView({ block: 'center' })
+  }, [linkedApprovalId, loading, approvals])
 
   async function handleApprove(id: string) {
     if (!workspace) return
@@ -87,6 +112,12 @@ export default function ApprovalsPage() {
         <p style={{ color: '#f87171', fontSize: '0.8rem', margin: '0 0 1rem' }}>{error}</p>
       )}
 
+      {linkedApprovalId && !error && (
+        <p style={{ color: '#93c5fd', fontSize: '0.75rem', margin: '0 0 1rem' }}>
+          Showing the approval linked from a workflow run.
+        </p>
+      )}
+
       {loading ? (
         <p style={{ color: '#555', fontSize: '0.8rem' }}>Loading…</p>
       ) : approvals.length === 0 ? (
@@ -101,6 +132,7 @@ export default function ApprovalsPage() {
             <ApprovalRow
               key={a.id}
               approval={a}
+              highlighted={a.id === linkedApprovalId}
               isAdmin={isAdmin}
               onApprove={() => handleApprove(a.id)}
               onReject={(reason) => handleReject(a.id, reason)}
@@ -114,12 +146,13 @@ export default function ApprovalsPage() {
 
 interface RowProps {
   approval: Approval
+  highlighted: boolean
   isAdmin: boolean
   onApprove: () => void
   onReject: (reason: string) => void
 }
 
-function ApprovalRow({ approval, isAdmin, onApprove, onReject }: RowProps) {
+function ApprovalRow({ approval, highlighted, isAdmin, onApprove, onReject }: RowProps) {
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
@@ -153,10 +186,11 @@ function ApprovalRow({ approval, isAdmin, onApprove, onReject }: RowProps) {
   const timeStr = createdAt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 
   return (
-    <div style={{
-      border: '1px solid #1e1e1e',
+    <div id={`approval-${approval.id}`} style={{
+      border: highlighted ? '1px solid #2563eb' : '1px solid #1e1e1e',
       borderRadius: 6,
-      background: '#0d0d0d',
+      background: highlighted ? '#0f172a55' : '#0d0d0d',
+      boxShadow: highlighted ? '0 0 0 1px #1d4ed833' : 'none',
       padding: '0.75rem 1rem',
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -176,6 +210,9 @@ function ApprovalRow({ approval, isAdmin, onApprove, onReject }: RowProps) {
             <span style={{ color: '#333', fontSize: '0.7rem', marginLeft: 'auto' }}>
               {dateStr} at {timeStr}
             </span>
+            {highlighted && (
+              <span style={{ color: '#93c5fd', fontSize: '0.65rem' }}>Linked run</span>
+            )}
           </div>
           <p style={{ margin: '0 0 0.25rem', color: '#ccc', fontSize: '0.8rem' }}>{approval.description}</p>
           <p style={{ margin: 0, color: '#444', fontSize: '0.7rem' }}>

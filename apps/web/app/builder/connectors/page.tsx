@@ -554,7 +554,9 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
         </div>
         {schemaObj ? <SchemaTree schema={schemaObj} /> : (
           <p style={{ color: '#444', fontSize: '0.8rem', margin: 0 }}>
-            No schema discovered. The schema is refreshed asynchronously after connector creation.
+            {c.type === 'csv'
+              ? 'No schema yet. Upload a CSV file below to populate the schema and preview rows.'
+              : 'No schema discovered. The schema is refreshed asynchronously after connector creation.'}
           </p>
         )}
       </Section>

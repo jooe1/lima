@@ -37,6 +37,179 @@ const s = {
   td: { padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a' } as const,
 }
 
+type ScopeEditorMode = 'structured' | 'json'
+type WorkspaceScopeMode = 'none' | 'current' | 'specific'
+
+interface ScopeFilterRow {
+  id: string
+  field: string
+  value: string
+}
+
+interface GrantScopeDraft {
+  table: string
+  rowFilters: ScopeFilterRow[]
+  columnsText: string
+  workspaceMode: WorkspaceScopeMode
+  workspaceId: string
+}
+
+interface StructuredGrantScopeResult {
+  scope?: Record<string, unknown>
+  error?: string
+}
+
+interface GrantScopeSummary {
+  lines: string[]
+  raw?: string
+}
+
+function createScopeFilterRow(field = '', value = ''): ScopeFilterRow {
+  return {
+    id: crypto.randomUUID(),
+    field,
+    value,
+  }
+}
+
+function createEmptyGrantScopeDraft(currentWorkspaceId: string): GrantScopeDraft {
+  return {
+    table: '',
+    rowFilters: [],
+    columnsText: '',
+    workspaceMode: 'none',
+    workspaceId: currentWorkspaceId,
+  }
+}
+
+function parseColumnAllowlist(columnsText: string) {
+  return columnsText
+    .split(/[\n,]/)
+    .map(column => column.trim())
+    .filter(Boolean)
+}
+
+function buildStructuredGrantScope(draft: GrantScopeDraft, currentWorkspaceId: string): StructuredGrantScopeResult {
+  const scope: Record<string, unknown> = {}
+  const table = draft.table.trim()
+
+  if (table) {
+    scope.table = table
+  }
+
+  const rowFilterEntries = draft.rowFilters
+    .map(filter => ({
+      field: filter.field.trim(),
+      value: filter.value.trim(),
+    }))
+    .filter(filter => filter.field || filter.value)
+
+  const incompleteRowFilter = rowFilterEntries.find(filter => !filter.field || !filter.value)
+  if (incompleteRowFilter) {
+    return { error: 'Complete or remove each row filter entry before adding the grant.' }
+  }
+
+  if (rowFilterEntries.length > 0) {
+    scope.row_filter = rowFilterEntries.reduce<Record<string, string>>((next, filter) => {
+      next[filter.field] = filter.value
+      return next
+    }, {})
+  }
+
+  const columns = parseColumnAllowlist(draft.columnsText)
+  if (columns.length > 0) {
+    scope.columns = columns
+  }
+
+  if (draft.workspaceMode === 'current') {
+    if (!currentWorkspaceId) {
+      return { error: 'No current workspace is available for the workspace scope preset.' }
+    }
+    scope.workspace_id = currentWorkspaceId
+  }
+
+  if (draft.workspaceMode === 'specific') {
+    const workspaceId = draft.workspaceId.trim()
+    if (!workspaceId) {
+      return { error: 'Enter a workspace ID when using a specific workspace scope.' }
+    }
+    scope.workspace_id = workspaceId
+  }
+
+  if (Object.keys(scope).length === 0) {
+    return {}
+  }
+
+  return { scope }
+}
+
+function summarizeGrantScope(scopeJson?: string): GrantScopeSummary {
+  if (!scopeJson) {
+    return { lines: [] }
+  }
+
+  try {
+    const parsed = JSON.parse(scopeJson)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return { lines: [], raw: scopeJson }
+    }
+
+    const scope = parsed as Record<string, unknown>
+    const lines: string[] = []
+    const supportedKeys = new Set(['table', 'row_filter', 'columns', 'workspace_id', 'workspace_scope'])
+    const hasUnknownKeys = Object.keys(scope).some(key => !supportedKeys.has(key))
+
+    const table = typeof scope.table === 'string' ? scope.table.trim() : ''
+    if (table) {
+      lines.push(`Table: ${table}`)
+    }
+
+    if (scope.row_filter && typeof scope.row_filter === 'object' && !Array.isArray(scope.row_filter)) {
+      const filters = Object.entries(scope.row_filter as Record<string, unknown>)
+        .map(([field, value]) => `${field}=${String(value)}`)
+      if (filters.length > 0) {
+        lines.push(`Rows: ${filters.join(', ')}`)
+      }
+    }
+
+    if (Array.isArray(scope.columns)) {
+      const columns = scope.columns.map(column => String(column).trim()).filter(Boolean)
+      if (columns.length > 0) {
+        lines.push(`Columns: ${columns.join(', ')}`)
+      }
+    }
+
+    const workspaceId = typeof scope.workspace_id === 'string'
+      ? scope.workspace_id.trim()
+      : typeof scope.workspace_scope === 'string'
+        ? scope.workspace_scope.trim()
+        : ''
+    if (workspaceId) {
+      lines.push(`Workspace: ${workspaceId}`)
+    }
+
+    if (hasUnknownKeys) {
+      return { lines, raw: formatJsonForDisplay(scopeJson) }
+    }
+
+    if (lines.length === 0) {
+      return { lines: [], raw: formatJsonForDisplay(scopeJson) }
+    }
+
+    return { lines }
+  } catch {
+    return { lines: [], raw: scopeJson }
+  }
+}
+
+function formatJsonForDisplay(value: string) {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
+  }
+}
+
 export default function ResourcesPage() {
   const { company, workspace } = useAuth()
   const companyId = company?.id ?? ''
@@ -110,13 +283,10 @@ export default function ResourcesPage() {
     }
   }
 
-  const handlePatchName = async (rid: string, name: string) => {
-    try {
-      await patchCompanyResource(companyId, rid, { name })
-      setResources(prev => prev.map(r => r.id === rid ? { ...r, name } : r))
-    } catch {
-      // silent – name reverts on next load
-    }
+  const handlePatchResource = async (rid: string, patch: { name?: string; credentials?: Record<string, unknown> }) => {
+    const updated = await patchCompanyResource(companyId, rid, patch)
+    setResources(prev => prev.map(resource => resource.id === rid ? updated : resource))
+    return updated
   }
 
   if (!companyId) {
@@ -173,10 +343,11 @@ export default function ResourcesPage() {
           key={r.id}
           resource={r}
           companyId={companyId}
+          workspaceId={workspace?.id ?? ''}
           expanded={expandedId === r.id}
           onToggle={() => setExpandedId(expandedId === r.id ? null : r.id)}
           onDelete={() => handleDelete(r.id)}
-          onPatchName={(name: string) => handlePatchName(r.id, name)}
+          onPatchResource={(patch: { name?: string; credentials?: Record<string, unknown> }) => handlePatchResource(r.id, patch)}
         />
       ))}
     </div>
@@ -188,21 +359,61 @@ export default function ResourcesPage() {
 function ResourceRow({
   resource: r,
   companyId,
+  workspaceId,
   expanded,
   onToggle,
   onDelete,
-  onPatchName,
+  onPatchResource,
 }: {
   resource: CompanyResource
   companyId: string
+  workspaceId: string
   expanded: boolean
   onToggle: () => void
   onDelete: () => void
-  onPatchName: (name: string) => void
+  onPatchResource: (patch: { name?: string; credentials?: Record<string, unknown> }) => Promise<CompanyResource>
 }) {
   const [editName, setEditName] = useState(r.name)
+  const [credentialText, setCredentialText] = useState('{}')
+  const [credentialError, setCredentialError] = useState('')
+  const [credentialSaved, setCredentialSaved] = useState('')
+  const [savingCredentials, setSavingCredentials] = useState(false)
 
   useEffect(() => { setEditName(r.name) }, [r.name])
+  useEffect(() => {
+    setCredentialText('{}')
+    setCredentialError('')
+    setCredentialSaved('')
+  }, [r.id])
+
+  const handleReplaceCredentials = async () => {
+    let credentials: Record<string, unknown>
+
+    try {
+      const parsed = JSON.parse(credentialText)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        setCredentialError('Credentials must be a JSON object')
+        return
+      }
+      credentials = parsed as Record<string, unknown>
+    } catch {
+      setCredentialError('Invalid JSON in credentials')
+      return
+    }
+
+    setSavingCredentials(true)
+    setCredentialError('')
+    setCredentialSaved('')
+    try {
+      await onPatchResource({ credentials })
+      setCredentialText('{}')
+      setCredentialSaved('Credentials updated.')
+    } catch (e: unknown) {
+      setCredentialError(e instanceof Error ? e.message : 'Failed to update credentials')
+    } finally {
+      setSavingCredentials(false)
+    }
+  }
 
   return (
     <div style={s.surface}>
@@ -229,12 +440,34 @@ function ResourceRow({
               style={{ ...s.input, maxWidth: 260 }}
               value={editName}
               onChange={e => setEditName(e.target.value)}
-              onBlur={() => { if (editName.trim() && editName !== r.name) onPatchName(editName.trim()) }}
+              onBlur={() => {
+                const nextName = editName.trim()
+                if (!nextName || nextName === r.name) return
+                void onPatchResource({ name: nextName }).catch(() => setEditName(r.name))
+              }}
             />
             <button style={s.btnDanger} onClick={onDelete}>Delete</button>
           </div>
 
-          <GrantsPanel companyId={companyId} resourceId={r.id} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.75rem' }}>
+            <label style={{ fontSize: '0.75rem', color: '#888' }}>Replace credentials JSON</label>
+            <textarea
+              style={s.textarea}
+              placeholder='Full replacement credentials JSON, e.g. {"host":"...","password":"..."}'
+              value={credentialText}
+              onChange={e => setCredentialText(e.target.value)}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
+              <span style={s.muted}>Existing credentials are never returned. Submit the full replacement object.</span>
+              <button style={s.btnPrimary} onClick={handleReplaceCredentials} disabled={savingCredentials}>
+                {savingCredentials ? 'Updating…' : 'Update Credentials'}
+              </button>
+            </div>
+            {credentialError && <span style={s.error}>{credentialError}</span>}
+            {credentialSaved && <span style={{ color: '#22c55e', fontSize: '0.75rem' }}>{credentialSaved}</span>}
+          </div>
+
+          <GrantsPanel companyId={companyId} resourceId={r.id} workspaceId={workspaceId} />
         </div>
       )}
     </div>
@@ -243,7 +476,7 @@ function ResourceRow({
 
 /* ---- Grants panel -------------------------------------------------------- */
 
-function GrantsPanel({ companyId, resourceId }: { companyId: string; resourceId: string }) {
+function GrantsPanel({ companyId, resourceId, workspaceId }: { companyId: string; resourceId: string; workspaceId: string }) {
   const [grants, setGrants] = useState<ResourceGrant[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -253,8 +486,17 @@ function GrantsPanel({ companyId, resourceId }: { companyId: string; resourceId:
   const [subjectId, setSubjectId] = useState('')
   const [action, setAction] = useState<string>('read')
   const [effect, setEffect] = useState<string>('allow')
+  const [scopeEditorMode, setScopeEditorMode] = useState<ScopeEditorMode>('structured')
+  const [scopeDraft, setScopeDraft] = useState<GrantScopeDraft>(() => createEmptyGrantScopeDraft(workspaceId))
+  const [scopeJson, setScopeJson] = useState('')
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState('')
+
+  const resetScopeEditor = useCallback(() => {
+    setScopeDraft(createEmptyGrantScopeDraft(workspaceId))
+    setScopeJson('')
+    setScopeEditorMode('structured')
+  }, [workspaceId])
 
   const loadGrants = useCallback(async () => {
     setLoading(true)
@@ -271,8 +513,84 @@ function GrantsPanel({ companyId, resourceId }: { companyId: string; resourceId:
 
   useEffect(() => { loadGrants() }, [loadGrants])
 
+  const structuredScopePreview = buildStructuredGrantScope(scopeDraft, workspaceId)
+
+  const applyScopePreset = (preset: 'row-filter' | 'columns' | 'workspace') => {
+    setScopeEditorMode('structured')
+    setScopeDraft(prev => {
+      switch (preset) {
+        case 'row-filter':
+          return {
+            ...prev,
+            rowFilters: prev.rowFilters.length > 0 ? prev.rowFilters : [createScopeFilterRow('tenant', 'acme')],
+          }
+        case 'columns':
+          return {
+            ...prev,
+            columnsText: prev.columnsText.trim() ? prev.columnsText : 'id\nname',
+          }
+        case 'workspace':
+          return {
+            ...prev,
+            workspaceMode: workspaceId ? 'current' : 'specific',
+            workspaceId: workspaceId || prev.workspaceId,
+          }
+        default:
+          return prev
+      }
+    })
+  }
+
+  const addRowFilter = () => {
+    setScopeDraft(prev => ({
+      ...prev,
+      rowFilters: [...prev.rowFilters, createScopeFilterRow()],
+    }))
+  }
+
+  const updateRowFilter = (filterId: string, patch: Partial<ScopeFilterRow>) => {
+    setScopeDraft(prev => ({
+      ...prev,
+      rowFilters: prev.rowFilters.map(filter => filter.id === filterId ? { ...filter, ...patch } : filter),
+    }))
+  }
+
+  const removeRowFilter = (filterId: string) => {
+    setScopeDraft(prev => ({
+      ...prev,
+      rowFilters: prev.rowFilters.filter(filter => filter.id !== filterId),
+    }))
+  }
+
   const handleAdd = async () => {
     if (!subjectId.trim()) return
+
+    let nextScope: string | undefined
+    if (scopeEditorMode === 'json') {
+      if (scopeJson.trim()) {
+        try {
+          const parsed = JSON.parse(scopeJson)
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            setAddError('Scope must be a JSON object')
+            return
+          }
+          nextScope = JSON.stringify(parsed)
+        } catch {
+          setAddError('Invalid JSON in scope')
+          return
+        }
+      }
+    } else {
+      const structuredScope = buildStructuredGrantScope(scopeDraft, workspaceId)
+      if (structuredScope.error) {
+        setAddError(structuredScope.error)
+        return
+      }
+      if (structuredScope.scope) {
+        nextScope = JSON.stringify(structuredScope.scope)
+      }
+    }
+
     setAdding(true)
     setAddError('')
     try {
@@ -281,8 +599,10 @@ function GrantsPanel({ companyId, resourceId }: { companyId: string; resourceId:
         subject_id: subjectId.trim(),
         action,
         effect,
+        scope_json: nextScope,
       })
       setSubjectId('')
+      resetScopeEditor()
       setShowAdd(false)
       await loadGrants()
     } catch (e: unknown) {
@@ -332,6 +652,153 @@ function GrantsPanel({ companyId, resourceId }: { companyId: string; resourceId:
               {adding ? 'Adding…' : 'Add'}
             </button>
           </div>
+          <div style={{ marginTop: '0.75rem', display: 'grid', gap: '0.6rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ fontSize: '0.75rem', color: '#888' }}>Scoped access builder</div>
+                <div style={s.muted}>Use presets for common grant shapes. JSON remains available for advanced cases.</div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  style={{
+                    ...s.btnGhost,
+                    borderColor: scopeEditorMode === 'structured' ? '#2563eb' : '#1f1f1f',
+                    color: scopeEditorMode === 'structured' ? '#93c5fd' : '#aaa',
+                  }}
+                  onClick={() => setScopeEditorMode('structured')}
+                >
+                  Structured
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...s.btnGhost,
+                    borderColor: scopeEditorMode === 'json' ? '#2563eb' : '#1f1f1f',
+                    color: scopeEditorMode === 'json' ? '#93c5fd' : '#aaa',
+                  }}
+                  onClick={() => {
+                    if (!scopeJson.trim() && structuredScopePreview.scope) {
+                      setScopeJson(JSON.stringify(structuredScopePreview.scope, null, 2))
+                    }
+                    setScopeEditorMode('json')
+                  }}
+                >
+                  Advanced JSON
+                </button>
+              </div>
+            </div>
+
+            {scopeEditorMode === 'structured' ? (
+              <div style={{ display: 'grid', gap: '0.6rem', padding: '0.75rem', border: '1px solid #1f1f1f', borderRadius: 6, background: '#0d0d0d' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                  <button type="button" style={s.btnGhost} onClick={() => applyScopePreset('row-filter')}>Tenant rows preset</button>
+                  <button type="button" style={s.btnGhost} onClick={() => applyScopePreset('columns')}>Column allowlist preset</button>
+                  <button type="button" style={s.btnGhost} onClick={() => applyScopePreset('workspace')}>Workspace scope preset</button>
+                </div>
+
+                <label style={{ display: 'grid', gap: '0.25rem' }}>
+                  <span style={{ fontSize: '0.72rem', color: '#888' }}>Table or collection</span>
+                  <input
+                    style={s.input}
+                    placeholder="customers"
+                    value={scopeDraft.table}
+                    onChange={e => setScopeDraft(prev => ({ ...prev, table: e.target.value }))}
+                  />
+                </label>
+
+                <div style={{ display: 'grid', gap: '0.35rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
+                    <span style={{ fontSize: '0.72rem', color: '#888' }}>Row filters</span>
+                    <button type="button" style={s.btnGhost} onClick={addRowFilter}>+ Add filter</button>
+                  </div>
+                  {scopeDraft.rowFilters.length === 0 ? (
+                    <div style={s.muted}>No row filter yet. Add one to constrain records like tenant=acme.</div>
+                  ) : (
+                    <div style={{ display: 'grid', gap: '0.4rem' }}>
+                      {scopeDraft.rowFilters.map(filter => (
+                        <div key={filter.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) auto', gap: '0.4rem', alignItems: 'center' }}>
+                          <input
+                            style={s.input}
+                            placeholder="tenant"
+                            value={filter.field}
+                            onChange={e => updateRowFilter(filter.id, { field: e.target.value })}
+                          />
+                          <input
+                            style={s.input}
+                            placeholder="acme"
+                            value={filter.value}
+                            onChange={e => updateRowFilter(filter.id, { value: e.target.value })}
+                          />
+                          <button type="button" style={s.btnDanger} onClick={() => removeRowFilter(filter.id)}>Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <label style={{ display: 'grid', gap: '0.25rem' }}>
+                  <span style={{ fontSize: '0.72rem', color: '#888' }}>Column allowlist</span>
+                  <textarea
+                    style={s.textarea}
+                    placeholder={'id\nemail\nstatus'}
+                    value={scopeDraft.columnsText}
+                    onChange={e => setScopeDraft(prev => ({ ...prev, columnsText: e.target.value }))}
+                  />
+                  <span style={s.muted}>Enter one column per line or separate columns with commas.</span>
+                </label>
+
+                <div style={{ display: 'grid', gap: '0.35rem' }}>
+                  <span style={{ fontSize: '0.72rem', color: '#888' }}>Workspace scope</span>
+                  <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <select
+                      style={s.select}
+                      value={scopeDraft.workspaceMode}
+                      onChange={e => setScopeDraft(prev => ({ ...prev, workspaceMode: e.target.value as WorkspaceScopeMode }))}
+                    >
+                      <option value="none">No workspace restriction</option>
+                      <option value="current">Current workspace</option>
+                      <option value="specific">Specific workspace ID</option>
+                    </select>
+                    {scopeDraft.workspaceMode === 'current' && workspaceId && (
+                      <span style={{ ...s.badge, fontFamily: 'monospace' }}>{workspaceId}</span>
+                    )}
+                    {scopeDraft.workspaceMode === 'specific' && (
+                      <input
+                        style={{ ...s.input, maxWidth: 260 }}
+                        placeholder="workspace UUID"
+                        value={scopeDraft.workspaceId}
+                        onChange={e => setScopeDraft(prev => ({ ...prev, workspaceId: e.target.value }))}
+                      />
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gap: '0.35rem' }}>
+                  <span style={{ fontSize: '0.72rem', color: '#888' }}>Stored JSON preview</span>
+                  {structuredScopePreview.error ? (
+                    <span style={s.error}>{structuredScopePreview.error}</span>
+                  ) : structuredScopePreview.scope ? (
+                    <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.65rem', color: '#aaa', whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#0a0a0a', border: '1px solid #1f1f1f', borderRadius: 4, padding: '0.5rem' }}>
+                      {JSON.stringify(structuredScopePreview.scope, null, 2)}
+                    </pre>
+                  ) : (
+                    <span style={s.muted}>No scope restrictions will be stored.</span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '0.35rem' }}>
+                <span style={s.muted}>Advanced fallback for non-standard scope shapes. Structured edits are kept separately and are not derived from this JSON.</span>
+                <textarea
+                  style={s.textarea}
+                  placeholder='Optional scope JSON, e.g. {"table":"customers","row_filter":{"tenant":"acme"}}'
+                  value={scopeJson}
+                  onChange={e => setScopeJson(e.target.value)}
+                />
+              </div>
+            )}
+          </div>
           {addError && <p style={s.error}>{addError}</p>}
         </div>
       )}
@@ -350,6 +817,7 @@ function GrantsPanel({ companyId, resourceId }: { companyId: string; resourceId:
               <th style={s.th}>Subject Type</th>
               <th style={s.th}>Subject ID</th>
               <th style={s.th}>Action</th>
+              <th style={s.th}>Scope</th>
               <th style={s.th}>Effect</th>
               <th style={s.th}></th>
             </tr>
@@ -360,6 +828,25 @@ function GrantsPanel({ companyId, resourceId }: { companyId: string; resourceId:
                 <td style={s.td}>{g.subject_type}</td>
                 <td style={s.td}><span style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>{g.subject_id}</span></td>
                 <td style={s.td}>{g.action}</td>
+                <td style={s.td}>
+                  {g.scope_json ? (() => {
+                    const summary = summarizeGrantScope(g.scope_json)
+                    return (
+                      <div style={{ display: 'grid', gap: '0.25rem' }}>
+                        {summary.lines.map(line => (
+                          <span key={line} style={{ color: '#ccc', fontSize: '0.65rem' }}>{line}</span>
+                        ))}
+                        {summary.raw && (
+                          <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.62rem', color: '#777', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                            {summary.raw}
+                          </pre>
+                        )}
+                      </div>
+                    )
+                  })() : (
+                    <span style={s.muted}>-</span>
+                  )}
+                </td>
                 <td style={s.td}>
                   <span style={{ color: g.effect === 'deny' ? '#ef4444' : '#22c55e' }}>{g.effect}</span>
                 </td>

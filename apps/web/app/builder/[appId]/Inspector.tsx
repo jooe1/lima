@@ -243,6 +243,7 @@ function DataBindingEditor({ node, workspaceId, onWithChange }: {
 
   const connectorId = node.with?.connector ?? ''
   const sql = node.with?.sql ?? ''
+  const selectedConnector = connectors.find(connector => connector.id === connectorId)
   const isChart = node.element === 'chart'
   const previewColumns = preview?.columns ?? []
 
@@ -278,6 +279,11 @@ function DataBindingEditor({ node, workspaceId, onWithChange }: {
             minHeight: 60,
           }}
         />
+        {selectedConnector?.type === 'csv' && (
+          <div style={{ marginTop: 6, fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+            CSV widgets render rows that were uploaded on the Connectors page. The columns field only controls fallback headers when preview data is unavailable.
+          </div>
+        )}
       </div>
 
       {/* Table-specific: columns */}

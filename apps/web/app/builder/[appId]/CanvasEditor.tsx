@@ -33,6 +33,7 @@ interface Props {
   selectedId: string | null
   onChange: (doc: AuraDocument) => void
   onSelect: (id: string | null) => void
+  workspaceId: string
 }
 
 export function getGrid(node: AuraNode, fallback = { w: 4, h: 3 }) {
@@ -48,7 +49,7 @@ export function getGrid(node: AuraNode, fallback = { w: 4, h: 3 }) {
   }
 }
 
-export function CanvasEditor({ doc, selectedId, onChange, onSelect }: Props) {
+export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
 
@@ -266,7 +267,7 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect }: Props) {
               onMouseDown={e => handleWidgetMouseDown(e, node.id, 'move')}
               onClick={e => { e.stopPropagation(); onSelect(node.id) }}
             >
-              <WidgetRenderer node={node} selected={isSelected} />
+              <WidgetRenderer node={node} selected={isSelected} workspaceId={workspaceId} />
 
               {/* Resize handle — bottom-right corner */}
               {isSelected && (

@@ -87,7 +87,7 @@ func CreateConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, lo
 		}
 
 		// Kick off schema discovery. Non-fatal if Redis is unavailable.
-		if enq != nil {
+		if enq != nil && conn.Type != model.ConnectorTypeCSV {
 			if err := enq.EnqueueSchema(r.Context(), model.SchemaJobPayload{
 				ConnectorID: conn.ID,
 				WorkspaceID: workspaceID,
@@ -149,8 +149,9 @@ func PatchConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, log
 			return
 		}
 
-		// If credentials changed, re-trigger schema discovery.
-		if len(encCreds) > 0 && enq != nil {
+		// If credentials changed, re-trigger schema discovery for connectors that
+		// can derive schema directly from their stored credentials.
+		if len(encCreds) > 0 && enq != nil && conn.Type != model.ConnectorTypeCSV {
 			if err := enq.EnqueueSchema(r.Context(), model.SchemaJobPayload{
 				ConnectorID: connectorID,
 				WorkspaceID: workspaceID,

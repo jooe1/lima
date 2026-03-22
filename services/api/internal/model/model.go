@@ -468,6 +468,11 @@ type AppPublication struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
+const (
+	PublicationCapabilityDiscover = "discover"
+	PublicationCapabilityUse      = "use"
+)
+
 // AppPublicationAudience links a publication to a company group with a capability level.
 type AppPublicationAudience struct {
 	PublicationID string `json:"publication_id"`
@@ -484,6 +489,7 @@ type CompanyTool struct {
 	AppVersionID   string    `json:"app_version_id"`
 	WorkspaceID    string    `json:"workspace_id"`
 	CompanyID      string    `json:"company_id"`
+	Capability     string    `json:"capability"`
 	PublishedBy    string    `json:"published_by"`
 	PublishedAt    time.Time `json:"published_at"`
 }

@@ -29,6 +29,18 @@ func CreatePublication(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			respondErr(w, http.StatusBadRequest, "bad_request", "app_version_id is required")
 			return
 		}
+		for _, audience := range req.Audiences {
+			if audience.GroupID == "" {
+				respondErr(w, http.StatusBadRequest, "bad_request", "audience group_id is required")
+				return
+			}
+			switch audience.Capability {
+			case model.PublicationCapabilityDiscover, model.PublicationCapabilityUse:
+			default:
+				respondErr(w, http.StatusBadRequest, "bad_request", "audience capability must be discover or use")
+				return
+			}
+		}
 
 		// Validate the app belongs to the workspace in the URL.
 		if _, err := s.GetApp(r.Context(), workspaceID, appID); err != nil {

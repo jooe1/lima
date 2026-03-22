@@ -10,6 +10,20 @@ import (
 	"github.com/lima/api/internal/model"
 )
 
+const appVersionCols = `id, app_id, version_num, dsl_source, node_metadata, published_by, published_at`
+
+func scanAppVersionRow(row pgx.Row) (*model.AppVersion, error) {
+	v := &model.AppVersion{}
+	var nodeMetaRaw []byte
+	if err := row.Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &nodeMetaRaw, &v.PublishedBy, &v.PublishedAt); err != nil {
+		return nil, err
+	}
+	if nodeMetaRaw != nil {
+		_ = json.Unmarshal(nodeMetaRaw, &v.NodeMetadata)
+	}
+	return v, nil
+}
+
 // ListApps returns all apps in a workspace, ordered by update time descending.
 func (s *Store) ListApps(ctx context.Context, workspaceID string) ([]model.App, error) {
 	rows, err := s.pool.Query(ctx,
@@ -285,22 +299,79 @@ func (s *Store) GetLatestPublishedVersion(ctx context.Context, workspaceID, appI
 		return nil, ErrNotFound
 	}
 
-	v := &model.AppVersion{}
-	var vMetaRaw []byte
-	err = s.pool.QueryRow(ctx,
-		`SELECT id, app_id, version_num, dsl_source, node_metadata, published_by, published_at
+	v, err := scanAppVersionRow(s.pool.QueryRow(ctx,
+		`SELECT `+appVersionCols+`
 		 FROM app_versions WHERE app_id = $1
 		 ORDER BY version_num DESC LIMIT 1`,
 		appID,
-	).Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &vMetaRaw, &v.PublishedBy, &v.PublishedAt)
+	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get published version: %w", err)
 	}
-	if vMetaRaw != nil {
-		_ = json.Unmarshal(vMetaRaw, &v.NodeMetadata)
+	return v, nil
+}
+
+// GetLatestUsablePublicationVersion returns the most recent active publication version
+// that the user can launch for a published app.
+func (s *Store) GetLatestUsablePublicationVersion(ctx context.Context, workspaceID, appID, userID string) (*model.AppVersion, error) {
+	v, err := scanAppVersionRow(s.pool.QueryRow(ctx,
+		`SELECT `+appVersionCols+`
+		 FROM app_publications ap
+		 JOIN apps a ON a.id = ap.app_id AND a.workspace_id = ap.workspace_id
+		 JOIN app_versions v ON v.id = ap.app_version_id AND v.app_id = ap.app_id
+		 WHERE ap.workspace_id = $1
+		   AND ap.app_id = $2
+		   AND ap.status = 'active'
+		   AND a.status = $3
+		   AND (
+			   NOT EXISTS (
+				   SELECT 1
+				   FROM app_publication_audiences apa
+				   WHERE apa.publication_id = ap.id
+			   )
+			   OR EXISTS (
+				   SELECT 1
+				   FROM app_publication_audiences apa
+				   JOIN group_memberships gm ON gm.group_id = apa.group_id AND gm.user_id = $4
+				   WHERE apa.publication_id = ap.id
+				     AND apa.capability = $5
+			   )
+		   )
+		 ORDER BY ap.created_at DESC
+		 LIMIT 1`,
+		workspaceID, appID, string(model.StatusPublished), userID, model.PublicationCapabilityUse,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get latest usable publication version: %w", err)
+	}
+	return v, nil
+}
+
+// GetPublishedVersionForPublication returns the published app version pinned to a specific active publication.
+func (s *Store) GetPublishedVersionForPublication(ctx context.Context, workspaceID, appID, publicationID string) (*model.AppVersion, error) {
+	v, err := scanAppVersionRow(s.pool.QueryRow(ctx,
+		`SELECT `+appVersionCols+`
+		 FROM app_publications ap
+		 JOIN apps a ON a.id = ap.app_id AND a.workspace_id = ap.workspace_id
+		 JOIN app_versions v ON v.id = ap.app_version_id AND v.app_id = ap.app_id
+		 WHERE ap.id = $1
+		   AND ap.workspace_id = $2
+		   AND ap.app_id = $3
+		   AND ap.status = 'active'
+		   AND a.status = $4`,
+		publicationID, workspaceID, appID, string(model.StatusPublished),
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get published version for publication: %w", err)
 	}
 	return v, nil
 }

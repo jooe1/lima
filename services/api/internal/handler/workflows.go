@@ -3,7 +3,10 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +23,8 @@ const (
 )
 
 var errWorkflowQueueUnavailable = errors.New("workflow queue unavailable")
+
+var cronFieldPattern = regexp.MustCompile(`^[0-9*/,-]+$`)
 
 // ListWorkflows returns all workflows for an app.
 func ListWorkflows(s *store.Store, log *zap.Logger) http.HandlerFunc {
@@ -89,6 +94,12 @@ func CreateWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 		if req.TriggerConfig == nil {
 			req.TriggerConfig = map[string]any{}
 		}
+		normalizedTriggerConfig, err := normalizeWorkflowTriggerConfig(req.TriggerType, req.TriggerConfig)
+		if err != nil {
+			respondErr(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+			return
+		}
+		req.TriggerConfig = normalizedTriggerConfig
 		requiresApproval := true
 		if req.RequiresApproval != nil {
 			requiresApproval = *req.RequiresApproval
@@ -131,6 +142,32 @@ func PatchWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 				respondErr(w, http.StatusBadRequest, "bad_request", "name cannot be empty")
 				return
 			}
+		}
+
+		if req.TriggerType != nil || req.TriggerConfig != nil {
+			currentWorkflow, err := s.GetWorkflowWithSteps(r.Context(), workspaceID, workflowID)
+			if err != nil {
+				handleStoreErr(w, err)
+				return
+			}
+
+			effectiveTriggerType := currentWorkflow.TriggerType
+			if req.TriggerType != nil {
+				effectiveTriggerType = *req.TriggerType
+			}
+
+			effectiveTriggerConfig := currentWorkflow.TriggerConfig
+			if req.TriggerConfig != nil {
+				effectiveTriggerConfig = req.TriggerConfig
+			}
+
+			normalizedTriggerConfig, err := normalizeWorkflowTriggerConfig(effectiveTriggerType, effectiveTriggerConfig)
+			if err != nil {
+				respondErr(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+				return
+			}
+
+			req.TriggerConfig = normalizedTriggerConfig
 		}
 
 		wf, err := s.PatchWorkflow(r.Context(), workspaceID, workflowID,
@@ -365,6 +402,130 @@ func cleanupTriggeredWorkflowRun(ctx context.Context, s workflowRunCleanupStore,
 	}
 
 	return errors.Join(err, statusErr)
+}
+
+func normalizeWorkflowTriggerConfig(triggerType model.WorkflowTrigger, config map[string]any) (map[string]any, error) {
+	if err := validateWorkflowTriggerType(triggerType); err != nil {
+		return nil, err
+	}
+	if config == nil {
+		config = map[string]any{}
+	}
+
+	switch triggerType {
+	case model.TriggerManual:
+		if err := validateTriggerConfigKeys(config); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, nil
+	case model.TriggerSchedule:
+		if err := validateTriggerConfigKeys(config, "cron"); err != nil {
+			return nil, err
+		}
+		cron, err := requiredTriggerConfigString(config, "cron")
+		if err != nil {
+			return nil, err
+		}
+		if err := validateCronExpression(cron); err != nil {
+			return nil, err
+		}
+		return map[string]any{"cron": cron}, nil
+	case model.TriggerWebhook:
+		if err := validateTriggerConfigKeys(config, "secret_token_hash"); err != nil {
+			return nil, err
+		}
+		secret, err := requiredTriggerConfigString(config, "secret_token_hash")
+		if err != nil {
+			return nil, err
+		}
+		if strings.Contains(secret, " ") {
+			return nil, fmt.Errorf("webhook secret cannot contain spaces")
+		}
+		if len(secret) < 8 {
+			return nil, fmt.Errorf("webhook secret must be at least 8 characters")
+		}
+		return map[string]any{"secret_token_hash": secret}, nil
+	case model.TriggerFormSubmit, model.TriggerButtonClick:
+		if err := validateTriggerConfigKeys(config, "widget_id"); err != nil {
+			return nil, err
+		}
+		widgetID, err := requiredTriggerConfigString(config, "widget_id")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"widget_id": widgetID}, nil
+	default:
+		return nil, fmt.Errorf("unsupported trigger_type %q", triggerType)
+	}
+}
+
+func validateWorkflowTriggerType(triggerType model.WorkflowTrigger) error {
+	switch triggerType {
+	case model.TriggerManual,
+		model.TriggerFormSubmit,
+		model.TriggerButtonClick,
+		model.TriggerSchedule,
+		model.TriggerWebhook:
+		return nil
+	default:
+		return fmt.Errorf("unsupported trigger_type %q", triggerType)
+	}
+}
+
+func validateTriggerConfigKeys(config map[string]any, allowedKeys ...string) error {
+	allowed := make(map[string]struct{}, len(allowedKeys))
+	for _, key := range allowedKeys {
+		allowed[key] = struct{}{}
+	}
+
+	var unexpected []string
+	for key := range config {
+		if _, ok := allowed[key]; ok {
+			continue
+		}
+		unexpected = append(unexpected, key)
+	}
+
+	if len(unexpected) == 0 {
+		return nil
+	}
+
+	sort.Strings(unexpected)
+	return fmt.Errorf("unsupported trigger_config fields: %s", strings.Join(unexpected, ", "))
+}
+
+func requiredTriggerConfigString(config map[string]any, key string) (string, error) {
+	value, ok := config[key]
+	if !ok {
+		return "", fmt.Errorf("trigger_config.%s is required", key)
+	}
+
+	text, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("trigger_config.%s must be a string", key)
+	}
+
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", fmt.Errorf("trigger_config.%s cannot be empty", key)
+	}
+
+	return trimmed, nil
+}
+
+func validateCronExpression(cron string) error {
+	fields := strings.Fields(strings.TrimSpace(cron))
+	if len(fields) != 5 {
+		return fmt.Errorf("trigger_config.cron must use five cron fields")
+	}
+
+	for _, field := range fields {
+		if !cronFieldPattern.MatchString(field) {
+			return fmt.Errorf("trigger_config.cron field %q contains unsupported characters", field)
+		}
+	}
+
+	return nil
 }
 
 func stepsFromInput(inputs []workflowStepInput) []model.WorkflowStep {

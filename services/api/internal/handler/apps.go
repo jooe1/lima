@@ -206,12 +206,63 @@ func ListAuditEvents(s *store.Store, log *zap.Logger) http.HandlerFunc {
 }
 
 // GetPublishedApp returns the latest published AppVersion for an app.
-// Returns 404 if the app is not in 'published' status, enforcing that the
-// runtime shell can only render published apps — not drafts.
+// Returns 404 if the app is not published and 403 if publication audiences
+// restrict the app to discovery-only access for the caller.
 func GetPublishedApp(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		workspaceID := chi.URLParam(r, "workspaceID")
 		appID := chi.URLParam(r, "appID")
+		claims, ok := ClaimsFromContext(r.Context())
+		if !ok {
+			respondErr(w, http.StatusUnauthorized, "unauthenticated", "authentication required")
+			return
+		}
+
+		publicationID := r.URL.Query().Get("publication_id")
+		if publicationID != "" {
+			version, err := s.GetPublishedVersionForPublication(r.Context(), workspaceID, appID, publicationID)
+			if err != nil {
+				handleStoreErr(w, err)
+				return
+			}
+
+			allowed, err := s.CanUsePublication(r.Context(), publicationID, claims.UserID)
+			if err != nil {
+				log.Error("check publication access", zap.Error(err))
+				respondErr(w, http.StatusInternalServerError, "db_error", "failed to verify publication access")
+				return
+			}
+			if !allowed {
+				respondErr(w, http.StatusForbidden, "publication_access_denied", "this app is published for discovery only")
+				return
+			}
+
+			respond(w, http.StatusOK, version)
+			return
+		}
+
+		access, err := s.GetPublishedAppAccess(r.Context(), workspaceID, appID, claims.UserID)
+		if err != nil {
+			log.Error("get published app access", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to verify publication access")
+			return
+		}
+
+		if access.HasActivePublications {
+			if !access.HasUseAccess {
+				respondErr(w, http.StatusForbidden, "publication_access_denied", "this app is published for discovery only")
+				return
+			}
+
+			version, err := s.GetLatestUsablePublicationVersion(r.Context(), workspaceID, appID, claims.UserID)
+			if err != nil {
+				handleStoreErr(w, err)
+				return
+			}
+			respond(w, http.StatusOK, version)
+			return
+		}
+
 		version, err := s.GetLatestPublishedVersion(r.Context(), workspaceID, appID)
 		if err != nil {
 			handleStoreErr(w, err)

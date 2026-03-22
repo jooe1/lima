@@ -81,6 +81,15 @@ func GetConnectorSchema(cfg *config.Config, s *store.Store, enq *queue.Enqueuer,
 			return
 		}
 
+		if conn.Type == model.ConnectorTypeCSV {
+			respond(w, http.StatusOK, map[string]any{
+				"schema":     nil,
+				"refreshing": false,
+				"note":       "Upload a CSV file via POST /import to populate schema.",
+			})
+			return
+		}
+
 		// For all other connector types: enqueue a background discovery job.
 		if enq != nil {
 			if err := enq.EnqueueSchema(r.Context(), model.SchemaJobPayload{

@@ -37,6 +37,21 @@ function parseJWT(token: string): AuthUser | null {
   }
 }
 
+function resolveSelectedWorkspace(storedWorkspace: Workspace | null, workspaces: Workspace[]) {
+  if (workspaces.length === 0) {
+    return storedWorkspace
+  }
+
+  if (storedWorkspace) {
+    const matchingWorkspace = workspaces.find(workspace => workspace.id === storedWorkspace.id)
+    if (matchingWorkspace) {
+      return matchingWorkspace
+    }
+  }
+
+  return workspaces[0] ?? null
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({
     token: null, user: null, company: null, workspace: null, workspaces: [], isLoading: true,
@@ -53,8 +68,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     const user = parseJWT(token)
     const company: Company | null = companyRaw ? JSON.parse(companyRaw) : null
-    const workspace: Workspace | null = workspaceRaw ? JSON.parse(workspaceRaw) : null
-    setState({ token, user, company, workspace, workspaces: [], isLoading: false })
+    const storedWorkspace: Workspace | null = workspaceRaw ? JSON.parse(workspaceRaw) : null
+
+    if (!user || !company) {
+      setState({ token: null, user: null, company: null, workspace: null, workspaces: [], isLoading: false })
+      return
+    }
+
+    let cancelled = false
+
+    const rehydrate = async () => {
+      let workspaces: Workspace[] = []
+      try {
+        const res = await listWorkspaces(company.id)
+        workspaces = res.workspaces ?? []
+      } catch {
+        workspaces = []
+      }
+
+      const workspace = resolveSelectedWorkspace(storedWorkspace, workspaces)
+      if (workspace) {
+        localStorage.setItem('lima_workspace', JSON.stringify(workspace))
+      } else {
+        localStorage.removeItem('lima_workspace')
+      }
+
+      if (!cancelled) {
+        setState({ token, user, company, workspace, workspaces, isLoading: false })
+      }
+    }
+
+    void rehydrate()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const signIn = useCallback(async (token: string, company: Company) => {
