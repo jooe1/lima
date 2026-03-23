@@ -30,6 +30,8 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
   const [sending, setSending] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
+  // Tracks message IDs whose DSL patches were successfully parsed and applied.
+  const [appliedPatchIds, setAppliedPatchIds] = useState<ReadonlySet<string>>(new Set())
   const bottomRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastMsgIdRef = useRef<string | null>(null)
@@ -60,15 +62,24 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
           ? fetched.filter(m => m.created_at > (fetched.find(x => x.id === lastMsgIdRef.current)?.created_at ?? ''))
           : fetched
 
+        const newlyApplied: string[] = []
         for (const msg of newMsgs) {
           if (msg.role === 'assistant' && msg.dsl_patch?.new_source) {
             try {
               parse(msg.dsl_patch.new_source) // validate before applying
               onDSLUpdate(msg.dsl_patch.new_source)
+              newlyApplied.push(msg.id)
             } catch {
               // DSL parse error — ignore this patch
             }
           }
+        }
+        if (newlyApplied.length > 0) {
+          setAppliedPatchIds(prev => {
+            const next = new Set(prev)
+            newlyApplied.forEach(id => next.add(id))
+            return next
+          })
         }
         lastMsgIdRef.current = lastFetchedId
       }
@@ -193,6 +204,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
     setMessages([])
     setGenerating(false)
     setError('')
+    setAppliedPatchIds(new Set())
     lastMsgIdRef.current = null
     try {
       const { messages: msgs } = await listMessages(workspaceId, appId, t.id)
@@ -353,7 +365,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
             }}>
               {msg.content}
             </div>
-            {msg.role === 'assistant' && msg.dsl_patch?.new_source && (
+            {msg.role === 'assistant' && appliedPatchIds.has(msg.id) && (
               <div style={{ fontSize: '0.6rem', color: '#333', marginTop: 3, paddingLeft: 2 }}>
                 canvas updated
               </div>

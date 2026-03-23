@@ -56,6 +56,15 @@ type msgRow struct {
 	content string
 }
 
+// genConnector holds the connector metadata surfaced to the AI model so it can
+// reference real connector IDs and column names in generated DSL.
+type genConnector struct {
+	id      string
+	name    string
+	cType   string
+	columns []string // column names extracted from schema_cache (CSV connectors)
+}
+
 type userAIProviderConfig struct {
 	OpenAIBaseURL *string `json:"openai_base_url,omitempty"`
 }
@@ -186,9 +195,70 @@ func extractDSL(content string) string {
 	return ""
 }
 
-func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow) string {
+// fetchWorkspaceConnectors loads lightweight connector metadata (id, name, type,
+// and column names for CSV connectors) for the given workspace. The result is
+// passed to the AI model so it can reference real connector IDs and schema
+// columns when generating DSL. Errors are non-fatal — the caller logs and
+// proceeds with an empty slice.
+func fetchWorkspaceConnectors(ctx context.Context, pool *pgxpool.Pool, workspaceID string) ([]genConnector, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT id, name, type, schema_cache FROM connectors WHERE workspace_id = $1 ORDER BY name`,
+		workspaceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fetch connectors: %w", err)
+	}
+	defer rows.Close()
+
+	var result []genConnector
+	for rows.Next() {
+		var c genConnector
+		var schemaRaw []byte
+		if err := rows.Scan(&c.id, &c.name, &c.cType, &schemaRaw); err != nil {
+			return nil, fmt.Errorf("scan connector: %w", err)
+		}
+		if c.cType == "csv" && len(schemaRaw) > 0 {
+			var sch struct {
+				Columns []struct {
+					Name string `json:"name"`
+				} `json:"columns"`
+			}
+			if jsonErr := json.Unmarshal(schemaRaw, &sch); jsonErr == nil {
+				for _, col := range sch.Columns {
+					c.columns = append(c.columns, col.Name)
+				}
+			}
+		}
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
+// buildConnectorContextBlock renders the connector list into a plain-text block
+// that is injected into the AI prompt so the model knows what data sources are
+// available and how to reference them in the `with` clause.
+func buildConnectorContextBlock(connectors []genConnector) string {
+	if len(connectors) == 0 {
+		return "No connectors are configured for this workspace yet.\nDo not invent connector IDs; tell the user they need to add a connector first."
+	}
+	var sb strings.Builder
+	sb.WriteString("Available connectors in this workspace (use the exact IDs below):\n")
+	for _, c := range connectors {
+		fmt.Fprintf(&sb, "- id=%q  name=%q  type=%s", c.id, c.name, c.cType)
+		if len(c.columns) > 0 {
+			sb.WriteString("  columns=[")
+			sb.WriteString(strings.Join(c.columns, ", "))
+			sb.WriteString("]")
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector) string {
 	var builder strings.Builder
-	builder.WriteString("Current app DSL:\n```aura\n")
+	builder.WriteString(buildConnectorContextBlock(connectors))
+	builder.WriteString("\nCurrent app DSL:\n```aura\n")
 	builder.WriteString(currentDSL)
 	builder.WriteString("\n```\n\nConversation history:\n")
 	for _, message := range history {
@@ -255,15 +325,73 @@ Each widget declaration looks like:
 - tabs: tabbed container
 - markdown: rich text block
 
+## Data Binding (with clause)
+
+### Connecting a table or chart to a data source
+
+Use these ` + "`with`" + ` keys to bind a table or chart widget to a connector:
+
+    with connector="<connector-id>"
+         connectorType="<csv|postgres|mysql|mssql|rest|graphql>"
+         sql="<query>"
+
+For CSV connectors the sql value is always: SELECT * FROM csv
+For relational connectors write a normal SQL SELECT statement.
+
+### Linking a filter widget to a table or chart
+
+Add these ` + "`with`" + ` keys to the table or chart to make it react to a filter:
+
+    with filterWidgets="<filterId>"          (semicolon-separated for multiple)
+         filterWidgetColumns="<columnName>"  (semicolon-separated, matching order)
+
+When the user selects a value in the filter widget, the table/chart will only
+show rows where ` + "`columnName`" + ` equals that value.  An empty selection shows all rows.
+
+### Populating filter dropdown options from a CSV connector
+
+Add these ` + "`with`" + ` keys to the filter widget to auto-populate its dropdown from a
+connector column (currently only CSV connectors are supported for live options):
+
+    with optionsConnector="<connector-id>"
+         optionsColumn="<column-name>"
+         optionsConnectorType="csv"
+
+## Worked example: table with filter
+
+A table showing all leads from a CSV connector, filtered by industry:
+
+` + "```aura" + `
+filter industryFilter @ root
+  text "Industry"
+  with optionsConnector="CONNECTOR_ID"
+       optionsColumn="Industry"
+       optionsConnectorType="csv"
+  style { gridX: "0"; gridY: "0"; gridW: "6"; gridH: "2" }
+;
+table leadsTable @ root
+  with connector="CONNECTOR_ID"
+       connectorType="csv"
+       sql="SELECT * FROM csv"
+       filterWidgets="industryFilter"
+       filterWidgetColumns="Industry"
+  style { gridX: "0"; gridY: "2"; gridW: "24"; gridH: "14" }
+;
+` + "```" + `
+
+Replace CONNECTOR_ID with the actual connector id provided in the context.
+
 ## Rules
 
 1. Always return the complete updated DSL document, not just a diff.
-2. Return valid Aura DSL inside a fenced code block.
+2. Always return the DSL inside a fenced code block (` + "```aura" + ` ... ` + "```" + `). Do not respond with prose only.
 3. You may include a short plain-language explanation before the code block.
 4. Preserve nodes marked manuallyEdited unless the user explicitly asks to change them.
 5. Keep grid placements non-overlapping.
 6. For CRUD pages, prefer sensible tables, forms, and actions.
 7. Keep IDs short and descriptive.
+8. Always use the exact connector IDs from the provided connector list. Do not invent IDs.
+9. If the user references a connector by name, match it to the closest name in the available connectors list.
 `
 
 func fetchAppAndMessages(ctx context.Context, pool *pgxpool.Pool, payload GenerationPayload) (appRow, []msgRow, error) {
@@ -396,11 +524,17 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			}
 		}
 
+		connectors, connErr := fetchWorkspaceConnectors(ctx, pool, payload.WorkspaceID)
+		if connErr != nil {
+			log.Warn("fetch workspace connectors for generation (non-fatal)", zap.Error(connErr))
+		}
+
 		var responseText string
 		switch settings.Provider {
 		case "openai":
 			requestMessages := []chatMessage{
 				{Role: "system", Content: systemPrompt},
+				{Role: "system", Content: buildConnectorContextBlock(connectors)},
 				{Role: "system", Content: "Current app DSL:\n```aura\n" + currentDSL + "\n```"},
 			}
 			for index, message := range messages {
@@ -412,7 +546,7 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			requestMessages = append(requestMessages, chatMessage{Role: "user", Content: latestUserPrompt})
 			responseText, err = callOpenAI(ctx, settings, requestMessages)
 		case "github_copilot":
-			responseText, err = callGitHubCopilot(ctx, settings, buildCopilotPrompt(currentDSL, latestUserPrompt, messages))
+			responseText, err = callGitHubCopilot(ctx, settings, buildCopilotPrompt(currentDSL, latestUserPrompt, messages, connectors))
 		default:
 			err = fmt.Errorf("unsupported ai provider %q", settings.Provider)
 		}
@@ -424,9 +558,16 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 
 		newDSL := extractDSL(responseText)
 		if newDSL == "" {
-			if err := writeAssistantMessage(ctx, pool, payload.ThreadID, responseText, currentDSL); err != nil {
-				log.Error("write assistant prose message", zap.Error(err))
+			// Model returned explanation text with no DSL code block. Store as a
+			// patch-free message so the UI does not misleadingly show "canvas updated"
+			// and so the frontend cannot accidentally revert unsaved canvas edits.
+			_, writeErr := pool.Exec(ctx,
+				`INSERT INTO thread_messages (thread_id, role, content) VALUES ($1, 'assistant', $2)`,
+				payload.ThreadID, responseText)
+			if writeErr != nil {
+				log.Error("write assistant prose message", zap.Error(writeErr))
 			}
+			_, _ = pool.Exec(ctx, `UPDATE conversation_threads SET updated_at = now() WHERE id = $1`, payload.ThreadID)
 			return nil
 		}
 
