@@ -122,4 +122,3 @@ func (d *Dispatcher) runLoop(ctx context.Context, jobType JobType, handler jobHa
 		}
 	}
 }
-
