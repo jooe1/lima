@@ -386,6 +386,31 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
 
   const querySql = getConnectorQuerySQL(connectorType, sql)
 
+  // Auto-fetch a 1-row preview whenever connector + query changes so that
+  // availableColumns is populated and column pickers render as dropdowns.
+  useEffect(() => {
+    if (!workspaceId || !connectorId || !querySql) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await runConnectorQuery(workspaceId, connectorId, {
+          sql: querySql,
+          limit: 1,
+        })
+        if (!cancelled && !res.error) {
+          setPreview(prev => {
+            // Keep a richer existing preview; only update when columns change.
+            if (prev && prev.columns.join(',') === res.columns.join(',')) return prev
+            return res
+          })
+        }
+      } catch {
+        // Silently ignore — the user can still type column names manually.
+      }
+    })()
+    return () => { cancelled = true }
+  }, [workspaceId, connectorId, querySql])
+
   const handlePreview = useCallback(async () => {
     if (!connectorId || !querySql || !workspaceId) return
     setPreviewLoading(true)
