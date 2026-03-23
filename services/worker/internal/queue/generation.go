@@ -333,10 +333,13 @@ Use these ` + "`with`" + ` keys to bind a table or chart widget to a connector:
 
     with connector="<connector-id>"
          connectorType="<csv|postgres|mysql|mssql|rest|graphql>"
-         sql="<query>"
+         sql="<value>"
 
-For CSV connectors the sql value is always: SELECT * FROM csv
-For relational connectors write a normal SQL SELECT statement.
+The meaning of the sql field depends on the connector type:
+- csv:                  sql is always: SELECT * FROM csv  (the backend ignores this value; it is a required sentinel)
+- postgres/mysql/mssql: sql is a normal SQL SELECT statement, e.g. SELECT * FROM users ORDER BY created_at DESC
+- rest:                 sql is the endpoint path to call on the base URL, e.g. /users or /orders/recent  (not SQL)
+- graphql:              dashboard queries are not supported; do not bind a table to a graphql connector
 
 ### Linking a filter widget to a table or chart
 
