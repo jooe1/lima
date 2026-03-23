@@ -473,7 +473,7 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
   // Active tab
   const [activeTab, setActiveTab] = useState<'details' | 'permissions'>('details')
 
-  // Reset state when connector changes
+  // Reset state when connector changes and auto-load columns for managed connectors
   useEffect(() => {
     setTestResult(null)
     setSchemaData(null)
@@ -487,7 +487,12 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
     setQueryResult(null)
     setQueryError('')
     setActiveTab('details')
-  }, [connector.id])
+    if (connector.type === 'managed') {
+      getManagedTableColumns(workspaceId, connector.id)
+        .then(res => { setManagedCols(res.columns ?? []); setManagedColsLoaded(true) })
+        .catch(() => setManagedColsLoaded(true))
+    }
+  }, [connector.id, connector.type, workspaceId])
 
   async function handleTest() {
     setTestLoading(true)
@@ -681,11 +686,14 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
           <div style={{ marginBottom: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <span style={{ color: '#888', fontSize: '0.8rem' }}>Columns</span>
-              <button onClick={handleLoadManagedCols} style={ghostBtn}>Load</button>
+              <button onClick={handleLoadManagedCols} style={ghostBtn}>Refresh</button>
             </div>
+            {!managedColsLoaded && (
+              <p style={{ color: '#555', fontSize: '0.75rem', margin: 0 }}>Loading columns…</p>
+            )}
             {managedColsLoaded && (
               managedCols.length === 0
-                ? <p style={{ color: '#444', fontSize: '0.75rem', margin: 0 }}>No columns defined yet. Seed from CSV to auto-create columns.</p>
+                ? <p style={{ color: '#444', fontSize: '0.75rem', margin: 0 }}>No columns yet. Upload a CSV below — columns are auto-created from the header row.</p>
                 : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     {managedCols.map(col => (
                       <span key={col.id} style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 99, background: '#1e293b', color: '#94a3b8' }}>

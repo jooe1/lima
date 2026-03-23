@@ -255,9 +255,17 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 		results[step.id] = map[string]any{"status": "completed", "result": result}
 
 	case stepTypeMutation:
-		// Every mutation step MUST go through an approval gate, regardless of
-		// the workflow-level requires_approval flag. Fail closed: a mutation
-		// that has not been explicitly approved MUST NOT be marked completed.
+		// When requires_approval is false on the workflow, execute immediately.
+		// Otherwise (or when triggered by an end-user) gate through approval.
+		if !def.requiresApproval {
+			mutResult, execErr := executeMutationStep(stepCtx, cfg, pool, log, step, run.inputData, requestedBy)
+			if execErr != nil {
+				return false, fmt.Errorf("mutation step %q failed: %w", step.name, execErr)
+			}
+			results[step.id] = map[string]any{"status": "completed", "result": mutResult}
+			return false, nil
+		}
+		// requires_approval=true — create an approval gate.
 		approvalPayload, _ := json.Marshal(map[string]any{
 			"run_id":       run.id,
 			"step_id":      step.id,
@@ -278,7 +286,7 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 		log.Info("mutation step paused for approval",
 			zap.String("run_id", run.id), zap.String("approval_id", approvalID),
 			zap.Bool("workflow_requires_approval", def.requiresApproval))
-		return true, nil // always pause — mutations require explicit approval
+		return true, nil // paused — awaiting admin approval
 
 	case stepTypeApprovalGate:
 		// Explicit approval gate step — always pauses regardless of requires_approval.
@@ -769,10 +777,15 @@ func resolveApprovedStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 			continue
 		}
 
+		triggeredBy := ""
+		if run.triggeredBy != nil {
+			triggeredBy = *run.triggeredBy
+		}
+
 		switch step.stepType {
 		case stepTypeMutation:
 			// Execute the actual mutation now that approval is verified.
-			mutResult, execErr := executeMutationStep(ctx, cfg, pool, log, step, run.inputData)
+			mutResult, execErr := executeMutationStep(ctx, cfg, pool, log, step, run.inputData, triggeredBy)
 			if execErr != nil {
 				return fmt.Errorf("execute approved mutation step %q: %w", step.name, execErr)
 			}
@@ -811,7 +824,7 @@ func resolveApprovedStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 // The caller only marks the step completed after this returns success, so each
 // branch must fail closed for malformed config or unsupported connectors.
 func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger,
-	step wfStep, inputData map[string]any,
+	step wfStep, inputData map[string]any, triggeredBy string,
 ) (any, error) {
 	connectorID := resolveWorkflowString(step.config["connector_id"], inputData)
 	if connectorID == "" {
@@ -877,7 +890,7 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 		return runGraphQLMutationStep(ctx, creds, step, inputData, log)
 
 	case "managed":
-		return runManagedMutationStep(ctx, pool, connectorID, step, inputData)
+		return runManagedMutationStep(ctx, pool, connectorID, step, inputData, triggeredBy)
 
 	default:
 		return nil, fmt.Errorf("mutation step %q uses unsupported connector type %q", step.name, rec.connectorType)
@@ -891,7 +904,7 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 //	data       — map of column → value (for insert/update); supports {{input.x}} placeholders
 //	row_id     — row UUID to update or delete; supports {{input.x}}
 func runManagedMutationStep(ctx context.Context, pool *pgxpool.Pool, connectorID string,
-	step wfStep, inputData map[string]any,
+	step wfStep, inputData map[string]any, triggeredBy string,
 ) (any, error) {
 	operation, _ := step.config["operation"].(string)
 	switch operation {
@@ -905,15 +918,24 @@ func runManagedMutationStep(ctx context.Context, pool *pgxpool.Pool, connectorID
 		if err != nil {
 			return nil, fmt.Errorf("marshal insert data: %w", err)
 		}
-		// Use a sentinel system user UUID for worker-originated inserts.
-		const workerUserID = "00000000-0000-0000-0000-000000000000"
 		var rowID string
-		if err := pool.QueryRow(ctx,
-			`INSERT INTO managed_table_rows (connector_id, data, created_by)
-			 VALUES ($1, $2, $3) RETURNING id`,
-			connectorID, dataJSON, workerUserID,
-		).Scan(&rowID); err != nil {
-			return nil, fmt.Errorf("insert managed row: %w", err)
+		if triggeredBy != "" {
+			if err := pool.QueryRow(ctx,
+				`INSERT INTO managed_table_rows (connector_id, data, created_by)
+				 VALUES ($1, $2, $3) RETURNING id`,
+				connectorID, dataJSON, triggeredBy,
+			).Scan(&rowID); err != nil {
+				return nil, fmt.Errorf("insert managed row: %w", err)
+			}
+		} else {
+			// No triggering user — insert without created_by (requires nullable column).
+			if err := pool.QueryRow(ctx,
+				`INSERT INTO managed_table_rows (connector_id, data)
+				 VALUES ($1, $2) RETURNING id`,
+				connectorID, dataJSON,
+			).Scan(&rowID); err != nil {
+				return nil, fmt.Errorf("insert managed row: %w", err)
+			}
 		}
 		return map[string]any{"row_id": rowID, "operation": "insert"}, nil
 

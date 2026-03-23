@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
   type Workflow,
@@ -11,6 +11,8 @@ import {
   type WorkflowStepType,
   type WorkflowTrigger,
   type WorkflowStepInput,
+  type Connector,
+  type ManagedTableColumn,
   listWorkflows,
   getWorkflow,
   createWorkflow,
@@ -22,6 +24,8 @@ import {
   putWorkflowSteps,
   reviewStep,
   patchWorkflow,
+  listConnectors,
+  getManagedTableColumns,
   ApiError,
 } from '../../../lib/api'
 import { useAuth } from '../../../lib/auth'
@@ -98,6 +102,7 @@ interface WorkflowTriggerTarget {
   id: string
   label: string
   element: string
+  fields?: string[]  // populated for form widgets only
 }
 
 interface Props {
@@ -110,15 +115,16 @@ function getStringConfigValue(config: Record<string, unknown>, key: string) {
   return typeof value === 'string' ? value : ''
 }
 
-function getTriggerConfigDraft(triggerType: WorkflowTrigger, source: Record<string, unknown>) {
+function getTriggerConfigDraft(triggerType: WorkflowTrigger, source: Record<string, unknown> | null) {
+  const cfg = source ?? {}
   switch (triggerType) {
     case 'schedule':
-      return { cron: getStringConfigValue(source, 'cron') }
+      return { cron: getStringConfigValue(cfg, 'cron') }
     case 'webhook':
-      return { secret_token_hash: getStringConfigValue(source, 'secret_token_hash') }
+      return { secret_token_hash: getStringConfigValue(cfg, 'secret_token_hash') }
     case 'form_submit':
     case 'button_click':
-      return { widget_id: getStringConfigValue(source, 'widget_id') }
+      return { widget_id: getStringConfigValue(cfg, 'widget_id') }
     case 'manual':
     default:
       return {}
@@ -577,6 +583,16 @@ interface DraftStep {
 function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, onArchive, onTrigger, onRefreshRuns, onDelete, onReviewStep, onSaveSteps, onPatchWorkflow, triggerTargets }: DetailProps) {
   const unreviewedCount = (wf.steps ?? []).filter(s => s.ai_generated && !s.reviewed_by).length
 
+  // When the trigger is form_submit, expose the linked form's field names so
+  // the mutation step editor can show a proper dropdown instead of raw {{input.x}} syntax.
+  const linkedFormFields = React.useMemo(() => {
+    if (wf.trigger_type !== 'form_submit') return []
+    const widgetId = typeof wf.trigger_config?.widget_id === 'string' ? wf.trigger_config.widget_id : ''
+    if (!widgetId) return []
+    const target = triggerTargets.find(t => t.id === widgetId)
+    return target?.fields ?? []
+  }, [wf.trigger_type, wf.trigger_config, triggerTargets])
+
   const [editingSteps, setEditingSteps] = useState(false)
   const [draftSteps, setDraftSteps]     = useState<DraftStep[]>([])
   const [savingSteps, setSavingSteps]   = useState(false)
@@ -949,6 +965,7 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
                   draft={d}
                   index={idx}
                   total={draftSteps.length}
+                  formFields={linkedFormFields}
                   onChange={patch => updateDraft(d._key, patch)}
                   onDelete={() => deleteDraft(d._key)}
                   onMove={dir => moveDraft(d._key, dir)}
@@ -1010,17 +1027,442 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
   )
 }
 
+// ---- MentionInput --------------------------------------------------------
+// Text input with a '#'-triggered suggestion dropdown.
+// Typing '#' (or '#partial') opens a picker; clicking a suggestion replaces
+// the '#...' token inline. The underlying value is always a plain string, so
+// advanced users can still type {{input.x}} directly.
+function MentionInput({
+  value,
+  onChange,
+  placeholder,
+  suggestions,
+  inputStyle,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  suggestions: string[]
+  inputStyle?: React.CSSProperties
+}) {
+  const [open, setOpen]           = useState(false)
+  const [query, setQuery]         = useState('')
+  const [triggerPos, setTriggerPos] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const filtered = suggestions.filter(s =>
+    !query || s.toLowerCase().includes(query.toLowerCase())
+  )
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newVal = e.target.value
+    const cursor = e.target.selectionStart ?? newVal.length
+    const beforeCursor = newVal.slice(0, cursor)
+    const hashIdx = beforeCursor.lastIndexOf('#')
+    if (hashIdx !== -1) {
+      const afterHash = beforeCursor.slice(hashIdx + 1)
+      if (!afterHash.includes(' ')) {
+        setTriggerPos(hashIdx)
+        setQuery(afterHash)
+        setOpen(true)
+        onChange(newVal)
+        return
+      }
+    }
+    setOpen(false)
+    onChange(newVal)
+  }
+
+  const applySuggestion = (suggestion: string) => {
+    const before    = value.slice(0, triggerPos)
+    const afterHash = value.slice(triggerPos + 1)
+    const spaceIdx  = afterHash.search(/\s/)
+    const after     = spaceIdx === -1 ? '' : afterHash.slice(spaceIdx)
+    onChange(before + suggestion + after)
+    setOpen(false)
+    setTimeout(() => inputRef.current?.focus(), 0)
+  }
+
+  return (
+    <div style={{ position: 'relative', flex: 1 }}>
+      <input
+        ref={inputRef}
+        style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }}
+        value={value}
+        placeholder={placeholder}
+        onChange={handleChange}
+        onKeyDown={e => { if (e.key === 'Escape') setOpen(false) }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+      />
+      {open && filtered.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, minWidth: '100%',
+          background: '#1e1e1e', border: `1px solid ${C.border}`, borderRadius: 3,
+          zIndex: 100, maxHeight: 140, overflowY: 'auto', marginTop: 2,
+        }}>
+          {filtered.map(s => (
+            <div
+              key={s}
+              onMouseDown={e => { e.preventDefault(); applySuggestion(s) }}
+              style={{ padding: '4px 10px', cursor: 'pointer', fontSize: '0.7rem', fontFamily: 'monospace', color: C.accentFg }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#2a2a2a' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+            >
+              {s}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---- MutationStepEditor ----------------------------------------------------
+// Structured form for mutation step configs. Replaces the raw JSON textarea
+// when step_type === 'mutation', giving non-technical users a guided experience.
+function MutationStepEditor({
+  configStr,
+  formFields,
+  onChange,
+}: {
+  configStr: string
+  formFields: string[]
+  onChange: (cfg: string) => void
+}) {
+  const { workspace } = useAuth()
+  const [connectors,  setConnectors]  = useState<Connector[]>([])
+  const [columns,     setColumns]     = useState<ManagedTableColumn[]>([])
+  const [loadingCols, setLoadingCols] = useState(false)
+
+  // Parse the current JSON string on every render (cheap, avoids stale state)
+  let parsed: Record<string, unknown> = {}
+  try { parsed = JSON.parse(configStr || '{}') as Record<string, unknown> } catch { /* keep empty */ }
+
+  // Ref so effects can read the latest parsed object without re-running
+  const parsedRef = useRef(parsed)
+  parsedRef.current = parsed
+
+  const connectorId      = typeof parsed.connector_id === 'string' ? parsed.connector_id : ''
+  const selectedCon      = connectors.find(c => c.id === connectorId)
+  const isManaged        = selectedCon?.type === 'managed'
+  const operation        = typeof parsed.operation === 'string' ? parsed.operation : 'insert'
+  const rowId            = typeof parsed.row_id    === 'string' ? parsed.row_id    : ''
+
+  // data as { col → value } string map
+  const dataObj: Record<string, string> = (() => {
+    const d = parsed.data
+    if (typeof d === 'object' && d !== null && !Array.isArray(d)) {
+      return Object.fromEntries(
+        Object.entries(d as Record<string, unknown>).map(([k, v]) => [k, String(v ?? '')])
+      )
+    }
+    return {}
+  })()
+
+  const needsData  = operation === 'insert' || operation === 'update'
+  const needsRowId = operation === 'update' || operation === 'delete'
+
+  // Rows to render in the fields table: schema columns (if available) or manual entries
+  const dataRows = (isManaged && columns.length > 0)
+    ? columns.map(c => ({ col: c.name, val: dataObj[c.name] ?? `{{input.${c.name}}}` }))
+    : Object.entries(dataObj).map(([col, val]) => ({ col, val }))
+
+  // Fetch connector list once
+  useEffect(() => {
+    if (!workspace) return
+    listConnectors(workspace.id).then(res => setConnectors(res.connectors)).catch(() => {})
+  }, [workspace])
+
+  // Fetch columns whenever a managed connector is selected
+  useEffect(() => {
+    if (!workspace || !connectorId || !isManaged) { setColumns([]); return }
+    setLoadingCols(true)
+    getManagedTableColumns(workspace.id, connectorId)
+      .then(res => {
+        const cols = [...res.columns].sort((a, b) => a.col_order - b.col_order)
+        setColumns(cols)
+        // Auto-populate missing data keys with {{input.x}} placeholders
+        const p  = parsedRef.current
+        const op = typeof p.operation === 'string' ? p.operation : 'insert'
+        if ((op === 'insert' || op === 'update') && cols.length > 0) {
+          const existing = (typeof p.data === 'object' && p.data !== null && !Array.isArray(p.data))
+            ? (p.data as Record<string, unknown>) : {}
+          const next = { ...existing }
+          let changed = false
+          for (const c of cols) {
+            if (!(c.name in next)) { next[c.name] = `{{input.${c.name}}}`; changed = true }
+          }
+          if (changed) onChange(JSON.stringify({ ...p, data: next }, null, 2))
+        }
+      })
+      .catch(() => setColumns([]))
+      .finally(() => setLoadingCols(false))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspace, connectorId, isManaged])
+
+  // Merge a partial patch into the current parsed config and emit
+  const emit = (patch: Partial<Record<string, unknown>>) =>
+    onChange(JSON.stringify({ ...parsedRef.current, ...patch }, null, 2))
+
+  const handleConnectorChange = (newId: string) => {
+    const newCon = connectors.find(c => c.id === newId)
+    if (newCon?.type === 'managed') {
+      onChange(JSON.stringify({ connector_id: newId, operation: 'insert', data: {} }, null, 2))
+    } else {
+      onChange(JSON.stringify({ connector_id: newId }, null, 2))
+    }
+    setColumns([])
+  }
+
+  const handleOperationChange = (newOp: string) => {
+    const next: Record<string, unknown> = { connector_id: connectorId, operation: newOp }
+    if (newOp === 'insert' || newOp === 'update') next.data   = dataObj
+    if (newOp === 'update' || newOp === 'delete') next.row_id = rowId || '{{input.row_id}}'
+    onChange(JSON.stringify(next, null, 2))
+  }
+
+  const updateDataValue = (col: string, val: string) =>
+    emit({ data: { ...dataObj, [col]: val } })
+
+  const is: React.CSSProperties = {
+    background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3,
+    color: C.text, fontSize: '0.72rem', padding: '3px 7px',
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+
+      {/* ── Connector picker ─────────────────────────────────────────────── */}
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{ color: C.muted, fontSize: '0.65rem' }}>Connector</span>
+        <select style={{ ...is, background: '#1a1a1a' }} value={connectorId}
+          onChange={e => handleConnectorChange(e.target.value)}>
+          <option value="">Select a connector…</option>
+          {connectors.map(c => (
+            <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
+          ))}
+        </select>
+      </label>
+
+      {/* ── Nothing selected yet ─────────────────────────────────────────── */}
+      {!connectorId && (
+        <div style={{ color: C.muted, fontSize: '0.7rem' }}>
+          Select a connector to configure this step.
+        </div>
+      )}
+
+      {/* ── Managed connector — fully structured UI ──────────────────────── */}
+      {connectorId && isManaged && (
+        <>
+          {/* Operation */}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ color: C.muted, fontSize: '0.65rem' }}>Operation</span>
+            <select style={{ ...is, background: '#1a1a1a' }} value={operation}
+              onChange={e => handleOperationChange(e.target.value)}>
+              <option value="insert">Add a new row</option>
+              <option value="update">Edit an existing row</option>
+              <option value="delete">Remove a row</option>
+            </select>
+          </label>
+
+          {/* Row ID (update / delete) */}
+          {needsRowId && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ color: C.muted, fontSize: '0.65rem' }}>Row ID</span>
+              <input style={is} value={rowId} placeholder="{{input.row_id}}"
+                onChange={e => emit({ row_id: e.target.value })} />
+              <span style={{ color: C.muted, fontSize: '0.6rem' }}>
+                {`ID of the row to ${operation}. Use {{input.row_id}} to pull it from a form field.`}
+              </span>
+            </label>
+          )}
+
+          {/* Data fields (insert / update) */}
+          {needsData && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ color: C.muted, fontSize: '0.65rem' }}>
+                {loadingCols ? 'Loading columns…' : 'Fields'}
+              </span>
+
+              {!loadingCols && dataRows.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, marginBottom: 1 }}>
+                  <span style={{ width: 120, flexShrink: 0, color: C.muted, fontSize: '0.6rem' }}>Column</span>
+                  <span style={{ width: 12,  flexShrink: 0 }} />
+                  <span style={{ flex: 1, color: C.muted, fontSize: '0.6rem' }}>
+                    {formFields.length > 0 ? 'Form field' : 'Value from form field'}
+                  </span>
+                </div>
+              )}
+
+              {dataRows.map(({ col, val }) => {
+                // Extract the field name from a {{input.X}} token, or keep raw value.
+                const inputMatch = /^\{\{input\.([^}]+)\}\}$/.exec(val.trim())
+                const selectedField = inputMatch ? inputMatch[1] : ''
+                const isLiteral = !inputMatch && val !== ''
+
+                return (
+                <div key={col} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {/* Column name — dropdown when schema loaded, text input in manual mode */}
+                  {columns.length > 0 ? (
+                    <select
+                      style={{ ...is, width: 120, flexShrink: 0, background: '#1a1a1a' }}
+                      value={col}
+                      onChange={e => {
+                        const newCol = e.target.value
+                        const next: Record<string, string> = {}
+                        for (const [k, v] of Object.entries(dataObj)) next[k === col ? newCol : k] = v
+                        emit({ data: next })
+                      }}
+                    >
+                      {columns.map(c => (
+                        <option key={c.name} value={c.name}>{c.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      style={{ ...is, width: 120, flexShrink: 0, color: C.muted }}
+                      value={col}
+                      placeholder="column"
+                      onChange={e => {
+                        const next: Record<string, string> = {}
+                        for (const [k, v] of Object.entries(dataObj)) next[k === col ? e.target.value : k] = v
+                        emit({ data: next })
+                      }}
+                    />
+                  )}
+                  <span style={{ color: C.muted, fontSize: '0.65rem', flexShrink: 0 }}>←</span>
+                  {/* Value — dropdown of form fields when known; falls back to MentionInput */}
+                  {formFields.length > 0 ? (
+                    isLiteral ? (
+                      // The user chose "enter a fixed value" — show a text input + revert link
+                      <>
+                        <input
+                          style={{ ...is, flex: 1 }}
+                          value={val}
+                          placeholder="fixed value…"
+                          autoFocus
+                          onChange={e => updateDataValue(col, e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          style={{ background: 'none', border: 'none', color: C.muted, fontSize: '0.65rem', cursor: 'pointer', padding: '0 2px', flexShrink: 0 }}
+                          title="Pick a form field instead"
+                          onClick={() => updateDataValue(col, '')}
+                        >↩</button>
+                      </>
+                    ) : (
+                      <select
+                        style={{ ...is, flex: 1, background: '#1a1a1a' }}
+                        value={selectedField || ''}
+                        onChange={e => {
+                          if (e.target.value === '__literal__') {
+                            updateDataValue(col, '')
+                          } else {
+                            updateDataValue(col, `{{input.${e.target.value}}}`)
+                          }
+                        }}
+                      >
+                        <option value="">— pick a field —</option>
+                        {formFields.map(f => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                        <option value="__literal__">— enter a fixed value —</option>
+                      </select>
+                    )
+                  ) : (
+                    <MentionInput
+                      value={val}
+                      placeholder={`{{input.${col || 'value'}}}`}
+                      suggestions={
+                        columns.length > 0
+                          ? columns.map(c => `{{input.${c.name}}}`)
+                          : Object.keys(dataObj).filter(Boolean).map(k => `{{input.${k}}}`)
+                      }
+                      inputStyle={{ ...is, fontFamily: 'monospace', fontSize: '0.68rem' }}
+                      onChange={v => updateDataValue(col, v)}
+                    />
+                  )}
+                  {/* Remove button only when no schema columns (manual mode) */}
+                  {columns.length === 0 && (
+                    <button type="button" style={{ ...btn(false, true), padding: '2px 6px' }}
+                      onClick={() => { const n = { ...dataObj }; delete n[col]; emit({ data: n }) }}>
+                      ×
+                    </button>
+                  )}
+                </div>
+              )})}
+
+              {/* No-schema notice: only shown after load attempt, no columns found */}
+              {!loadingCols && columns.length === 0 && isManaged && connectorId && (
+                <div style={{ fontSize: '0.68rem', color: '#fcd34d', background: '#92400e22',
+                  border: '1px solid #92400e', borderRadius: 3, padding: '5px 8px', lineHeight: 1.5 }}>
+                  No columns found for this connector. Go to{' '}
+                  <a href="/builder/connectors" target="_blank"
+                    style={{ color: '#fcd34d', textDecoration: 'underline' }}>
+                    Settings → Connectors
+                  </a>
+                  {' '}and upload a CSV to define the schema, then come back here.
+                </div>
+              )}
+
+              {/* Add custom field row (manual mode only) */}
+              {columns.length === 0 && !loadingCols && (
+                <button type="button" style={{ ...btn(), alignSelf: 'flex-start', marginTop: 2 }}
+                  onClick={() => emit({ data: { ...dataObj, '': '' } })}>
+                  + Add field
+                </button>
+              )}
+
+              {columns.length > 0 && !loadingCols && formFields.length === 0 && (
+                <span style={{ color: C.muted, fontSize: '0.6rem', marginTop: 2 }}>
+                  {`{{input.fieldName}} is replaced with what the user typed in that form field when they submit.`}
+                </span>
+              )}
+              {columns.length > 0 && !loadingCols && formFields.length > 0 && (
+                <span style={{ color: C.muted, fontSize: '0.6rem', marginTop: 2 }}>
+                  Each column will be filled with the value the user enters in the selected form field.
+                </span>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Non-managed connector — raw JSON fallback with hint ───────────── */}
+      {connectorId && !isManaged && (
+        <>
+          <div style={{ color: C.muted, fontSize: '0.7rem', lineHeight: 1.6,
+            padding: '6px 8px', background: '#1a1a1a', borderRadius: 3, border: `1px solid ${C.border}` }}>
+            SQL/REST connectors use a raw JSON config. Enter it below.
+          </div>
+          <textarea
+            style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3,
+              color: C.text, fontSize: '0.72rem', padding: '3px 7px',
+              width: '100%', boxSizing: 'border-box', minHeight: 60,
+              fontFamily: 'monospace', resize: 'vertical', whiteSpace: 'pre' }}
+            placeholder="{}"
+            value={configStr}
+            onChange={e => onChange(e.target.value)}
+            spellCheck={false}
+          />
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---- DraftStepRow ----------------------------------------------------------
 interface DraftStepRowProps {
   draft: DraftStep
   index: number
   total: number
+  formFields: string[]
   onChange: (patch: Partial<DraftStep>) => void
   onDelete: () => void
   onMove: (dir: -1 | 1) => void
 }
 
-function DraftStepRow({ draft, index, total, onChange, onDelete, onMove }: DraftStepRowProps) {
+function DraftStepRow({ draft, index, total, formFields, onChange, onDelete, onMove }: DraftStepRowProps) {
   const inputStyle: React.CSSProperties = {
     background: '#1a1a1a',
     border: `1px solid ${C.border}`,
@@ -1061,13 +1503,21 @@ function DraftStepRow({ draft, index, total, onChange, onDelete, onMove }: Draft
         <button style={{ ...btn(), padding: '2px 7px' }} onClick={() => onMove(1)} disabled={index === total - 1} title="Move down">↓</button>
         <button style={{ ...btn(false, true), padding: '2px 7px' }} onClick={onDelete} title="Delete step">×</button>
       </div>
-      <textarea
-        style={{ ...inputStyle, width: '100%', boxSizing: 'border-box', minHeight: 60, fontFamily: 'monospace', resize: 'vertical', whiteSpace: 'pre' }}
-        placeholder="{}"
-        value={draft.config}
-        onChange={e => onChange({ config: e.target.value })}
-        spellCheck={false}
-      />
+      {draft.step_type === 'mutation' ? (
+        <MutationStepEditor
+          configStr={draft.config}
+          formFields={formFields}
+          onChange={cfg => onChange({ config: cfg })}
+        />
+      ) : (
+        <textarea
+          style={{ ...inputStyle, width: '100%', boxSizing: 'border-box', minHeight: 60, fontFamily: 'monospace', resize: 'vertical', whiteSpace: 'pre' }}
+          placeholder="{}"
+          value={draft.config}
+          onChange={e => onChange({ config: e.target.value })}
+          spellCheck={false}
+        />
+      )}
     </div>
   )
 }

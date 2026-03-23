@@ -12,6 +12,37 @@ import (
 	"go.uber.org/zap"
 )
 
+// GetManagedTableColumns handles GET .../connectors/:id/columns.
+// Returns all column definitions for a Lima Table connector.
+func GetManagedTableColumns(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID := chi.URLParam(r, "workspaceID")
+		connectorID := chi.URLParam(r, "connectorID")
+
+		conn, err := s.GetConnector(r.Context(), workspaceID, connectorID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		if conn.Type != model.ConnectorTypeManaged {
+			respondErr(w, http.StatusUnprocessableEntity, "wrong_type",
+				fmt.Sprintf("columns endpoint is only for managed connectors, got %s", conn.Type))
+			return
+		}
+
+		cols, err := s.GetManagedTableColumns(r.Context(), connectorID)
+		if err != nil {
+			log.Error("get managed table columns", zap.String("connector_id", connectorID), zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to get columns")
+			return
+		}
+		if cols == nil {
+			cols = []model.ManagedTableColumn{}
+		}
+		respond(w, http.StatusOK, map[string]any{"columns": cols})
+	}
+}
+
 // SetManagedTableColumns handles PUT .../connectors/:id/columns.
 // Replaces all column definitions for a Lima Table connector.
 func SetManagedTableColumns(s *store.Store, log *zap.Logger) http.HandlerFunc {

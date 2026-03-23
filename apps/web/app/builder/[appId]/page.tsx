@@ -290,11 +290,20 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const publishBlockerMessage = publishBlocked ? formatProductionIssues(publishIssues) : ''
   const workflowTriggerTargets = history.doc
     .filter(node => node.id !== 'root')
-    .map(node => ({
-      id: node.id,
-      label: `${node.id} (${node.element})`,
-      element: node.element,
-    }))
+    .map(node => {
+      const fields = node.element === 'form'
+        ? (node.style?.fields ?? node.with?.fields ?? '')
+            .split(',')
+            .map((f: string) => f.trim())
+            .filter(Boolean)
+        : undefined
+      return {
+        id: node.id,
+        label: `${node.id} (${node.element})`,
+        element: node.element,
+        fields,
+      }
+    })
 
   if (loading) return null
 
