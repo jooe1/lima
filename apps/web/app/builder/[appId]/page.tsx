@@ -42,8 +42,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [showPublications, setShowPublications] = useState(false)
   const [publications, setPublications] = useState<AppPublication[]>([])
   const [pubLoading, setPubLoading] = useState(false)
-  // 'inspector' | 'chat' | 'workflows' — controls the right-hand panel
-  const [rightPanel, setRightPanel] = useState<'inspector' | 'chat' | 'workflows'>('inspector')
+  // 'inspector' | 'chat' — controls the right-hand panel
+  const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector')
+  const [showWorkflowModal, setShowWorkflowModal] = useState(false)
   // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
   const [nodeMetadata, setNodeMetadata] = useState<Record<string, { manuallyEdited: boolean }>>({})
   const [showAppSettings, setShowAppSettings] = useState(false)
@@ -530,9 +531,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           💬
         </button>
         <button
-          onClick={() => setRightPanel('workflows')}
+          onClick={() => setShowWorkflowModal(v => !v)}
           title="Workflows"
-          style={{ ...iconBtn(true), background: rightPanel === 'workflows' ? '#161616' : 'transparent', borderColor: rightPanel === 'workflows' ? '#333' : '#1e1e1e' }}
+          style={{ ...iconBtn(true), background: showWorkflowModal ? '#161616' : 'transparent', borderColor: showWorkflowModal ? '#333' : '#1e1e1e' }}
         >
           ⚡
         </button>
@@ -614,12 +615,43 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               }}
             />
           </div>
-        ) : rightPanel === 'workflows' ? (
-          <div style={{ width: 340, flexShrink: 0, borderLeft: '1px solid #1a1a1a', overflow: 'hidden' }}>
-            <WorkflowEditor appId={appId} triggerTargets={workflowTriggerTargets} />
-          </div>
         ) : null}
       </div>
+
+      {/* Workflow modal */}
+      {showWorkflowModal && (
+        <div
+          onClick={() => setShowWorkflowModal(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 500,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 'min(760px, 95vw)', height: 'min(85vh, 800px)',
+              background: '#0a0a0a', border: '1px solid #2a2a2a', borderRadius: 8,
+              display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative',
+            }}
+          >
+            <button
+              onClick={() => setShowWorkflowModal(false)}
+              title="Close"
+              style={{
+                position: 'absolute', top: 8, right: 10, zIndex: 1,
+                background: 'transparent', border: 'none', color: '#555',
+                fontSize: '1rem', cursor: 'pointer', lineHeight: 1, padding: '2px 6px',
+              }}
+            >
+              ✕
+            </button>
+            <div style={{ flex: 1, overflow: 'hidden' }}>
+              <WorkflowEditor appId={appId} triggerTargets={workflowTriggerTargets} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Publish dialog */}
       {showPublishDialog && (
