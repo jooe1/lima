@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,6 +97,10 @@ func CreateConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, lo
 			respondErr(w, http.StatusUnprocessableEntity, "validation_error", "unsupported connector type")
 			return
 		}
+		// Managed (Lima Table) connectors need no external credentials.
+		if body.Type == model.ConnectorTypeManaged && len(body.Credentials) == 0 {
+			body.Credentials = json.RawMessage(`{}`)
+		}
 		if len(body.Credentials) == 0 {
 			respondErr(w, http.StatusUnprocessableEntity, "validation_error", "credentials are required")
 			return
@@ -117,8 +120,9 @@ func CreateConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, lo
 			return
 		}
 
-		// Kick off schema discovery. Non-fatal if Redis is unavailable.
-		if enq != nil && conn.Type != model.ConnectorTypeCSV {
+		// Kick off schema discovery. Not needed for managed connectors whose
+		// schema is populated directly when columns are defined.
+		if enq != nil && conn.Type != model.ConnectorTypeManaged {
 			if err := enq.EnqueueSchema(r.Context(), model.SchemaJobPayload{
 				ConnectorID: conn.ID,
 				WorkspaceID: workspaceID,
@@ -188,7 +192,7 @@ func PatchConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, log
 
 		// If credentials changed, re-trigger schema discovery for connectors that
 		// can derive schema directly from their stored credentials.
-		if len(encCreds) > 0 && enq != nil && conn.Type != model.ConnectorTypeCSV {
+		if len(encCreds) > 0 && enq != nil && conn.Type != model.ConnectorTypeManaged {
 			if err := enq.EnqueueSchema(r.Context(), model.SchemaJobPayload{
 				ConnectorID: connectorID,
 				WorkspaceID: workspaceID,
@@ -379,13 +383,12 @@ func TestConnector(cfg *config.Config, s *store.Store, log *zap.Logger) http.Han
 			}
 			testErr = testGraphQLConn(ctx, creds)
 
-		case model.ConnectorTypeCSV:
-			// CSV connectors are validated by checking whether any data has been
-			// uploaded rather than by inspecting credentials (which are empty for
-			// UI-created CSV connectors).
-			_, testErr = s.GetLatestCSVUpload(r.Context(), connectorID)
-			if errors.Is(testErr, store.ErrNotFound) {
-				testErr = fmt.Errorf("csv connector has no data; upload a CSV file via POST /import first")
+		case model.ConnectorTypeManaged:
+			// Lima Table connectors are valid once columns have been defined.
+			var cols []model.ManagedTableColumn
+			cols, testErr = s.GetManagedTableColumns(r.Context(), connectorID)
+			if testErr == nil && len(cols) == 0 {
+				testErr = fmt.Errorf("Lima Table has no columns defined; use PUT /columns to define the schema first")
 			}
 
 		default:
@@ -401,112 +404,6 @@ func TestConnector(cfg *config.Config, s *store.Store, log *zap.Logger) http.Han
 			return
 		}
 		respond(w, http.StatusOK, map[string]any{"ok": true})
-	}
-}
-
-// ImportCSV handles POST .../connectors/:id/import.
-// It accepts a multipart/form-data upload with a "file" field containing a CSV
-// (first row = column headers). Parses the CSV, persists all rows in the
-// csv_uploads table, updates the connector's schema_cache with column-only
-// metadata, and returns {"columns": [...], "rows": [[...]], "row_count": N}.
-func ImportCSV(s *store.Store, log *zap.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		workspaceID := chi.URLParam(r, "workspaceID")
-		connectorID := chi.URLParam(r, "connectorID")
-		claims, _ := ClaimsFromContext(r.Context())
-
-		conn, err := s.GetConnector(r.Context(), workspaceID, connectorID)
-		if err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		if conn.Type != model.ConnectorTypeCSV {
-			respondErr(w, http.StatusUnprocessableEntity, "wrong_type",
-				fmt.Sprintf("import is only supported for CSV connectors, got %s", conn.Type))
-			return
-		}
-
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
-			respondErr(w, http.StatusBadRequest, "bad_request", "failed to parse multipart form")
-			return
-		}
-		file, fileHeader, err := r.FormFile("file")
-		if err != nil {
-			respondErr(w, http.StatusBadRequest, "bad_request", `"file" field is required in the multipart form`)
-			return
-		}
-		defer file.Close()
-
-		reader := csv.NewReader(file)
-		reader.TrimLeadingSpace = true
-		reader.LazyQuotes = true
-
-		records, err := reader.ReadAll()
-		if err != nil {
-			respondErr(w, http.StatusUnprocessableEntity, "parse_error", "failed to parse CSV: "+err.Error())
-			return
-		}
-		if len(records) == 0 {
-			respondErr(w, http.StatusUnprocessableEntity, "empty_file", "CSV file is empty")
-			return
-		}
-
-		columns := records[0]
-		dataRows := records[1:]
-		if dataRows == nil {
-			dataRows = [][]string{}
-		}
-
-		// Build column metadata.
-		colMeta := make([]map[string]any, len(columns))
-		for i, c := range columns {
-			colMeta[i] = map[string]any{"name": c, "type": "text", "nullable": true}
-		}
-
-		// Build full row maps — no row cap; all rows are persisted.
-		rowMaps := make([]map[string]any, 0, len(dataRows))
-		for _, rec := range dataRows {
-			row := make(map[string]any, len(columns))
-			for i, col := range columns {
-				if i < len(rec) {
-					row[col] = rec[i]
-				} else {
-					row[col] = nil
-				}
-			}
-			rowMaps = append(rowMaps, row)
-		}
-
-		// Persist the upload. All rows are stored in the csv_uploads table.
-		var filename *string
-		if fileHeader != nil && fileHeader.Filename != "" {
-			filename = &fileHeader.Filename
-		}
-		if _, err := s.CreateCSVUpload(r.Context(), connectorID, claims.UserID, filename, colMeta, rowMaps, len(dataRows)); err != nil {
-			log.Error("failed to persist CSV upload", zap.String("connector_id", connectorID), zap.Error(err))
-			respondErr(w, http.StatusInternalServerError, "db_error", "failed to save CSV data")
-			return
-		}
-
-		// Update schema_cache with column-only metadata (no row data) so that
-		// schema-discovery consumers (e.g. the builder) can still read column names.
-		schemaCache := map[string]any{
-			"type":       "csv",
-			"columns":    colMeta,
-			"total_rows": len(dataRows),
-		}
-		if schemaJSON, merr := json.Marshal(schemaCache); merr == nil {
-			if err := s.UpdateConnectorSchema(r.Context(), connectorID, schemaJSON); err != nil {
-				log.Warn("failed to update CSV schema_cache metadata",
-					zap.String("connector_id", connectorID), zap.Error(err))
-			}
-		}
-
-		respond(w, http.StatusOK, map[string]any{
-			"columns":   columns,
-			"rows":      dataRows,
-			"row_count": len(dataRows),
-		})
 	}
 }
 
@@ -615,7 +512,7 @@ func applyRestAuth(req *http.Request, creds model.RestCredentials) {
 func isValidConnectorType(t model.ConnectorType) bool {
 	switch t {
 	case model.ConnectorTypePostgres, model.ConnectorTypeMySQL, model.ConnectorTypeMSSQL,
-		model.ConnectorTypeREST, model.ConnectorTypeGraphQL, model.ConnectorTypeCSV:
+		model.ConnectorTypeREST, model.ConnectorTypeGraphQL, model.ConnectorTypeManaged:
 		return true
 	}
 	return false
@@ -697,61 +594,55 @@ func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 			}
 			respond(w, http.StatusOK, result)
 
-		case model.ConnectorTypeCSV:
-			// Resolve CSV data from the dedicated csv_uploads table.
-			// If the caller supplies an app_version_id, serve the snapshot
-			// recorded at publish time so published apps see immutable data.
-			var upload *model.CSVUpload
+		case model.ConnectorTypeManaged:
+			// Serve rows from Lima's managed table storage.
+			// If the caller supplies an app_version_id, serve the publish-time
+			// snapshot so published apps see deterministic, immutable data.
+			var colNames []string
+			var outRows []map[string]any
 			if req.AppVersionID != "" {
-				conn, cerr := s.GetConnector(ctx, workspaceID, connectorID)
-				if cerr != nil {
-					handleStoreErr(w, cerr)
+				snap, serr := s.GetManagedSnapshotForVersion(ctx, req.AppVersionID, rec.Name)
+				if serr != nil && !errors.Is(serr, store.ErrNotFound) {
+					log.Error("get managed snapshot for version", zap.Error(serr))
+					respondErr(w, http.StatusInternalServerError, "db_error", "failed to load managed table data")
 					return
 				}
-				uploadID, serr := s.GetCSVSnapshotForVersion(ctx, req.AppVersionID, conn.Name)
-				if errors.Is(serr, store.ErrNotFound) {
-					// Snapshot not found — fall back to latest upload.
-					upload, serr = s.GetLatestCSVUpload(ctx, connectorID)
-				} else if serr == nil {
-					upload, serr = s.GetCSVUploadByID(ctx, uploadID)
-				}
-				if serr != nil {
-					if errors.Is(serr, store.ErrNotFound) {
-						respondErr(w, http.StatusUnprocessableEntity, "no_data",
-							"CSV data not available; use POST /import to upload a CSV file first")
-						return
+				if snap != nil {
+					for _, c := range snap.Columns {
+						if name, ok := c["name"].(string); ok {
+							colNames = append(colNames, name)
+						}
 					}
-					log.Error("resolve csv upload for version", zap.Error(serr))
-					respondErr(w, http.StatusInternalServerError, "db_error", "failed to load CSV data")
-					return
+					outRows = snap.Rows
 				}
-			} else {
-				var cerr error
-				upload, cerr = s.GetLatestCSVUpload(ctx, connectorID)
-				if errors.Is(cerr, store.ErrNotFound) {
-					respondErr(w, http.StatusUnprocessableEntity, "no_data",
-						"CSV data not available; use POST /import to upload a CSV file first")
-					return
-				}
+			}
+			if colNames == nil {
+				// Live data path (no version id supplied, or no snapshot exists).
+				cols, cerr := s.GetManagedTableColumns(ctx, connectorID)
 				if cerr != nil {
-					log.Error("get latest csv upload", zap.Error(cerr))
-					respondErr(w, http.StatusInternalServerError, "db_error", "failed to load CSV data")
+					log.Error("get managed table columns", zap.Error(cerr))
+					respondErr(w, http.StatusInternalServerError, "db_error", "failed to load managed table schema")
 					return
 				}
-			}
-
-			cacheCols := make([]string, 0, len(upload.Columns))
-			for _, c := range upload.Columns {
-				if name, ok := c["name"].(string); ok {
-					cacheCols = append(cacheCols, name)
+				for _, c := range cols {
+					colNames = append(colNames, c.Name)
+				}
+				tableRows, cerr := s.ListManagedTableRows(ctx, connectorID)
+				if cerr != nil {
+					log.Error("list managed table rows", zap.Error(cerr))
+					respondErr(w, http.StatusInternalServerError, "db_error", "failed to load managed table rows")
+					return
+				}
+				outRows = make([]map[string]any, len(tableRows))
+				for i, r := range tableRows {
+					outRows[i] = r.Data
 				}
 			}
-			outRows := upload.Rows
 			if outRows == nil {
 				outRows = []map[string]any{}
 			}
 			respond(w, http.StatusOK, &model.DashboardQueryResponse{
-				Columns:  cacheCols,
+				Columns:  colNames,
 				Rows:     outRows,
 				RowCount: len(outRows),
 			})

@@ -334,8 +334,7 @@ var (
 
 const workflowHTTPResponseLimit = 1 << 20
 
-// executeQueryStep runs a SQL query against a connector and returns row results.
-// Only Postgres is supported in the first pass; other types return a stub.
+// executeQueryStep runs a query against a connector and returns row results.
 func executeQueryStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger,
 	step wfStep, inputData map[string]any,
 ) (any, error) {
@@ -343,17 +342,24 @@ func executeQueryStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Poo
 	if connectorID == "" {
 		return nil, fmt.Errorf("query step %q missing connector_id in config", step.name)
 	}
+
+	rec, err := fetchConnectorForRun(ctx, pool, connectorID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch connector %s: %w", connectorID, err)
+	}
+
+	// Managed (Lima Table) connectors query Lima's own DB — no credentials needed.
+	if rec.connectorType == "managed" {
+		return runManagedQueryStep(ctx, pool, connectorID)
+	}
+
+	// All other connector types require a SQL query string.
 	sql, _ := step.config["sql"].(string)
 	if sql == "" {
 		return nil, fmt.Errorf("query step %q missing sql in config", step.name)
 	}
 	if wfMutationRe.MatchString(sql) {
 		return nil, fmt.Errorf("query step %q: mutation SQL is not allowed in query steps", step.name)
-	}
-
-	rec, err := fetchConnectorForRun(ctx, pool, connectorID)
-	if err != nil {
-		return nil, fmt.Errorf("fetch connector %s: %w", connectorID, err)
 	}
 
 	plainCreds, err := cryptoutil.DecryptWithRotation(cfg.CredentialsEncryptionKey, cfg.CredentialsEncryptionKeyPrevious, rec.encryptedCredentials)
@@ -388,6 +394,38 @@ func executeQueryStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Poo
 			zap.String("type", rec.connectorType))
 		return map[string]any{"note": "unsupported connector type: " + rec.connectorType}, nil
 	}
+}
+
+// runManagedQueryStep reads all live rows from a Lima-managed table.
+func runManagedQueryStep(ctx context.Context, pool *pgxpool.Pool, connectorID string) (any, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT data FROM managed_table_rows
+		 WHERE connector_id = $1 AND deleted_at IS NULL
+		 ORDER BY created_at`,
+		connectorID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query managed table: %w", err)
+	}
+	defer rows.Close()
+
+	var result []map[string]any
+	for rows.Next() {
+		var dataRaw []byte
+		if err := rows.Scan(&dataRaw); err != nil {
+			return nil, fmt.Errorf("scan managed row: %w", err)
+		}
+		var row map[string]any
+		_ = json.Unmarshal(dataRaw, &row)
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("managed table rows: %w", err)
+	}
+	if result == nil {
+		result = []map[string]any{}
+	}
+	return map[string]any{"rows": result, "row_count": len(result)}, nil
 }
 
 // runPostgresQueryStep connects to Postgres, executes a read-only SELECT,
@@ -838,8 +876,90 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 		}
 		return runGraphQLMutationStep(ctx, creds, step, inputData, log)
 
+	case "managed":
+		return runManagedMutationStep(ctx, pool, connectorID, step, inputData)
+
 	default:
 		return nil, fmt.Errorf("mutation step %q uses unsupported connector type %q", step.name, rec.connectorType)
+	}
+}
+
+// runManagedMutationStep executes an insert, update, or delete on a Lima-managed table.
+// Config fields:
+//
+//	operation  — "insert" | "update" | "delete"
+//	data       — map of column → value (for insert/update); supports {{input.x}} placeholders
+//	row_id     — row UUID to update or delete; supports {{input.x}}
+func runManagedMutationStep(ctx context.Context, pool *pgxpool.Pool, connectorID string,
+	step wfStep, inputData map[string]any,
+) (any, error) {
+	operation, _ := step.config["operation"].(string)
+	switch operation {
+	case "insert":
+		rawData, _ := step.config["data"].(map[string]any)
+		resolved := make(map[string]any, len(rawData))
+		for k, v := range rawData {
+			resolved[k] = resolveWorkflowValue(v, inputData)
+		}
+		dataJSON, err := json.Marshal(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("marshal insert data: %w", err)
+		}
+		// Use a sentinel system user UUID for worker-originated inserts.
+		const workerUserID = "00000000-0000-0000-0000-000000000000"
+		var rowID string
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO managed_table_rows (connector_id, data, created_by)
+			 VALUES ($1, $2, $3) RETURNING id`,
+			connectorID, dataJSON, workerUserID,
+		).Scan(&rowID); err != nil {
+			return nil, fmt.Errorf("insert managed row: %w", err)
+		}
+		return map[string]any{"row_id": rowID, "operation": "insert"}, nil
+
+	case "update":
+		rowID := resolveWorkflowString(step.config["row_id"], inputData)
+		if rowID == "" {
+			return nil, fmt.Errorf("managed update step %q missing row_id", step.name)
+		}
+		rawData, _ := step.config["data"].(map[string]any)
+		resolved := make(map[string]any, len(rawData))
+		for k, v := range rawData {
+			resolved[k] = resolveWorkflowValue(v, inputData)
+		}
+		dataJSON, err := json.Marshal(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("marshal update data: %w", err)
+		}
+		tag, err := pool.Exec(ctx,
+			`UPDATE managed_table_rows
+			 SET data = $1, updated_at = now()
+			 WHERE id = $2 AND connector_id = $3 AND deleted_at IS NULL`,
+			dataJSON, rowID, connectorID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("update managed row: %w", err)
+		}
+		return map[string]any{"rows_affected": tag.RowsAffected(), "operation": "update"}, nil
+
+	case "delete":
+		rowID := resolveWorkflowString(step.config["row_id"], inputData)
+		if rowID == "" {
+			return nil, fmt.Errorf("managed delete step %q missing row_id", step.name)
+		}
+		tag, err := pool.Exec(ctx,
+			`UPDATE managed_table_rows
+			 SET deleted_at = now(), updated_at = now()
+			 WHERE id = $1 AND connector_id = $2 AND deleted_at IS NULL`,
+			rowID, connectorID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("delete managed row: %w", err)
+		}
+		return map[string]any{"rows_affected": tag.RowsAffected(), "operation": "delete"}, nil
+
+	default:
+		return nil, fmt.Errorf("managed mutation step %q has unknown operation %q (must be insert, update, or delete)", step.name, operation)
 	}
 }
 

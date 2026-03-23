@@ -129,19 +129,19 @@ func PublishApp(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		// Snapshot the current CSV upload for every CSV connector in the workspace.
-		// This ensures published apps see immutable data even if the connector is
-		// updated or deleted later.
-		snapshots, serr := s.ListLatestCSVUploadsByWorkspace(r.Context(), workspaceID)
+		// Snapshot the current state of every Lima Table (managed) connector in
+		// the workspace so that published apps serve deterministic, immutable data
+		// even if the live table is edited or deleted later.
+		snapshots, serr := s.ListManagedSnapshotsByWorkspace(r.Context(), workspaceID)
 		if serr != nil {
-			log.Warn("failed to list CSV uploads for publish snapshot",
+			log.Warn("failed to list managed table snapshots for publish",
 				zap.String("app_version_id", version.ID), zap.Error(serr))
 		} else if len(snapshots) > 0 {
 			for i := range snapshots {
 				snapshots[i].AppVersionID = version.ID
 			}
-			if serr := s.CreateAppVersionCSVSnapshots(r.Context(), version.ID, snapshots); serr != nil {
-				log.Warn("failed to create CSV snapshots for published version",
+			if serr := s.CreateAppVersionManagedSnapshots(r.Context(), version.ID, snapshots); serr != nil {
+				log.Warn("failed to create managed table snapshots for published version",
 					zap.String("app_version_id", version.ID), zap.Error(serr))
 			}
 		}

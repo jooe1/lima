@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -93,8 +91,8 @@ func handleSchema(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) jobHa
 			schemaJSON, err = discoverMSSQLSchema(ctx, plainCreds)
 		case "graphql":
 			schemaJSON, err = discoverGraphQLSchema(ctx, plainCreds)
-		case "csv":
-			schemaJSON, err = discoverCSVSchema(plainCreds)
+		case "managed":
+			schemaJSON, err = discoverManagedTableSchema(ctx, pool, p.ConnectorID)
 		default:
 			log.Info("schema discovery not supported for type",
 				zap.String("type", rec.connectorType),
@@ -412,105 +410,45 @@ func discoverGraphQLSchema(ctx context.Context, plainCreds []byte) ([]byte, erro
 	return b, nil
 }
 
-// ---- CSV -------------------------------------------------------------------
+// ---- Managed (Lima Table) -------------------------------------------------
 
-type csvCreds struct {
-	// Data holds the raw CSV file content encoded as standard base64.
-	Data      string `json:"data"`
-	HasHeader bool   `json:"has_header"`
-	// Delimiter is a single-character separator (default: ",").
-	Delimiter string `json:"delimiter,omitempty"`
-}
-
-// discoverCSVSchema parses inline base64-encoded CSV credentials, extracts
-// the column names (or synthesises generic names), and stores up to 5 sample
-// rows together with the column schema. The result is stored in schema_cache
-// so that later queries can read data without re-parsing credentials.
-func discoverCSVSchema(plainCreds []byte) ([]byte, error) {
-	var creds csvCreds
-	if err := json.Unmarshal(plainCreds, &creds); err != nil {
-		return nil, fmt.Errorf("parse csv credentials: %w", err)
-	}
-	if creds.Data == "" {
-		return nil, fmt.Errorf("csv credentials are missing the 'data' field")
-	}
-
-	raw, err := base64.StdEncoding.DecodeString(creds.Data)
+// discoverManagedTableSchema reads column definitions from managed_table_columns
+// and builds a schema_cache blob. No credentials are needed because the data
+// lives in Lima's own database.
+func discoverManagedTableSchema(ctx context.Context, pool *pgxpool.Pool, connectorID string) ([]byte, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT name, col_type, nullable FROM managed_table_columns
+		 WHERE connector_id = $1 ORDER BY col_order`,
+		connectorID,
+	)
 	if err != nil {
-		// Try unpadded base64.
-		raw, err = base64.RawStdEncoding.DecodeString(creds.Data)
-		if err != nil {
-			return nil, fmt.Errorf("decode csv data (expected standard base64): %w", err)
+		return nil, fmt.Errorf("query managed columns: %w", err)
+	}
+	defer rows.Close()
+
+	type col struct {
+		Name     string `json:"name"`
+		ColType  string `json:"col_type"`
+		Nullable bool   `json:"nullable"`
+	}
+	var cols []col
+	for rows.Next() {
+		var c col
+		if err := rows.Scan(&c.Name, &c.ColType, &c.Nullable); err != nil {
+			return nil, fmt.Errorf("scan managed column: %w", err)
 		}
+		cols = append(cols, c)
 	}
-
-	delim := ','
-	if creds.Delimiter != "" {
-		if r := []rune(creds.Delimiter); len(r) > 0 {
-			delim = r[0]
-		}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-
-	r := csv.NewReader(bytes.NewReader(raw))
-	r.Comma = delim
-	r.TrimLeadingSpace = true
-	r.LazyQuotes = true
-
-	records, err := r.ReadAll()
-	if err != nil {
-		return nil, fmt.Errorf("parse csv: %w", err)
-	}
-	if len(records) == 0 {
-		return nil, fmt.Errorf("csv file is empty")
-	}
-
-	var cols []string
-	dataStart := 0
-	if creds.HasHeader {
-		cols = records[0]
-		dataStart = 1
-	} else {
-		cols = make([]string, len(records[0]))
-		for i := range cols {
-			cols[i] = fmt.Sprintf("col%d", i+1)
-		}
-	}
-
-	// Build column metadata.
-	columns := make([]tableColumn, len(cols))
-	for i, c := range cols {
-		columns[i] = tableColumn{Name: c, Type: "text", Nullable: true}
-	}
-
-	// Store up to 100 rows as parsed data in the schema cache so the query
-	// endpoint can serve results without touching the encrypted credentials.
-	endRow := len(records)
-	if endRow-dataStart > 100 {
-		endRow = dataStart + 100
-	}
-	dataRows := make([]map[string]any, 0, endRow-dataStart)
-	for _, rec := range records[dataStart:endRow] {
-		row := make(map[string]any, len(cols))
-		for i, col := range cols {
-			if i < len(rec) {
-				row[col] = rec[i]
-			} else {
-				row[col] = nil
-			}
-		}
-		dataRows = append(dataRows, row)
-	}
-
-	totalRows := len(records) - dataStart
 
 	b, err := json.Marshal(map[string]any{
-		"type":       "csv",
-		"columns":    columns,
-		"rows":       dataRows,
-		"total_rows": totalRows,
+		"type":    "managed",
+		"columns": cols,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal csv schema: %w", err)
+		return nil, fmt.Errorf("marshal managed schema: %w", err)
 	}
 	return b, nil
 }

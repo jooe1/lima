@@ -380,6 +380,7 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
   const selectedConnector = connectors.find(connector => connector.id === connectorId)
   const connectorType = selectedConnector?.type ?? node.with?.connectorType ?? ''
   const isCSVConnector = connectorType === 'csv'
+  const isManagedConnector = connectorType === 'managed'
   const isRESTConnector = connectorType === 'rest'
   const restEndpoints = isRESTConnector
     ? ((selectedConnector?.schema_cache?.endpoints ?? []) as Array<{ label: string; path: string }>)
@@ -417,8 +418,10 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
         if (!cancelled && !res.error) {
           setPreview(prev => {
             // Keep a richer existing preview; only update when columns change.
-            if (prev && prev.columns.join(',') === res.columns.join(',')) return prev
-            return res
+            const prevCols = prev?.columns ?? []
+            const resCols = res.columns ?? []
+            if (prev && prevCols.join(',') === resCols.join(',')) return prev
+            return { ...res, columns: resCols }
           })
         }
       } catch {
@@ -531,9 +534,11 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
         </select>
       </div>
 
-      {isCSVConnector ? (
+      {isCSVConnector || isManagedConnector ? (
         <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
-          CSV connectors use the imported rows directly. SQL is not used here.
+          {isManagedConnector
+            ? 'Lima Table — all rows are loaded automatically. No SQL needed.'
+            : 'CSV connectors use the imported rows directly. SQL is not used here.'}
         </div>
       ) : isRESTConnector ? (
         /* REST connector: endpoint picker (named) or path input (custom / no endpoints defined) */

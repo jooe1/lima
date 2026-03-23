@@ -673,7 +673,7 @@ export function runConnectorQuery(
 
 // ---- Connectors (Phase 4) --------------------------------------------------
 
-export type ConnectorType = 'postgres' | 'mysql' | 'mssql' | 'rest' | 'graphql' | 'csv'
+export type ConnectorType = 'postgres' | 'mysql' | 'mssql' | 'rest' | 'graphql' | 'managed'
 
 export interface Connector {
   id: string
@@ -753,21 +753,84 @@ export function getConnectorSchema(workspaceId: string, connectorId: string) {
   )
 }
 
-// ---- CSV import (Phase 4) --------------------------------------------------
+// ---- Managed table (Lima Table) -------------------------------------------
 
-export interface CSVImportResponse {
-  columns: string[]
-  rows: string[][]
-  row_count: number
+export interface ManagedTableColumn {
+  id: string
+  name: string
+  col_type: string
+  nullable: boolean
+  col_order: number
 }
 
-/**
- * Upload a CSV file to a CSV-type connector via multipart form.
- * The first row of the CSV is treated as column headers.
- * The server stores the parsed data in the connector's schema_cache so it can
- * be served by runConnectorQuery.
- */
-export function importCSV(workspaceId: string, connectorId: string, file: File) {
+export interface ManagedTableRow {
+  id: string
+  connector_id: string
+  data: Record<string, unknown>
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export function getManagedTableColumns(workspaceId: string, connectorId: string) {
+  return request<{ columns: ManagedTableColumn[] }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/columns`,
+  )
+}
+
+export function setManagedTableColumns(
+  workspaceId: string,
+  connectorId: string,
+  columns: Array<{ name: string; col_type: string; nullable: boolean }>,
+) {
+  return request<{ columns: ManagedTableColumn[] }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/columns`,
+    { method: 'PUT', body: JSON.stringify({ columns }) },
+  )
+}
+
+export function listManagedTableRows(workspaceId: string, connectorId: string) {
+  return request<{ rows: ManagedTableRow[] }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/rows`,
+  )
+}
+
+export function insertManagedTableRow(
+  workspaceId: string,
+  connectorId: string,
+  data: Record<string, unknown>,
+) {
+  return request<{ row: ManagedTableRow }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/rows`,
+    { method: 'POST', body: JSON.stringify({ data }) },
+  )
+}
+
+export function updateManagedTableRow(
+  workspaceId: string,
+  connectorId: string,
+  rowId: string,
+  data: Record<string, unknown>,
+) {
+  return request<{ row: ManagedTableRow }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/rows/${rowId}`,
+    { method: 'PATCH', body: JSON.stringify({ data }) },
+  )
+}
+
+export function deleteManagedTableRow(workspaceId: string, connectorId: string, rowId: string) {
+  return request<void>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/rows/${rowId}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function seedManagedTableFromCSV(
+  workspaceId: string,
+  connectorId: string,
+  file: File,
+  replace = false,
+) {
   const token = getToken()
   const headers: Record<string, string> = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
@@ -775,16 +838,18 @@ export function importCSV(workspaceId: string, connectorId: string, file: File) 
   const body = new FormData()
   body.append('file', file)
 
-  return fetch(
-    `${API_BASE}/v1/workspaces/${workspaceId}/connectors/${connectorId}/import`,
-    { method: 'POST', headers, body },
-  ).then(async (res) => {
+  const url = `${API_BASE}/v1/workspaces/${workspaceId}/connectors/${connectorId}/seed${replace ? '?replace=true' : ''}`
+  return fetch(url, { method: 'POST', headers, body }).then(async (res) => {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ message: res.statusText }))
       throw new ApiError(res.status, err.error ?? 'unknown_error', err.message ?? res.statusText)
     }
-    return res.json() as Promise<CSVImportResponse>
+    return res.json() as Promise<{ rows_inserted: number; columns_created: number }>
   })
+}
+
+export function exportManagedTableCSVUrl(workspaceId: string, connectorId: string) {
+  return `${API_BASE}/v1/workspaces/${workspaceId}/connectors/${connectorId}/export.csv`
 }
 
 // ---- Audit log -------------------------------------------------------------

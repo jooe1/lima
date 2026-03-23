@@ -81,11 +81,11 @@ func GetConnectorSchema(cfg *config.Config, s *store.Store, enq *queue.Enqueuer,
 			return
 		}
 
-		if conn.Type == model.ConnectorTypeCSV {
+		if conn.Type == model.ConnectorTypeManaged {
 			respond(w, http.StatusOK, map[string]any{
 				"schema":     nil,
 				"refreshing": false,
-				"note":       "Upload a CSV file via POST /import to populate schema.",
+				"note":       "Define columns via PUT /columns to populate schema.",
 			})
 			return
 		}

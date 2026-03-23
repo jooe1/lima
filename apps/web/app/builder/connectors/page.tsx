@@ -4,9 +4,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../../../lib/auth'
 import {
   listConnectors, createConnector, patchConnector, deleteConnector,
-  testConnector, getConnectorSchema, importCSV, runConnectorQuery,
+  testConnector, getConnectorSchema, runConnectorQuery,
+  getManagedTableColumns, setManagedTableColumns,
+  listManagedTableRows, insertManagedTableRow, updateManagedTableRow, deleteManagedTableRow,
+  seedManagedTableFromCSV, exportManagedTableCSVUrl,
   type Connector, type ConnectorType, type TestConnectorResponse,
-  type ConnectorSchemaResponse, type CSVImportResponse,
+  type ConnectorSchemaResponse, type ManagedTableColumn, type ManagedTableRow,
   type DashboardQueryResponse,
 } from '../../../lib/api'
 import { ConnectorGrantsTab } from './ConnectorGrantsTab'
@@ -21,7 +24,7 @@ type ConnectorFormData = {
   credentials: Record<string, unknown>
 }
 
-const CONNECTOR_TYPES: ConnectorType[] = ['postgres', 'mysql', 'mssql', 'rest', 'graphql', 'csv']
+const CONNECTOR_TYPES: ConnectorType[] = ['postgres', 'mysql', 'mssql', 'rest', 'graphql', 'managed']
 
 const TYPE_COLORS: Record<ConnectorType, { bg: string; fg: string }> = {
   postgres: { bg: '#336791', fg: '#e5e5e5' },
@@ -29,7 +32,7 @@ const TYPE_COLORS: Record<ConnectorType, { bg: string; fg: string }> = {
   mssql: { bg: '#a91d22', fg: '#e5e5e5' },
   rest: { bg: '#854d0e', fg: '#fbbf24' },
   graphql: { bg: '#99015544', fg: '#e535ab' },
-  csv: { bg: '#16653433', fg: '#4ade80' },
+  managed: { bg: '#1e3a5f', fg: '#60a5fa' },
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +302,11 @@ function CredentialFields({ type, creds, onChange }: {
   creds: Record<string, unknown>
   onChange: (key: string, value: unknown) => void
 }) {
-  if (type === 'csv') return null
+  if (type === 'managed') return (
+    <p style={{ color: '#555', fontSize: '0.75rem', margin: '0 0 8px' }}>
+      Lima Table — no credentials needed. Define columns and manage rows after creating the connector.
+    </p>
+  )
 
   if (type === 'postgres' || type === 'mysql' || type === 'mssql') {
     return (
@@ -449,11 +456,13 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
-  // CSV upload
-  const [csvFile, setCsvFile] = useState<File | null>(null)
-  const [csvResult, setCsvResult] = useState<CSVImportResponse | null>(null)
-  const [csvLoading, setCsvLoading] = useState(false)
-  const [csvError, setCsvError] = useState('')
+  // Managed table
+  const [managedCols, setManagedCols] = useState<ManagedTableColumn[]>([])
+  const [managedColsLoaded, setManagedColsLoaded] = useState(false)
+  const [seedFile, setSeedFile] = useState<File | null>(null)
+  const [seedLoading, setSeedLoading] = useState(false)
+  const [seedResult, setSeedResult] = useState<{ rows_inserted: number; columns_created: number } | null>(null)
+  const [seedError, setSeedError] = useState('')
 
   // Query tester
   const [sql, setSql] = useState('')
@@ -469,9 +478,11 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
     setTestResult(null)
     setSchemaData(null)
     setConfirmDelete(false)
-    setCsvFile(null)
-    setCsvResult(null)
-    setCsvError('')
+    setManagedCols([])
+    setManagedColsLoaded(false)
+    setSeedFile(null)
+    setSeedResult(null)
+    setSeedError('')
     setSql('')
     setQueryResult(null)
     setQueryError('')
@@ -513,18 +524,27 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
     }
   }
 
-  async function handleCsvUpload() {
-    if (!csvFile) return
-    setCsvLoading(true)
-    setCsvError('')
-    setCsvResult(null)
+  async function handleLoadManagedCols() {
+    setManagedColsLoaded(true)
     try {
-      const res = await importCSV(workspaceId, c.id, csvFile)
-      setCsvResult(res)
+      const res = await getManagedTableColumns(workspaceId, c.id)
+      setManagedCols(res.columns ?? [])
+    } catch { /* ignore */ }
+  }
+
+  async function handleSeed(replace: boolean) {
+    if (!seedFile) return
+    setSeedLoading(true)
+    setSeedError('')
+    setSeedResult(null)
+    try {
+      const res = await seedManagedTableFromCSV(workspaceId, c.id, seedFile, replace)
+      setSeedResult(res)
+      handleLoadManagedCols()
     } catch (e: unknown) {
-      setCsvError(e instanceof Error ? e.message : 'Upload failed')
+      setSeedError(e instanceof Error ? e.message : 'Seed failed')
     } finally {
-      setCsvLoading(false)
+      setSeedLoading(false)
     }
   }
 
@@ -647,34 +667,67 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
         </div>
         {schemaObj ? <SchemaTree schema={schemaObj} /> : (
           <p style={{ color: '#444', fontSize: '0.8rem', margin: 0 }}>
-            {c.type === 'csv'
-              ? 'No schema yet. Upload a CSV file below to populate the schema and preview rows.'
+            {c.type === 'managed'
+              ? 'No schema yet. Define columns via the Lima Table section below.'
               : 'No schema discovered. The schema is refreshed asynchronously after connector creation.'}
           </p>
         )}
       </Section>
 
-      {/* CSV upload (csv type only) */}
-      {c.type === 'csv' && (
-        <Section title="CSV Upload">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+      {/* Lima Table (managed type only) */}
+      {c.type === 'managed' && (
+        <Section title="Lima Table">
+          {/* Columns */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ color: '#888', fontSize: '0.8rem' }}>Columns</span>
+              <button onClick={handleLoadManagedCols} style={ghostBtn}>Load</button>
+            </div>
+            {managedColsLoaded && (
+              managedCols.length === 0
+                ? <p style={{ color: '#444', fontSize: '0.75rem', margin: 0 }}>No columns defined yet. Seed from CSV to auto-create columns.</p>
+                : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {managedCols.map(col => (
+                      <span key={col.id} style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 99, background: '#1e293b', color: '#94a3b8' }}>
+                        {col.name} <span style={{ color: '#475569' }}>({col.col_type})</span>
+                      </span>
+                    ))}
+                  </div>
+            )}
+          </div>
+
+          {/* Seed from CSV */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <input
               type="file"
               accept=".csv"
-              onChange={e => setCsvFile(e.target.files?.[0] ?? null)}
+              onChange={e => setSeedFile(e.target.files?.[0] ?? null)}
               style={{ fontSize: '0.8rem', color: '#888' }}
             />
-            <button onClick={handleCsvUpload} disabled={csvLoading || !csvFile} style={primaryBtn}>
-              {csvLoading ? 'Uploading…' : 'Upload'}
+            <button onClick={() => handleSeed(false)} disabled={seedLoading || !seedFile} style={primaryBtn}>
+              {seedLoading ? 'Seeding…' : 'Append from CSV'}
+            </button>
+            <button onClick={() => handleSeed(true)} disabled={seedLoading || !seedFile} style={ghostBtn}>
+              Replace all rows
             </button>
           </div>
-          {csvError && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: 0 }}>{csvError}</p>}
-          {csvResult && (
-            <div style={{ fontSize: '0.8rem', color: '#888', marginTop: 4 }}>
-              <p style={{ margin: '0 0 4px' }}>{csvResult.row_count} row(s) imported.</p>
-              <p style={{ margin: 0, color: '#555' }}>Columns: {csvResult.columns.join(', ')}</p>
-            </div>
+          {seedError && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: '4px 0 0' }}>{seedError}</p>}
+          {seedResult && (
+            <p style={{ color: '#4ade80', fontSize: '0.8rem', margin: '4px 0 0' }}>
+              {seedResult.rows_inserted} row(s) inserted, {seedResult.columns_created} column(s) created.
+            </p>
           )}
+
+          {/* Export */}
+          <div style={{ marginTop: 10 }}>
+            <a
+              href={exportManagedTableCSVUrl(workspaceId, c.id)}
+              download
+              style={{ fontSize: '0.75rem', color: '#60a5fa', textDecoration: 'underline' }}
+            >
+              Export rows as CSV
+            </a>
+          </div>
         </Section>
       )}
 

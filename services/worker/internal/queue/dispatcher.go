@@ -2,20 +2,17 @@
 // Job types:
 //   - generation  — AI prompt processing, DSL emission, and canvas sync
 //   - schema       — connector schema and metadata discovery
-//   - import       — CSV/spreadsheet ingestion
 //   - workflow     — approved workflow action execution
 package queue
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/worker/internal/config"
-	"github.com/lima/worker/internal/cryptoutil"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -26,7 +23,6 @@ type JobType string
 const (
 	JobGeneration           JobType = "lima:jobs:generation"
 	JobSchema               JobType = "lima:jobs:schema"
-	JobImport               JobType = "lima:jobs:import"
 	JobWorkflow             JobType = "lima:jobs:workflow"
 	redisConnectMaxAttempts         = 10
 )
@@ -89,7 +85,6 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 	startPool(JobGeneration, d.cfg.GenerationWorkers, handleGeneration(d.cfg, d.pool, d.log))
 	startPool(JobSchema, d.cfg.SchemaWorkers, handleSchema(d.cfg, d.pool, d.log))
-	startPool(JobImport, d.cfg.ImportWorkers, handleImport(d.cfg, d.pool, d.log))
 	startPool(JobWorkflow, 1, handleWorkflow(d.cfg, d.pool, d.log)) // single-threaded for safety
 
 	<-ctx.Done()
@@ -128,59 +123,3 @@ func (d *Dispatcher) runLoop(ctx context.Context, jobType JobType, handler jobHa
 	}
 }
 
-// handleImport returns a jobHandler that processes CSV import jobs.
-// The payload follows the same shape as SchemaPayload. It fetches the
-// connector's encrypted credentials, runs CSV schema discovery (which also
-// parses the data rows from the base64-encoded CSV), and persists the result
-// in schema_cache so the runtime query endpoint can serve the data.
-func handleImport(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) jobHandler {
-	return func(ctx context.Context, payload []byte) error {
-		var p SchemaPayload
-		if err := json.Unmarshal(payload, &p); err != nil {
-			return fmt.Errorf("unmarshal import payload: %w", err)
-		}
-		if p.ConnectorID == "" {
-			return fmt.Errorf("import payload missing connector_id")
-		}
-		log.Info("import job started",
-			zap.String("connector_id", p.ConnectorID),
-			zap.String("workspace_id", p.WorkspaceID),
-		)
-
-		if pool == nil {
-			return fmt.Errorf("db pool unavailable — cannot run import for %s", p.ConnectorID)
-		}
-
-		rec, err := fetchConnectorRecord(ctx, pool, p.ConnectorID, p.WorkspaceID)
-		if err != nil {
-			return fmt.Errorf("fetch connector %s: %w", p.ConnectorID, err)
-		}
-		if rec.connectorType != "csv" {
-			return fmt.Errorf("import job only supports csv connectors, got %q", rec.connectorType)
-		}
-
-		plainCreds, err := cryptoutil.DecryptWithRotation(cfg.CredentialsEncryptionKey, cfg.CredentialsEncryptionKeyPrevious, rec.encryptedCredentials)
-		if err != nil {
-			return fmt.Errorf("decrypt credentials: %w", err)
-		}
-
-		schemaJSON, err := discoverCSVSchema(plainCreds)
-		if err != nil {
-			return fmt.Errorf("csv import for %s: %w", p.ConnectorID, err)
-		}
-
-		if _, err := pool.Exec(ctx,
-			`UPDATE connectors
-			 SET schema_cache = $2, schema_cached_at = now(), updated_at = now()
-			 WHERE id = $1`,
-			p.ConnectorID, schemaJSON,
-		); err != nil {
-			return fmt.Errorf("persist csv schema cache: %w", err)
-		}
-
-		log.Info("import job complete",
-			zap.String("connector_id", p.ConnectorID),
-		)
-		return nil
-	}
-}

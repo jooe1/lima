@@ -290,7 +290,7 @@ const (
 	ConnectorTypeMSSQL    ConnectorType = "mssql"
 	ConnectorTypeREST     ConnectorType = "rest"
 	ConnectorTypeGraphQL  ConnectorType = "graphql"
-	ConnectorTypeCSV      ConnectorType = "csv"
+	ConnectorTypeManaged  ConnectorType = "managed"
 )
 
 // RelationalCredentials holds connection parameters for SQL connectors.
@@ -351,29 +351,35 @@ type SchemaJobPayload struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
-// CSVUpload is a single file import for a CSV connector.
-// Row data lives here instead of in connectors.schema_cache so that:
-//   - The connectors table stays lean (no fat JSONB blobs on list queries).
-//   - All rows are persisted (no 100-row cap).
-//   - Multiple uploads are tracked over time.
-type CSVUpload struct {
-	ID          string           `json:"id"`
-	ConnectorID string           `json:"connector_id"`
-	Filename    *string          `json:"filename,omitempty"`
-	Columns     []map[string]any `json:"columns"`
-	Rows        []map[string]any `json:"rows"`
-	TotalRows   int              `json:"total_rows"`
-	UploadedBy  string           `json:"uploaded_by"`
-	UploadedAt  time.Time        `json:"uploaded_at"`
+// ManagedTableColumn defines one column in a Lima-managed table connector.
+type ManagedTableColumn struct {
+	ID          string `json:"id,omitempty"`
+	ConnectorID string `json:"connector_id,omitempty"`
+	Name        string `json:"name"`
+	ColType     string `json:"col_type"` // text | number | boolean | date
+	Nullable    bool   `json:"nullable"`
+	ColOrder    int    `json:"col_order,omitempty"`
 }
 
-// AppVersionCSVSnapshot records which CSV upload was live for a connector
-// name at the moment an app version was published, enabling published apps
-// to serve deterministic, immutable data.
-type AppVersionCSVSnapshot struct {
-	AppVersionID  string `json:"app_version_id"`
-	ConnectorName string `json:"connector_name"`
-	CSVUploadID   string `json:"csv_upload_id"`
+// ManagedTableRow is a single data row in a Lima-managed table connector.
+type ManagedTableRow struct {
+	ID          string         `json:"id"`
+	ConnectorID string         `json:"connector_id"`
+	Data        map[string]any `json:"data"`
+	CreatedBy   string         `json:"created_by"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}
+
+// AppVersionManagedSnapshot records the column definitions and row data for a
+// managed-table connector at the moment an app version was published, so that
+// published apps serve deterministic, immutable data.
+type AppVersionManagedSnapshot struct {
+	AppVersionID  string           `json:"app_version_id,omitempty"`
+	ConnectorName string           `json:"connector_name"`
+	Columns       []map[string]any `json:"columns"`
+	Rows          []map[string]any `json:"rows"`
+	TotalRows     int              `json:"total_rows"`
 }
 
 // ---- Approvals (Phase 5) ----------------------------------------------------

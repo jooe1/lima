@@ -203,9 +203,21 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						r.Get("/schema", handler.GetConnectorSchema(cfg, s, enq, log))
 						// Dashboard read-only query (Phase 6) — any workspace member may query
 						r.Post("/query", handler.RunQuery(cfg, s, log))
-						// CSV file import — builders and admins may upload data
+						// Lima Table (managed connector) — schema and row management
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
-							Post("/import", handler.ImportCSV(s, log))
+							Put("/columns", handler.SetManagedTableColumns(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+							Post("/seed", handler.SeedManagedTableFromCSV(s, log))
+						r.Get("/export.csv", handler.ExportManagedTableCSV(s, log))
+						r.Get("/rows", handler.ListManagedTableRows(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+							Post("/rows", handler.InsertManagedTableRow(s, log))
+						r.Route("/rows/{rowID}", func(r chi.Router) {
+							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+								Patch("/", handler.UpdateManagedTableRow(s, log))
+							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+								Delete("/", handler.DeleteManagedTableRow(s, log))
+						})
 						// Connector resource grants — workspace_admin only (Phase 2)
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Get("/grants", handler.ListConnectorGrants(s, log))

@@ -289,6 +289,11 @@ export function getConnectorQuerySQL(
   if (connectorType === 'csv') {
     return trimmed || 'SELECT * FROM csv'
   }
+  if (connectorType === 'managed') {
+    // Managed (Lima Table) connectors serve rows directly — no SQL.
+    // Return a sentinel so querySql is truthy and the preview fetch fires.
+    return 'SELECT * FROM managed'
+  }
   if (connectorType === 'rest') {
     // For REST connectors, sql holds the endpoint path (e.g. "/users").
     // Default to "/" so querySql is always truthy — the backend treats "/"

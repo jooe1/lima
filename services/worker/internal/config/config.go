@@ -20,7 +20,6 @@ type Config struct {
 	// Concurrency controls
 	GenerationWorkers int
 	SchemaWorkers     int
-	ImportWorkers     int
 }
 
 func getEnv(key, fallback string) string {
@@ -52,7 +51,6 @@ func Load() *Config {
 		OTELEndpoint:                     getEnv("OTEL_ENDPOINT", "http://otel-collector:4318"),
 		GenerationWorkers:                getInt("GENERATION_WORKERS", 4),
 		SchemaWorkers:                    getInt("SCHEMA_WORKERS", 2),
-		ImportWorkers:                    getInt("IMPORT_WORKERS", 2),
 		CredentialsEncryptionKey:         getEnv("CREDENTIALS_ENCRYPTION_KEY", getEnv("JWT_SECRET", "")),
 		CredentialsEncryptionKeyPrevious: getEnv("CREDENTIALS_ENCRYPTION_KEY_PREVIOUS", ""),
 	}
