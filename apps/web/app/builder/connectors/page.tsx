@@ -9,6 +9,7 @@ import {
   type ConnectorSchemaResponse, type CSVImportResponse,
   type DashboardQueryResponse,
 } from '../../../lib/api'
+import { ConnectorGrantsTab } from './ConnectorGrantsTab'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -460,6 +461,9 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
   const [queryLoading, setQueryLoading] = useState(false)
   const [queryError, setQueryError] = useState('')
 
+  // Active tab
+  const [activeTab, setActiveTab] = useState<'details' | 'permissions'>('details')
+
   // Reset state when connector changes
   useEffect(() => {
     setTestResult(null)
@@ -471,6 +475,7 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
     setSql('')
     setQueryResult(null)
     setQueryError('')
+    setActiveTab('details')
   }, [connector.id])
 
   async function handleTest() {
@@ -575,6 +580,42 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
         )}
       </div>
 
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #1a1a1a', marginBottom: '1rem' }}>
+        <button
+          onClick={() => setActiveTab('details')}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: '6px 14px', fontSize: '0.8rem', fontWeight: 500,
+            color: activeTab === 'details' ? '#e5e5e5' : '#555',
+            borderBottom: activeTab === 'details' ? '2px solid #2563eb' : '2px solid transparent',
+          }}
+        >
+          Details
+        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setActiveTab('permissions')}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              padding: '6px 14px', fontSize: '0.8rem', fontWeight: 500,
+              color: activeTab === 'permissions' ? '#e5e5e5' : '#555',
+              borderBottom: activeTab === 'permissions' ? '2px solid #2563eb' : '2px solid transparent',
+            }}
+          >
+            Permissions
+          </button>
+        )}
+      </div>
+
+      {/* Permissions tab */}
+      {activeTab === 'permissions' && isAdmin && (
+        <ConnectorGrantsTab workspaceId={workspaceId} connectorId={c.id} />
+      )}
+
+      {/* Details tab */}
+      {activeTab === 'details' && (<>
+
       {/* Test connection */}
       <Section title="Test connection">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -657,6 +698,8 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
         {queryError && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: '8px 0 0' }}>{queryError}</p>}
         {queryResult && <QueryResultTable result={queryResult} />}
       </Section>
+
+      </>)}
     </div>
   )
 }

@@ -204,6 +204,8 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
   if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
 
   const [status, setStatus] = useState<'idle' | 'pending' | 'done' | 'error'>('idle')
+  const [statusMessage, setStatusMessage] = useState('')
+  const { bumpRefreshSeq } = useDashboardFilters()
   const variant = node.style?.variant ?? 'primary'
   const bg = variant === 'danger' ? '#7f1d1d' : variant === 'secondary' ? '#1a1a1a' : '#1d4ed8'
   const hoverBg = variant === 'danger' ? '#991b1b' : variant === 'secondary' ? '#252525' : '#1e40af'
@@ -212,22 +214,36 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
   async function handleClick() {
     if (status === 'pending') return
     setStatus('pending')
+    setStatusMessage('')
     try {
-      const { createApproval } = await import('../../../lib/api')
-      await createApproval(workspaceId, {
-        app_id: appId,
-        description: `Button action: ${node.text ?? node.id}`,
-        payload: { node_id: node.id, element: node.element, app_id: appId },
-      })
+      if (node.action) {
+        const { triggerWorkflow } = await import('../../../lib/api')
+        const run = await triggerWorkflow(workspaceId, appId, node.action, {})
+        if (run.status === 'awaiting_approval') {
+          setStatusMessage('Submitted for approval')
+        } else {
+          setStatusMessage('Processing…')
+          bumpRefreshSeq()
+        }
+      } else {
+        const { createApproval } = await import('../../../lib/api')
+        await createApproval(workspaceId, {
+          app_id: appId,
+          description: `Button action: ${node.text ?? node.id}`,
+          payload: { node_id: node.id, element: node.element, app_id: appId },
+        })
+        setStatusMessage('Submitted for review')
+      }
       setStatus('done')
-      setTimeout(() => setStatus('idle'), 3000)
-    } catch {
+      setTimeout(() => { setStatus('idle'); setStatusMessage('') }, 3000)
+    } catch (err) {
       setStatus('error')
-      setTimeout(() => setStatus('idle'), 3000)
+      setStatusMessage(err instanceof Error ? err.message : 'An error occurred')
+      setTimeout(() => { setStatus('idle'); setStatusMessage('') }, 3000)
     }
   }
 
-  const label = status === 'pending' ? 'Submitting…' : status === 'done' ? 'Submitted for review' : status === 'error' ? 'Error' : (node.text ?? '')
+  const label = status === 'pending' ? 'Submitting…' : (status !== 'idle' && statusMessage) ? statusMessage : (node.text ?? '')
 
   return (
     <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem' }}>
@@ -279,7 +295,7 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const filterLinks = parseFilterLinks(node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn)
   const hasBinding = hasConnectorBinding(node)
   const querySql = getConnectorQuerySQL(connectorType, sql)
-  const { values: dashboardFilters } = useDashboardFilters()
+  const { values: dashboardFilters, refreshSeq } = useDashboardFilters()
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -314,7 +330,7 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [workspaceId, connectorId, connectorType, querySql])
+  }, [workspaceId, connectorId, connectorType, querySql, refreshSeq])
 
   const boundData = applyTableDataBinding(data, {
     filters: filterLinks.map(link => ({ column: link.column, value: dashboardFilters[link.widgetId] ?? '' })),
@@ -378,31 +394,49 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
   const fields = rawFields.split(',').map((f: string) => f.trim()).filter(Boolean)
   const [values, setValues] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<'idle' | 'pending' | 'done' | 'error'>('idle')
+  const [statusMessage, setStatusMessage] = useState('')
+  const { bumpRefreshSeq } = useDashboardFilters()
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (status === 'pending') return
     setStatus('pending')
+    setStatusMessage('')
     try {
-      const { createApproval } = await import('../../../lib/api')
-      await createApproval(workspaceId, {
-        app_id: appId,
-        description: `Form submission: ${node.id}`,
-        payload: { node_id: node.id, element: 'form', values, app_id: appId },
-      })
+      if (node.action) {
+        const { triggerWorkflow } = await import('../../../lib/api')
+        const inputData: Record<string, unknown> = { ...values }
+        const run = await triggerWorkflow(workspaceId, appId, node.action, inputData)
+        if (run.status === 'awaiting_approval') {
+          setStatusMessage('Submitted for approval')
+        } else {
+          setStatusMessage('Processing…')
+          bumpRefreshSeq()
+        }
+        setValues({})
+      } else {
+        const { createApproval } = await import('../../../lib/api')
+        await createApproval(workspaceId, {
+          app_id: appId,
+          description: `Form submission: ${node.id}`,
+          payload: { node_id: node.id, element: 'form', values, app_id: appId },
+        })
+        setStatusMessage('Submitted for review')
+        setValues({})
+      }
       setStatus('done')
-      setValues({})
-      setTimeout(() => setStatus('idle'), 4000)
-    } catch {
+      setTimeout(() => { setStatus('idle'); setStatusMessage('') }, 4000)
+    } catch (err) {
       setStatus('error')
-      setTimeout(() => setStatus('idle'), 3000)
+      setStatusMessage(err instanceof Error ? err.message : 'Submission failed. Try again.')
+      setTimeout(() => { setStatus('idle'); setStatusMessage('') }, 3000)
     }
   }
 
   if (status === 'done') {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4ade80', fontSize: '0.875rem' }}>
-        Submitted for review
+        {statusMessage || 'Submitted for review'}
       </div>
     )
   }
@@ -428,7 +462,7 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
         </div>
       ))}
       {status === 'error' && (
-        <p style={{ color: '#f87171', fontSize: '0.75rem', margin: '0 0 0.5rem' }}>Submission failed. Try again.</p>
+        <p style={{ color: '#f87171', fontSize: '0.75rem', margin: '0 0 0.5rem' }}>{statusMessage || 'Submission failed. Try again.'}</p>
       )}
       <button
         type="submit"
@@ -479,7 +513,7 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
   const hasBinding = hasConnectorBinding(node)
   const supportedType = isSupportedChartType(chartType)
   const querySql = getConnectorQuerySQL(connectorType, sql)
-  const { values: dashboardFilters } = useDashboardFilters()
+  const { values: dashboardFilters, refreshSeq } = useDashboardFilters()
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -512,7 +546,7 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
       .catch(err => { if (!cancelled) setError(String(err?.message ?? err)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [workspaceId, connectorId, connectorType, querySql])
+  }, [workspaceId, connectorId, connectorType, querySql, refreshSeq])
 
   const series = React.useMemo(
     () => buildChartSeries(data, {

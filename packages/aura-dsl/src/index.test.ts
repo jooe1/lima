@@ -126,3 +126,36 @@ describe('diff / applyDiff', () => {
     expect(resultMap['b']).toBeDefined()
   })
 })
+
+describe('action clause', () => {
+  it('parses an action clause on a button node', () => {
+    const doc = parse('button btn1 @ root text "Submit" action wf-abc-123 ;')
+    expect(doc[0]).toMatchObject({
+      element: 'button',
+      id: 'btn1',
+      parentId: 'root',
+      text: 'Submit',
+      action: 'wf-abc-123',
+    })
+  })
+
+  it('round-trips a node with an action clause', () => {
+    const source = `
+button submit-btn @ root
+  text "Submit"
+  action wf-abc-123
+;
+`
+    const doc1 = parse(source)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
+
+  it('nodes without action clause parse and serialize cleanly', () => {
+    const doc = parse('button btn @ root text "Cancel" ;')
+    expect(doc[0].action).toBeUndefined()
+    const src = serialize(doc)
+    expect(src).not.toContain('action')
+  })
+})

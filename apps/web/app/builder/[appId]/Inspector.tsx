@@ -6,6 +6,7 @@ import { WIDGET_REGISTRY, type WidgetType, type PropDef } from '@lima/widget-cat
 import { getGrid, CELL, COLS } from './CanvasEditor'
 import { listConnectors, runConnectorQuery, type Connector, type DashboardQueryResponse } from '../../../lib/api'
 import { applyTableDataBinding, getConnectorQuerySQL, getConnectorSchemaColumns, mergeColumns } from '../../../lib/tableBinding'
+import { WorkflowSelector } from './widgets/WorkflowSelector'
 
 interface Props {
   node: AuraNode | null
@@ -13,6 +14,7 @@ interface Props {
   onUpdate: (node: AuraNode) => void
   onDelete: (id: string) => void
   workspaceId: string
+  appId: string
 }
 
 /**
@@ -58,7 +60,7 @@ function setPropValue(node: AuraNode, propName: string, value: string): AuraNode
   return updated
 }
 
-export function Inspector({ node, doc, onUpdate, onDelete, workspaceId }: Props) {
+export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId }: Props) {
   if (!node) {
     return (
       <aside style={panelStyle}>
@@ -180,15 +182,30 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId }: Props)
       {/* Props section */}
       {meta && (
         <Section title="Props">
-          {Object.entries(meta.propSchema).map(([propName, def]) => (
-            <PropField
-              key={propName}
-              name={propName}
-              def={def}
-              value={getPropValue(n, propName)}
-              onChange={v => handlePropChange(propName, v)}
-            />
-          ))}
+          {Object.entries(meta.propSchema).map(([propName, def]) =>
+            def.type === 'workflow_trigger' ? (
+              <div key={propName}>
+                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  {def.label}
+                </label>
+                <WorkflowSelector
+                  workspaceId={workspaceId}
+                  appId={appId}
+                  triggerType={n.element === 'form' ? 'form_submit' : 'button_click'}
+                  value={n.action}
+                  onChange={workflowId => onUpdate({ ...n, manuallyEdited: true, action: workflowId })}
+                />
+              </div>
+            ) : (
+              <PropField
+                key={propName}
+                name={propName}
+                def={def}
+                value={getPropValue(n, propName)}
+                onChange={v => handlePropChange(propName, v)}
+              />
+            )
+          )}
         </Section>
       )}
 

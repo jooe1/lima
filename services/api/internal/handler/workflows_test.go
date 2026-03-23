@@ -1,12 +1,19 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/lima/api/internal/config"
 	"github.com/lima/api/internal/model"
+	"go.uber.org/zap"
 )
 
 type workflowRunCleanupStoreStub struct {
@@ -138,5 +145,261 @@ func TestNormalizeWorkflowTriggerConfigAcceptsWebhookSecret(t *testing.T) {
 	}
 	if got := config["secret_token_hash"]; got != "whsec_12345678" {
 		t.Fatalf("normalizeWorkflowTriggerConfig() secret = %v, want %q", got, "whsec_12345678")
+	}
+}
+
+// ---- end_user trigger path tests --------------------------------------------
+
+// endUserTriggerStoreStub is a test double for endUserTriggerStore.
+type endUserTriggerStoreStub struct {
+	wf       *model.WorkflowWithSteps
+	wfErr    error
+	grantMap map[string]bool // connectorID → has grant
+	grantErr error
+
+	run         *model.WorkflowRun
+	runErr      error
+	updateErr   error
+	approval    *model.Approval
+	approvalErr error
+	setErr      error
+	deleteErr   error
+
+	createdRun    bool
+	setApprovalID string
+	deletedRunIDs []string
+}
+
+func (s *endUserTriggerStoreStub) GetWorkflowWithSteps(_ context.Context, _, _ string) (*model.WorkflowWithSteps, error) {
+	return s.wf, s.wfErr
+}
+
+func (s *endUserTriggerStoreStub) HasResourceGrant(_ context.Context, _, _, connID, _, _, _ string) (bool, error) {
+	if s.grantErr != nil {
+		return false, s.grantErr
+	}
+	return s.grantMap[connID], nil
+}
+
+func (s *endUserTriggerStoreStub) CreateWorkflowRun(_ context.Context, _, _ string, _ *string, _ map[string]any) (*model.WorkflowRun, error) {
+	s.createdRun = true
+	return s.run, s.runErr
+}
+
+func (s *endUserTriggerStoreStub) UpdateWorkflowRunStatus(_ context.Context, _ string, _ model.WorkflowRunStatus) error {
+	return s.updateErr
+}
+
+func (s *endUserTriggerStoreStub) CreateApproval(_ context.Context, _ string, _ *string, _ *string, _ string, _ []byte, _ string) (*model.Approval, error) {
+	return s.approval, s.approvalErr
+}
+
+func (s *endUserTriggerStoreStub) SetWorkflowRunApproval(_ context.Context, _ string, approvalID string) error {
+	s.setApprovalID = approvalID
+	return s.setErr
+}
+
+func (s *endUserTriggerStoreStub) DeleteWorkflowRun(_ context.Context, _, runID string) error {
+	s.deletedRunIDs = append(s.deletedRunIDs, runID)
+	return s.deleteErr
+}
+
+// TestTriggerEndUserWorkflowRunGranted verifies that when the caller has a
+// valid "mutate" resource grant for every mutation-step connector, the helper
+// returns a run with status=awaiting_approval and the approval linked.
+func TestTriggerEndUserWorkflowRunGranted(t *testing.T) {
+	appID := "app-1"
+	wf := &model.WorkflowWithSteps{
+		Workflow: model.Workflow{ID: "wf-1", AppID: appID},
+		Steps: []model.WorkflowStep{
+			{StepType: model.StepTypeMutation, Config: map[string]any{"connector_id": "conn-1"}},
+			{StepType: model.StepTypeQuery, Config: map[string]any{"connector_id": "conn-no-check"}},
+		},
+	}
+	run := &model.WorkflowRun{ID: "run-1", Status: model.RunStatusPending}
+	approval := &model.Approval{ID: "apv-1"}
+	stub := &endUserTriggerStoreStub{
+		wf:       wf,
+		grantMap: map[string]bool{"conn-1": true},
+		run:      run,
+		approval: approval,
+	}
+
+	got, err := triggerEndUserWorkflowRun(
+		context.Background(), stub, "test-enc-key",
+		"company-1", "ws-1", "wf-1", "user-1", map[string]any{"k": "v"},
+	)
+	if err != nil {
+		t.Fatalf("triggerEndUserWorkflowRun() error = %v, want nil", err)
+	}
+	if got.Status != model.RunStatusAwaitingApproval {
+		t.Errorf("run.Status = %q, want %q", got.Status, model.RunStatusAwaitingApproval)
+	}
+	if got.ApprovalID == nil || *got.ApprovalID != "apv-1" {
+		t.Errorf("run.ApprovalID = %v, want \"apv-1\"", got.ApprovalID)
+	}
+	if stub.setApprovalID != "apv-1" {
+		t.Errorf("SetWorkflowRunApproval approval_id = %q, want \"apv-1\"", stub.setApprovalID)
+	}
+	if len(stub.deletedRunIDs) != 0 {
+		t.Errorf("DeleteWorkflowRun called unexpectedly: %v", stub.deletedRunIDs)
+	}
+}
+
+// TestTriggerEndUserWorkflowRunMissingGrant verifies that when the caller
+// lacks a "mutate" grant on a connector used in a mutation step, the helper
+// returns *errMutateGrantRequired with the connector ID and does NOT create a run.
+func TestTriggerEndUserWorkflowRunMissingGrant(t *testing.T) {
+	wf := &model.WorkflowWithSteps{
+		Workflow: model.Workflow{ID: "wf-1", AppID: "app-1"},
+		Steps: []model.WorkflowStep{
+			{StepType: model.StepTypeMutation, Config: map[string]any{"connector_id": "conn-secret"}},
+		},
+	}
+	stub := &endUserTriggerStoreStub{
+		wf:       wf,
+		grantMap: map[string]bool{"conn-secret": false},
+	}
+
+	_, err := triggerEndUserWorkflowRun(
+		context.Background(), stub, "test-enc-key",
+		"company-1", "ws-1", "wf-1", "user-no-grant", map[string]any{},
+	)
+	if err == nil {
+		t.Fatal("triggerEndUserWorkflowRun() error = nil, want *errMutateGrantRequired")
+	}
+	var grantErr *errMutateGrantRequired
+	if !errors.As(err, &grantErr) {
+		t.Fatalf("triggerEndUserWorkflowRun() error = %T %v, want *errMutateGrantRequired", err, err)
+	}
+	if grantErr.ConnectorID != "conn-secret" {
+		t.Errorf("errMutateGrantRequired.ConnectorID = %q, want \"conn-secret\"", grantErr.ConnectorID)
+	}
+	if stub.createdRun {
+		t.Error("CreateWorkflowRun must not be called when a grant check fails")
+	}
+}
+
+// ---- TriggerWorkflow HTTP handler tests ------------------------------------
+
+// triggerWorkflowStoreStub combines endUserTriggerStoreStub with a GetMemberRole
+// implementation, satisfying the triggerWorkflowStore interface.
+type triggerWorkflowStoreStub struct {
+	endUserTriggerStoreStub
+	memberRole    model.WorkspaceRole
+	memberRoleErr error
+}
+
+func (s *triggerWorkflowStoreStub) GetMemberRole(_ context.Context, _, _ string) (model.WorkspaceRole, error) {
+	return s.memberRole, s.memberRoleErr
+}
+
+// buildTriggerTestRouter builds a minimal chi router that wires TriggerWorkflow
+// with a stub store and a no-op logger.  The testJWTSecret from testhelpers_test.go
+// is used for JWT authentication.
+func buildTriggerTestRouter(t *testing.T, cfg *config.Config, stub *triggerWorkflowStoreStub) http.Handler {
+	t.Helper()
+	r := chi.NewRouter()
+	r.Use(Authenticate(testJWTSecret))
+	r.Post("/workspaces/{workspaceID}/workflows/{workflowID}/trigger",
+		TriggerWorkflow(cfg, stub, nil, zap.NewNop()))
+	return r
+}
+
+// TestTriggerWorkflow_EndUserWithMutateGrant verifies that an end_user who
+// holds a "mutate" resource grant on every mutation-step connector receives
+// HTTP 202 and a run with status=awaiting_approval.
+func TestTriggerWorkflow_EndUserWithMutateGrant(t *testing.T) {
+	appID := "app-1"
+	wf := &model.WorkflowWithSteps{
+		Workflow: model.Workflow{ID: "wf-1", AppID: appID},
+		Steps: []model.WorkflowStep{
+			{StepType: model.StepTypeMutation, Config: map[string]any{"connector_id": "conn-1"}},
+		},
+	}
+	run := &model.WorkflowRun{ID: "run-1", Status: model.RunStatusPending}
+	approval := &model.Approval{ID: "apv-1"}
+
+	stub := &triggerWorkflowStoreStub{
+		memberRole: model.RoleEndUser,
+		endUserTriggerStoreStub: endUserTriggerStoreStub{
+			wf:       wf,
+			grantMap: map[string]bool{"conn-1": true},
+			run:      run,
+			approval: approval,
+		},
+	}
+
+	cfg := &config.Config{CredentialsEncryptionKey: testJWTSecret}
+	h := buildTriggerTestRouter(t, cfg, stub)
+
+	body := bytes.NewBufferString(`{"input_data":{"key":"val"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/workflows/wf-1/trigger", body)
+	req.Header.Set("Authorization", "Bearer "+makeTestJWT(t, "user-1", "company-1"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("status = %d, want %d (202 Accepted)", w.Code, http.StatusAccepted)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := resp["status"]; got != string(model.RunStatusAwaitingApproval) {
+		t.Errorf("run.status = %v, want %q", got, model.RunStatusAwaitingApproval)
+	}
+	if got := resp["approval_id"]; got != "apv-1" {
+		t.Errorf("run.approval_id = %v, want \"apv-1\"", got)
+	}
+}
+
+// TestTriggerWorkflow_EndUserWithoutMutateGrant verifies that an end_user who
+// lacks a "mutate" resource grant on a mutation-step connector receives HTTP 403
+// with error=mutate_grant_required.
+func TestTriggerWorkflow_EndUserWithoutMutateGrant(t *testing.T) {
+	wf := &model.WorkflowWithSteps{
+		Workflow: model.Workflow{ID: "wf-1", AppID: "app-1"},
+		Steps: []model.WorkflowStep{
+			{StepType: model.StepTypeMutation, Config: map[string]any{"connector_id": "conn-locked"}},
+		},
+	}
+
+	stub := &triggerWorkflowStoreStub{
+		memberRole: model.RoleEndUser,
+		endUserTriggerStoreStub: endUserTriggerStoreStub{
+			wf:       wf,
+			grantMap: map[string]bool{"conn-locked": false},
+		},
+	}
+
+	cfg := &config.Config{CredentialsEncryptionKey: testJWTSecret}
+	h := buildTriggerTestRouter(t, cfg, stub)
+
+	body := bytes.NewBufferString(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/workflows/wf-1/trigger", body)
+	req.Header.Set("Authorization", "Bearer "+makeTestJWT(t, "user-1", "company-1"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d (403 Forbidden)", w.Code, http.StatusForbidden)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := resp["error"]; got != "mutate_grant_required" {
+		t.Errorf("error = %v, want \"mutate_grant_required\"", got)
+	}
+	if got := resp["connector_id"]; got != "conn-locked" {
+		t.Errorf("connector_id = %v, want \"conn-locked\"", got)
+	}
+	if stub.createdRun {
+		t.Error("CreateWorkflowRun must not be called when a grant check fails")
 	}
 }

@@ -990,6 +990,32 @@ export function deleteResourceGrant(companyId: string, resourceId: string, grant
   )
 }
 
+// ---- Connector resource grants (Phase 6) -----------------------------------
+
+export function listConnectorGrants(workspaceId: string, connectorId: string) {
+  return request<{ grants: ResourceGrant[] }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/grants`,
+  )
+}
+
+export function createConnectorGrant(
+  workspaceId: string,
+  connectorId: string,
+  data: { subject_type: string; subject_id: string; action: string },
+) {
+  return request<ResourceGrantEnvelope>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/grants`,
+    { method: 'POST', body: JSON.stringify(data) },
+  ).then(res => res.grant)
+}
+
+export function deleteConnectorGrant(workspaceId: string, connectorId: string, grantId: string) {
+  return request<void>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/grants/${grantId}`,
+    { method: 'DELETE' },
+  )
+}
+
 // ---- App publications ------------------------------------------------------
 
 export interface AppPublication {

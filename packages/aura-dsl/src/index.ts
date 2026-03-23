@@ -10,13 +10,14 @@
  *     if "{{user.isAdmin}}"
  *     with connector="pg-main"
  *     transform "row => ({ id: row.id, name: row.name })"
+ *     action wf-abc-123
  *     style { width: "100%"; padding: "16px" }
  *   ;
  *
  * Rules:
  * - Every statement ends with `;`
  * - `@` is required; use `@root` for top-level widgets
- * - Clause order is fixed: text → value → forEach → key → if → with → transform → style
+ * - Clause order is fixed: text → value → forEach → key → if → with → transform → action → style
  * - No nested child blocks — parent/child is expressed through parentId references
  */
 
@@ -35,6 +36,7 @@ export interface AuraNode {
   if?: string
   with?: Record<string, string>
   transform?: string
+  action?: string   // workflow ID to trigger on form submit / button click
   style?: StyleMap
   /** True if this node was manually edited and should survive AI rewrites */
   manuallyEdited?: boolean
@@ -103,6 +105,9 @@ export function parse(source: string): AuraDocument {
         case 'transform':
           node.transform = consumeString(tokens, pos - 1, () => consume())
           break
+        case 'action':
+          node.action = consume()
+          break
         case 'style':
           node.style = parseStyleBlock(tokens, () => peek(), () => consume(), expect)
           break
@@ -139,6 +144,7 @@ function serializeNode(n: AuraNode): string {
     lines.push(`  with ${entries}`)
   }
   if (n.transform !== undefined) lines.push(`  transform ${JSON.stringify(n.transform)}`)
+  if (n.action !== undefined) lines.push(`  action ${n.action}`)
   if (n.style && Object.keys(n.style).length > 0) {
     lines.push(`  style {`)
     for (const [k, v] of Object.entries(n.style)) {
@@ -337,7 +343,7 @@ function parseStyleBlock(
   return map
 }
 
-const CLAUSES = new Set(['text', 'value', 'forEach', 'key', 'if', 'with', 'transform', 'style'])
+const CLAUSES = new Set(['text', 'value', 'forEach', 'key', 'if', 'with', 'transform', 'action', 'style'])
 function isClause(t: string): boolean {
   return CLAUSES.has(t)
 }

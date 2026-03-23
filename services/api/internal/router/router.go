@@ -173,9 +173,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 									Post("/activate", handler.ActivateWorkflow(s, log))
 								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 									Post("/archive", handler.ArchiveWorkflow(s, log))
-								// Manual trigger creates a run record and enqueues an execution job
-								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
-									Post("/trigger", handler.TriggerWorkflow(s, enq, log))
+									// Manual trigger creates a run record and enqueues an execution job
+								r.With(handler.RequireWorkspaceRole(s, log, model.RoleEndUser)).
+									Post("/trigger", handler.TriggerWorkflow(cfg, s, enq, log))
 								r.Get("/runs", handler.ListWorkflowRuns(s, log))
 								// Step management
 								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
@@ -206,6 +206,13 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						// CSV file import — builders and admins may upload data
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 							Post("/import", handler.ImportCSV(s, log))
+						// Connector resource grants — workspace_admin only (Phase 2)
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
+							Get("/grants", handler.ListConnectorGrants(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
+							Post("/grants", handler.CreateConnectorGrant(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
+							Delete("/grants/{grantID}", handler.DeleteConnectorGrant(s, log))
 					})
 				})
 

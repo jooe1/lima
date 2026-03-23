@@ -575,7 +575,7 @@ interface DraftStep {
 }
 
 function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, onArchive, onTrigger, onRefreshRuns, onDelete, onReviewStep, onSaveSteps, onPatchWorkflow, triggerTargets }: DetailProps) {
-  const unreviewedCount = wf.steps.filter(s => s.ai_generated && !s.reviewed_by).length
+  const unreviewedCount = (wf.steps ?? []).filter(s => s.ai_generated && !s.reviewed_by).length
 
   const [editingSteps, setEditingSteps] = useState(false)
   const [draftSteps, setDraftSteps]     = useState<DraftStep[]>([])
@@ -615,7 +615,7 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
   }, [wf.trigger_type, wf.trigger_config])
 
   const startEditing = () => {
-    setDraftSteps(wf.steps.map(s => ({
+    setDraftSteps((wf.steps ?? []).map(s => ({
       _key:         s.id,
       name:         s.name,
       step_type:    s.step_type,
@@ -928,7 +928,7 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
 
         {/* Steps */}
         <Section
-          title={`Steps (${editingSteps ? draftSteps.length : wf.steps.length})`}
+          title={`Steps (${editingSteps ? draftSteps.length : (wf.steps ?? []).length})`}
           action={isBuilder && !editingSteps
             ? <button style={btn()} onClick={startEditing}>Edit Steps</button>
             : undefined}
@@ -967,10 +967,10 @@ function WorkflowDetail({ wf, runs, isAdmin, isBuilder, actionErr, onActivate, o
             </>
           ) : (
             <>
-              {wf.steps.length === 0 && (
+              {(wf.steps ?? []).length === 0 && (
                 <div style={{ color: C.muted, padding: '4px 0' }}>No steps defined.</div>
               )}
-              {wf.steps.map((step, idx) => (
+              {(wf.steps ?? []).map((step, idx) => (
                 <StepRow key={step.id} step={step} index={idx} isBuilder={isBuilder} onReview={() => onReviewStep(step.id)} />
               ))}
             </>

@@ -597,6 +597,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             onUpdate={handleUpdateNode}
             onDelete={handleDeleteWidget}
             workspaceId={workspace?.id ?? ''}
+            appId={appId}
           />
         ) : rightPanel === 'chat' && workspace ? (
           <div style={{ width: 280, flexShrink: 0 }}>

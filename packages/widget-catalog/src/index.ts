@@ -50,7 +50,7 @@ export interface DashboardQueryHint {
 // ---- Prop schemas (JSON Schema–style, used for inspector and AI prompting) -
 
 export interface PropDef {
-  type: 'string' | 'number' | 'boolean' | 'expression' | 'action'
+  type: 'string' | 'number' | 'boolean' | 'expression' | 'action' | 'workflow_trigger'
   label: string
   description?: string
   required?: boolean
@@ -72,7 +72,7 @@ export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
   form: {
     fields: { type: 'string', label: 'Fields', description: 'Comma-separated field names', required: true },
     submitLabel: { type: 'string', label: 'Submit label', default: 'Submit' },
-    onSubmit: { type: 'action', label: 'On submit' },
+    onSubmit: { type: 'workflow_trigger', label: 'On submit' },
   },
   text: {
     content: { type: 'string', label: 'Content', required: true },
@@ -80,7 +80,7 @@ export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
   },
   button: {
     label: { type: 'string', label: 'Label', required: true },
-    onClick: { type: 'action', label: 'On click' },
+    onClick: { type: 'workflow_trigger', label: 'On click' },
     variant: { type: 'string', label: 'Variant', description: 'primary | secondary | danger', default: 'primary' },
     disabled: { type: 'expression', label: 'Disabled', default: 'false' },
   },

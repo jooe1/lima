@@ -5,12 +5,15 @@ import React from 'react'
 interface DashboardFilterContextValue {
 	values: Record<string, string>
 	setFilterValue: (widgetId: string, value: string) => void
+	refreshSeq: number
+	bumpRefreshSeq: () => void
 }
 
 const DashboardFilterContext = React.createContext<DashboardFilterContextValue | null>(null)
 
 export function DashboardFilterProvider({ children }: { children: React.ReactNode }) {
 	const [values, setValues] = React.useState<Record<string, string>>({})
+	const [refreshSeq, setRefreshSeq] = React.useState(0)
 
 	const setFilterValue = React.useCallback((widgetId: string, value: string) => {
 		setValues(prev => {
@@ -29,8 +32,12 @@ export function DashboardFilterProvider({ children }: { children: React.ReactNod
 		})
 	}, [])
 
+	const bumpRefreshSeq = React.useCallback(() => {
+		setRefreshSeq(s => s + 1)
+	}, [])
+
 	return (
-		<DashboardFilterContext.Provider value={{ values, setFilterValue }}>
+		<DashboardFilterContext.Provider value={{ values, setFilterValue, refreshSeq, bumpRefreshSeq }}>
 			{children}
 		</DashboardFilterContext.Provider>
 	)

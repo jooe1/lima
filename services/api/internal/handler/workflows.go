@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/lima/api/internal/config"
+	"github.com/lima/api/internal/cryptoutil"
 	"github.com/lima/api/internal/model"
 	"github.com/lima/api/internal/queue"
 	"github.com/lima/api/internal/store"
@@ -286,7 +289,7 @@ func ReviewStep(s *store.Store, log *zap.Logger) http.HandlerFunc {
 // workflows the run is still created so builders can test the flow manually.
 // If the execution job cannot be queued after retries, the run is cleaned up
 // and the request fails.
-func TriggerWorkflow(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
+func TriggerWorkflow(cfg *config.Config, s triggerWorkflowStore, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		workspaceID := chi.URLParam(r, "workspaceID")
 		workflowID := chi.URLParam(r, "workflowID")
@@ -300,6 +303,37 @@ func TriggerWorkflow(s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.
 			req.InputData = map[string]any{}
 		}
 
+		// Determine the caller's workspace role to decide the execution path.
+		callerRole, err := s.GetMemberRole(r.Context(), workspaceID, claims.UserID)
+		if err != nil {
+			respondErr(w, http.StatusForbidden, "not_a_member", "you are not a member of this workspace")
+			return
+		}
+
+		// end_user path: enforce per-connector mutate grants and force approval gating.
+		if callerRole == model.RoleEndUser {
+			run, trigErr := triggerEndUserWorkflowRun(
+				r.Context(), s, cfg.CredentialsEncryptionKey,
+				claims.CompanyID, workspaceID, workflowID, claims.UserID, req.InputData,
+			)
+			if trigErr != nil {
+				var grantErr *errMutateGrantRequired
+				if errors.As(trigErr, &grantErr) {
+					respond(w, http.StatusForbidden, map[string]string{
+						"error":        "mutate_grant_required",
+						"connector_id": grantErr.ConnectorID,
+					})
+					return
+				}
+				log.Error("end_user trigger workflow", zap.Error(trigErr))
+				respondErr(w, http.StatusInternalServerError, "internal_error", "failed to trigger workflow")
+				return
+			}
+			respond(w, http.StatusAccepted, run)
+			return
+		}
+
+		// app_builder / workspace_admin path: existing behavior — enqueue immediately.
 		run, err := s.CreateWorkflowRun(r.Context(), workspaceID, workflowID, &claims.UserID, req.InputData)
 		if err != nil {
 			log.Error("trigger workflow", zap.Error(err))
@@ -543,4 +577,118 @@ func stepsFromInput(inputs []workflowStepInput) []model.WorkflowStep {
 		})
 	}
 	return steps
+}
+
+// ---- end_user trigger path --------------------------------------------------
+
+// errMutateGrantRequired is returned by triggerEndUserWorkflowRun when the
+// caller lacks a "mutate" resource grant on one of the workflow's connectors.
+type errMutateGrantRequired struct {
+	ConnectorID string
+}
+
+func (e *errMutateGrantRequired) Error() string {
+	return fmt.Sprintf("mutate grant required for connector %s", e.ConnectorID)
+}
+
+// endUserTriggerStore is the narrow store interface used by triggerEndUserWorkflowRun.
+// *store.Store satisfies it; tests can inject a stub.
+type endUserTriggerStore interface {
+	GetWorkflowWithSteps(ctx context.Context, workspaceID, workflowID string) (*model.WorkflowWithSteps, error)
+	HasResourceGrant(ctx context.Context, companyID, resourceKind, resourceID, subjectType, subjectID, action string) (bool, error)
+	CreateWorkflowRun(ctx context.Context, workspaceID, workflowID string, triggeredBy *string, inputData map[string]any) (*model.WorkflowRun, error)
+	UpdateWorkflowRunStatus(ctx context.Context, runID string, status model.WorkflowRunStatus) error
+	CreateApproval(ctx context.Context, workspaceID string, appID, connectorID *string, description string, encryptedPayload []byte, requestedBy string) (*model.Approval, error)
+	SetWorkflowRunApproval(ctx context.Context, runID, approvalID string) error
+	DeleteWorkflowRun(ctx context.Context, workspaceID, runID string) error
+}
+
+// triggerWorkflowStore is the narrow store interface used by TriggerWorkflow.
+// It merges the end-user execution sub-path (endUserTriggerStore) with the
+// member-role lookup required by both execution paths.
+// *store.Store satisfies it; tests can inject a stub.
+type triggerWorkflowStore interface {
+	endUserTriggerStore
+	GetMemberRole(ctx context.Context, workspaceID, userID string) (model.WorkspaceRole, error)
+}
+
+// triggerEndUserWorkflowRun implements the end_user execution path for
+// TriggerWorkflow. It:
+//  1. Loads the workflow steps and checks that the caller holds a "mutate"
+//     resource grant on every connector referenced by a mutation step.
+//  2. Creates a WorkflowRun and immediately transitions it to awaiting_approval.
+//  3. Creates an Approval record with the encrypted input payload.
+//  4. Links the approval to the run.
+//  5. Returns the updated run — the worker is NOT enqueued.
+//
+// Returns *errMutateGrantRequired (403) or another error (500).
+func triggerEndUserWorkflowRun(
+	ctx context.Context,
+	s endUserTriggerStore,
+	encKey string,
+	companyID, workspaceID, workflowID, userID string,
+	inputData map[string]any,
+) (*model.WorkflowRun, error) {
+	// Load the workflow definition including its steps.
+	wf, err := s.GetWorkflowWithSteps(ctx, workspaceID, workflowID)
+	if err != nil {
+		return nil, fmt.Errorf("load workflow: %w", err)
+	}
+
+	// Verify the caller has a mutate grant for every mutation-step connector.
+	for _, step := range wf.Steps {
+		if step.StepType != model.StepTypeMutation {
+			continue
+		}
+		connID, _ := step.Config["connector_id"].(string)
+		if connID == "" {
+			continue
+		}
+		ok, err := s.HasResourceGrant(ctx, companyID, "connector", connID, "user", userID, "mutate")
+		if err != nil {
+			return nil, fmt.Errorf("check resource grant: %w", err)
+		}
+		if !ok {
+			return nil, &errMutateGrantRequired{ConnectorID: connID}
+		}
+	}
+
+	// Create the run record (status starts as "pending" per DB default).
+	run, err := s.CreateWorkflowRun(ctx, workspaceID, workflowID, &userID, inputData)
+	if err != nil {
+		return nil, fmt.Errorf("create workflow run: %w", err)
+	}
+
+	// Transition to awaiting_approval so the worker does not pick it up.
+	if err := s.UpdateWorkflowRunStatus(ctx, run.ID, model.RunStatusAwaitingApproval); err != nil {
+		_ = s.DeleteWorkflowRun(ctx, workspaceID, run.ID)
+		return nil, fmt.Errorf("set run awaiting approval: %w", err)
+	}
+	run.Status = model.RunStatusAwaitingApproval
+
+	// Encrypt the input data for safe at-rest storage in the approval record.
+	payloadBytes, err := json.Marshal(inputData)
+	if err != nil {
+		_ = s.DeleteWorkflowRun(ctx, workspaceID, run.ID)
+		return nil, fmt.Errorf("marshal input data: %w", err)
+	}
+	encrypted, err := cryptoutil.Encrypt(encKey, payloadBytes)
+	if err != nil {
+		_ = s.DeleteWorkflowRun(ctx, workspaceID, run.ID)
+		return nil, fmt.Errorf("encrypt payload: %w", err)
+	}
+
+	// Create the approval record and link it to the run.
+	approval, err := s.CreateApproval(ctx, workspaceID, &wf.AppID, nil, "Workflow trigger by end_user", encrypted, userID)
+	if err != nil {
+		_ = s.DeleteWorkflowRun(ctx, workspaceID, run.ID)
+		return nil, fmt.Errorf("create approval: %w", err)
+	}
+	if err := s.SetWorkflowRunApproval(ctx, run.ID, approval.ID); err != nil {
+		_ = s.DeleteWorkflowRun(ctx, workspaceID, run.ID)
+		return nil, fmt.Errorf("link approval to run: %w", err)
+	}
+	run.ApprovalID = &approval.ID
+
+	return run, nil
 }

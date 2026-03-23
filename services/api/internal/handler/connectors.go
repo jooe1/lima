@@ -219,6 +219,100 @@ func DeleteConnector(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	}
 }
 
+// validConnectorGrantActions lists the actions that may be granted on a connector.
+var validConnectorGrantActions = map[string]bool{
+	"query":       true,
+	"mutate":      true,
+	"bind":        true,
+	"read_schema": true,
+	"manage":      true,
+}
+
+// createConnectorGrantBody is the request payload for creating a connector grant.
+type createConnectorGrantBody struct {
+	SubjectType string `json:"subject_type"`
+	SubjectID   string `json:"subject_id"`
+	Action      string `json:"action"`
+}
+
+// ListConnectorGrants returns all resource grants for a workspace-scoped connector.
+// Requires workspace_admin role (enforced via middleware).
+func ListConnectorGrants(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		connectorID := chi.URLParam(r, "connectorID")
+		claims, _ := ClaimsFromContext(r.Context())
+
+		grants, err := s.ListResourceGrants(r.Context(), claims.CompanyID, "connector", connectorID)
+		if err != nil {
+			log.Error("list connector grants", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to list grants")
+			return
+		}
+		if grants == nil {
+			grants = []model.ResourceGrant{}
+		}
+		respond(w, http.StatusOK, map[string]any{"grants": grants})
+	}
+}
+
+// CreateConnectorGrant adds a new ACL entry for a workspace-scoped connector.
+// Requires workspace_admin role (enforced via middleware).
+func CreateConnectorGrant(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID := chi.URLParam(r, "workspaceID")
+		connectorID := chi.URLParam(r, "connectorID")
+		claims, _ := ClaimsFromContext(r.Context())
+
+		var body createConnectorGrantBody
+		if err := decodeJSON(r, &body); err != nil {
+			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			return
+		}
+		if body.SubjectType == "" || body.SubjectID == "" || body.Action == "" {
+			respondErr(w, http.StatusUnprocessableEntity, "validation_error", "subject_type, subject_id, and action are required")
+			return
+		}
+		if !validConnectorGrantActions[body.Action] {
+			respondErr(w, http.StatusUnprocessableEntity, "validation_error", "action must be one of: query, mutate, bind, read_schema, manage")
+			return
+		}
+
+		// Verify the connector belongs to this workspace before granting access.
+		if _, err := s.GetConnector(r.Context(), workspaceID, connectorID); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+
+		grant, err := s.CreateResourceGrant(r.Context(), claims.CompanyID, "connector", connectorID,
+			body.SubjectType, body.SubjectID, body.Action, nil, "allow", claims.UserID)
+		if err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				respondErr(w, http.StatusConflict, "conflict", "grant already exists")
+				return
+			}
+			log.Error("create connector grant", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to create grant")
+			return
+		}
+		respond(w, http.StatusCreated, map[string]any{"grant": grant})
+	}
+}
+
+// DeleteConnectorGrant removes a resource grant from a workspace-scoped connector.
+// Requires workspace_admin role (enforced via middleware).
+func DeleteConnectorGrant(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		grantID := chi.URLParam(r, "grantID")
+		claims, _ := ClaimsFromContext(r.Context())
+
+		if err := s.DeleteResourceGrant(r.Context(), claims.CompanyID, grantID); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // TestConnector decrypts the stored credentials and performs a live connection
 // test against the target system. Returns immediately with {ok, error}.
 // Supported: postgres, rest. Others return a clear unsupported message.
