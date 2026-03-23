@@ -46,6 +46,9 @@ export function hasConnectorBinding(node: AuraNode): boolean {
   const connectorId = node.with?.connector?.trim()
   if (!connectorId) return false
   if (node.with?.connectorType?.trim() === 'csv') return true
+  // REST connectors with no explicit path call the base URL directly — that
+  // is a valid binding even when sql is empty.
+  if (node.with?.connectorType?.trim() === 'rest') return true
   return Boolean(node.with?.sql?.trim())
 }
 

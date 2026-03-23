@@ -322,9 +322,10 @@ function CredentialFields({ type, creds, onChange }: {
 
   if (type === 'rest') {
     const authType = (creds.auth_type as string) ?? 'none'
+    const endpoints = (creds.endpoints as Array<{ label: string; path: string }>) ?? []
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <input placeholder="Base URL" value={(creds.base_url as string) ?? ''} onChange={e => onChange('base_url', e.target.value)} style={inputStyle} />
+        <input placeholder="Base URL  (e.g. https://api.example.com/v1)" value={(creds.base_url as string) ?? ''} onChange={e => onChange('base_url', e.target.value)} style={inputStyle} />
         <select value={authType} onChange={e => onChange('auth_type', e.target.value)} style={inputStyle}>
           <option value="none">No auth</option>
           <option value="bearer">Bearer token</option>
@@ -346,6 +347,57 @@ function CredentialFields({ type, creds, onChange }: {
             <input placeholder="Header name (default: X-API-Key)" value={(creds.api_key_header as string) ?? ''} onChange={e => onChange('api_key_header', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
           </div>
         )}
+
+        {/* Named endpoints — let widget users pick from a dropdown instead of typing raw paths */}
+        <div style={{ borderTop: '1px solid #222', paddingTop: 10, marginTop: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ color: '#888', fontSize: '0.75rem', fontWeight: 500 }}>Named endpoints</span>
+            <button
+              type="button"
+              onClick={() => onChange('endpoints', [...endpoints, { label: '', path: '' }])}
+              style={{ ...ghostBtn, padding: '2px 8px', fontSize: '0.7rem' }}
+            >
+              + Add
+            </button>
+          </div>
+          {endpoints.length === 0 ? (
+            <p style={{ color: '#444', fontSize: '0.7rem', margin: 0, lineHeight: 1.5 }}>
+              Optional: name your API endpoints so widget users can pick them from a dropdown instead of typing paths manually.
+            </p>
+          ) : (
+            endpoints.map((ep, i) => (
+              <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                <input
+                  placeholder="Label  (e.g. Sales data)"
+                  value={ep.label}
+                  onChange={e => {
+                    const next = [...endpoints]
+                    next[i] = { ...ep, label: e.target.value }
+                    onChange('endpoints', next)
+                  }}
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <input
+                  placeholder="Path  (e.g. /api/sales)"
+                  value={ep.path}
+                  onChange={e => {
+                    const next = [...endpoints]
+                    next[i] = { ...ep, path: e.target.value }
+                    onChange('endpoints', next)
+                  }}
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => onChange('endpoints', endpoints.filter((_, j) => j !== i))}
+                  style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', padding: '0 4px', fontSize: '1.1rem', lineHeight: 1 }}
+                >
+                  ×
+                </button>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     )
   }

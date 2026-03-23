@@ -363,6 +363,18 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
   const selectedConnector = connectors.find(connector => connector.id === connectorId)
   const connectorType = selectedConnector?.type ?? node.with?.connectorType ?? ''
   const isCSVConnector = connectorType === 'csv'
+  const isRESTConnector = connectorType === 'rest'
+  const restEndpoints = isRESTConnector
+    ? ((selectedConnector?.schema_cache?.endpoints ?? []) as Array<{ label: string; path: string }>)
+    : []
+  const hasNamedEndpoints = restEndpoints.length > 0
+  // Derive what the endpoint dropdown currently shows:
+  // '' = nothing selected, a path = that endpoint is active, '__custom__' = user-typed path
+  const endpointDropdownValue = (() => {
+    if (!hasNamedEndpoints || !sql) return sql
+    if (restEndpoints.some(ep => ep.path === sql)) return sql
+    return '__custom__'
+  })()
   const isChart = node.element === 'chart'
   const widgetMeta = WIDGET_REGISTRY[node.element as WidgetType]
 
@@ -456,7 +468,9 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
 
       {(node.element === 'table' || node.element === 'chart') && (
         <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
-          Start with base rows from a connector, then use the controls below to filter, group, summarize, and sort them without writing SQL. Use Advanced SQL only when you need joins or server-side logic.
+          {isRESTConnector
+            ? 'Select an endpoint to load data from, then use the controls below to filter and summarize the results.'
+            : 'Start with base rows from a connector, then use the controls below to filter, group, summarize, and sort them without writing SQL. Use Advanced SQL only when you need joins or server-side logic.'}
         </div>
       )}
 
@@ -479,6 +493,68 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
         <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
           CSV connectors use the imported rows directly. SQL is not used here.
         </div>
+      ) : isRESTConnector ? (
+        /* REST connector: endpoint picker (named) or path input (custom / no endpoints defined) */
+        <>
+          {hasNamedEndpoints ? (
+            <div>
+              <label style={labelStyle}>Endpoint</label>
+              <select
+                value={endpointDropdownValue}
+                onChange={e => {
+                  if (e.target.value === '__custom__') {
+                    // Entering custom mode: seed with '/' so the input appears
+                    if (endpointDropdownValue !== '__custom__') onWithChange('sql', '/')
+                  } else {
+                    onWithChange('sql', e.target.value)
+                  }
+                }}
+                style={{ ...inputStyle, appearance: 'auto' }}
+              >
+                <option value=''>— select endpoint —</option>
+                {restEndpoints.map(ep => (
+                  <option key={ep.path} value={ep.path}>{ep.label}</option>
+                ))}
+                <option value='__custom__'>Custom path…</option>
+              </select>
+              {endpointDropdownValue === '__custom__' && (
+                <input
+                  type='text'
+                  value={sql === '/' ? '' : sql}
+                  onChange={e => onWithChange('sql', e.target.value || '/')}
+                  placeholder='/api/your-endpoint'
+                  autoFocus
+                  style={{ ...inputStyle, marginTop: 6, fontFamily: 'monospace', fontSize: '0.75rem' }}
+                />
+              )}
+            </div>
+          ) : (
+            <details open={!sql} style={{ border: '1px solid #1a1a1a', borderRadius: 4, background: '#0d0d0d' }}>
+              <summary style={{ padding: '8px 10px', cursor: 'pointer', color: '#cbd5e1', fontSize: '0.68rem', fontWeight: 600 }}>
+                API endpoint
+              </summary>
+              <div style={{ padding: '0 10px 10px' }}>
+                <label style={labelStyle}>Endpoint path</label>
+                <textarea
+                  value={sql}
+                  onChange={e => onWithChange('sql', e.target.value)}
+                  rows={2}
+                  placeholder='/api/resource'
+                  style={{
+                    ...inputStyle,
+                    fontFamily: 'monospace',
+                    fontSize: '0.65rem',
+                    resize: 'vertical',
+                    minHeight: 40,
+                  }}
+                />
+                <div style={{ marginTop: 6, fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
+                  Optional path to append to the base URL (e.g. <span style={{ fontFamily: 'monospace' }}>/sales</span>). Leave empty to call the base URL directly.
+                </div>
+              </div>
+            </details>
+          )}
+        </>
       ) : (
         <>
           <VisualQueryBuilder
@@ -724,7 +800,7 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
                       borderBottom: '1px solid #151515', whiteSpace: 'nowrap',
                       maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis',
                     }}>
-                      {row[col] == null ? '' : String(row[col])}
+                      {row[col] == null ? '' : (typeof row[col] === 'object' ? JSON.stringify(row[col]) : String(row[col]))}
                     </td>
                   ))}
                 </tr>

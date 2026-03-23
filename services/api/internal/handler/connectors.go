@@ -24,6 +24,36 @@ import (
 	"go.uber.org/zap"
 )
 
+// syncRESTEndpoints copies the user-defined endpoint list from REST credentials
+// into schema_cache so the frontend can read them without decrypting credentials.
+// Best-effort: errors are logged and ignored.
+func syncRESTEndpoints(ctx context.Context, s *store.Store, log *zap.Logger, connectorID string, rawCreds json.RawMessage) {
+	var creds model.RestCredentials
+	if err := json.Unmarshal(rawCreds, &creds); err != nil {
+		return
+	}
+	type epEntry struct {
+		Label string `json:"label"`
+		Path  string `json:"path"`
+	}
+	eps := make([]epEntry, 0, len(creds.Endpoints))
+	for _, ep := range creds.Endpoints {
+		if ep.Label != "" && ep.Path != "" {
+			eps = append(eps, epEntry{Label: ep.Label, Path: ep.Path})
+		}
+	}
+	schemaJSON, err := json.Marshal(map[string]any{
+		"base_url":  creds.BaseURL,
+		"endpoints": eps,
+	})
+	if err != nil {
+		return
+	}
+	if err := s.UpdateConnectorSchema(ctx, connectorID, schemaJSON); err != nil {
+		log.Warn("failed to sync REST endpoints to schema_cache", zap.Error(err))
+	}
+}
+
 // ListConnectors returns all connectors in the workspace.
 func ListConnectors(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +127,12 @@ func CreateConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, lo
 			}
 		}
 
+		// For REST connectors, immediately sync named endpoints to schema_cache
+		// so the builder can show an endpoint picker without decrypting credentials.
+		if body.Type == model.ConnectorTypeREST {
+			syncRESTEndpoints(r.Context(), s, log, conn.ID, body.Credentials)
+		}
+
 		respond(w, http.StatusCreated, map[string]any{"connector": conn})
 	}
 }
@@ -159,6 +195,11 @@ func PatchConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, log
 			}); err != nil {
 				log.Warn("schema job enqueue failed after patch", zap.Error(err))
 			}
+		}
+
+		// For REST connectors, re-sync named endpoints whenever credentials change.
+		if conn.Type == model.ConnectorTypeREST && len(body.Credentials) > 0 {
+			syncRESTEndpoints(r.Context(), s, log, connectorID, body.Credentials)
 		}
 
 		respond(w, http.StatusOK, map[string]any{"connector": conn})
@@ -726,17 +767,29 @@ const maxRESTBodyBytes = 5 << 20
 
 // runRESTQuery GETs base_url+path, parses the JSON response, and returns a
 // DashboardQueryResponse. The path argument is passed verbatim by the widget
-// (stored in req.SQL) and resolved against the base URL.
+// (stored in req.SQL) and appended to the base URL. An empty or "/" path
+// means "call the base URL as-is" — this is intentional so connectors whose
+// base_url is a full resource URL (e.g. https://api.example.com/v1/kpis) work
+// without requiring users to re-enter the path in every widget.
 func runRESTQuery(ctx context.Context, creds model.RestCredentials, path string, limit int) (*model.DashboardQueryResponse, error) {
-	base, err := url.Parse(strings.TrimRight(creds.BaseURL, "/"))
-	if err != nil {
-		return nil, fmt.Errorf("invalid base URL: %w", err)
+	base := strings.TrimRight(creds.BaseURL, "/")
+	if base == "" {
+		return nil, fmt.Errorf("rest connector has no base URL")
 	}
-	rel, err := url.Parse(path)
-	if err != nil {
-		return nil, fmt.Errorf("invalid path: %w", err)
+	var endpoint string
+	if path == "" || path == "/" {
+		// No widget-level path: call the base URL directly.
+		// This allows a connector like https://api.example.com/kpis to serve
+		// data with zero extra configuration in the widget.
+		endpoint = base
+	} else {
+		// Append the path from the widget (strip leading slash to avoid double slashes).
+		endpoint = base + "/" + strings.TrimLeft(path, "/")
 	}
-	endpoint := base.ResolveReference(rel).String()
+	// Validate the constructed URL before making the request.
+	if _, err := url.ParseRequestURI(endpoint); err != nil {
+		return nil, fmt.Errorf("invalid endpoint URL %q: %w", endpoint, err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -777,22 +830,51 @@ func runRESTQuery(ctx context.Context, creds model.RestCredentials, path string,
 // extractRESTRows converts a decoded JSON body into a slice of row maps.
 // It handles JSON arrays directly, common envelope keys (data, items, results,
 // records, rows, list), and single-object responses (returned as one row).
+// Nested object values are flattened one level deep (e.g. a KPI response
+// {"revenue":{"value":100,"change":5}} becomes {"revenue.value":100,"revenue.change":5})
+// so that table/chart widgets can display scalar columns without showing [object Object].
 func extractRESTRows(body any) []map[string]any {
 	switch v := body.(type) {
 	case []any:
-		return anySliceToRows(v)
+		return flattenRows(anySliceToRows(v))
 	case map[string]any:
 		for _, key := range []string{"data", "items", "results", "records", "rows", "list"} {
 			if arr, ok := v[key]; ok {
 				if slice, ok := arr.([]any); ok {
-					return anySliceToRows(slice)
+					return flattenRows(anySliceToRows(slice))
 				}
 			}
 		}
 		// Single object — return as one row so widgets can still render it.
-		return []map[string]any{v}
+		return flattenRows([]map[string]any{v})
 	}
 	return []map[string]any{}
+}
+
+// flattenRows applies flattenRow to every row in a slice.
+func flattenRows(rows []map[string]any) []map[string]any {
+	for i, r := range rows {
+		rows[i] = flattenRow(r)
+	}
+	return rows
+}
+
+// flattenRow flattens one level of nested map values.
+// {"revenue":{"value":100,"currency":"USD"}} becomes
+// {"revenue.value":100, "revenue.currency":"USD"}.
+// Non-map values and arrays are left as-is.
+func flattenRow(row map[string]any) map[string]any {
+	out := make(map[string]any, len(row))
+	for k, v := range row {
+		if nested, ok := v.(map[string]any); ok {
+			for nk, nv := range nested {
+				out[k+"."+nk] = nv
+			}
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func anySliceToRows(slice []any) []map[string]any {

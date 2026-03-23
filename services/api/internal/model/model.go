@@ -303,15 +303,23 @@ type RelationalCredentials struct {
 	SSL      bool   `json:"ssl"`
 }
 
+// RestEndpointDef is a named endpoint shortcut defined by the connector admin.
+// Stored as part of RestCredentials and projected to schema_cache for the frontend.
+type RestEndpointDef struct {
+	Label string `json:"label"`
+	Path  string `json:"path"`
+}
+
 // RestCredentials holds connection parameters for REST API connectors.
 type RestCredentials struct {
-	BaseURL      string `json:"base_url"`
-	AuthType     string `json:"auth_type"` // none | bearer | basic | api_key
-	Token        string `json:"token,omitempty"`
-	Username     string `json:"username,omitempty"`
-	Password     string `json:"password,omitempty"`
-	APIKey       string `json:"api_key,omitempty"`
-	APIKeyHeader string `json:"api_key_header,omitempty"` // default: X-API-Key
+	BaseURL      string            `json:"base_url"`
+	AuthType     string            `json:"auth_type"` // none | bearer | basic | api_key
+	Token        string            `json:"token,omitempty"`
+	Username     string            `json:"username,omitempty"`
+	Password     string            `json:"password,omitempty"`
+	APIKey       string            `json:"api_key,omitempty"`
+	APIKeyHeader string            `json:"api_key_header,omitempty"` // default: X-API-Key
+	Endpoints    []RestEndpointDef `json:"endpoints,omitempty"`
 }
 
 // Connector is the safe public view of a connector record.

@@ -15,6 +15,14 @@ interface Props {
   workspaceId: string
 }
 
+// formatCellValue safely converts any row value to a display string.
+// Objects and arrays are JSON-stringified rather than producing "[object Object]".
+function formatCellValue(v: unknown): string {
+  if (v == null) return ''
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
 export function WidgetRenderer({ node, workspaceId }: Props) {
   const meta = WIDGET_REGISTRY[node.element as keyof typeof WIDGET_REGISTRY]
 
@@ -318,7 +326,7 @@ function CanvasTablePreview({ node, workspaceId }: { node: AuraNode; workspaceId
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                       }}>
-                        {String(row[column] ?? '')}
+                        {formatCellValue(row[column])}
                       </td>
                     ))}
                   </tr>

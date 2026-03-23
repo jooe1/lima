@@ -291,7 +291,9 @@ export function getConnectorQuerySQL(
   }
   if (connectorType === 'rest') {
     // For REST connectors, sql holds the endpoint path (e.g. "/users").
-    // Default to "/" so widgets always fire a query even with no path configured.
+    // Default to "/" so querySql is always truthy — the backend treats "/"
+    // as "call the base URL directly" (no path appended), which is the right
+    // behaviour when the full URL is already the connector's base_url.
     return trimmed || '/'
   }
   return trimmed || null
