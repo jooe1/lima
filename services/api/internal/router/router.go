@@ -189,8 +189,10 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 									Put("/steps", handler.PutWorkflowSteps(s, log))
 								r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
-									Post("/steps/{stepID}/review", handler.ReviewStep(s, log))
-							})
+								Post("/steps/{stepID}/review", handler.ReviewStep(s, log))
+							r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+								Put("/output-bindings", handler.PutWorkflowOutputBindings(s, log))
+						})
 						})
 					})
 				})

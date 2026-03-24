@@ -616,3 +616,186 @@ func workflowIntegrationIDs(base uint64) workflowIntegrationFixtureIDs {
 func workflowIntegrationUUID(value uint64) string {
 	return fmt.Sprintf("00000000-0000-0000-0000-%012x", value&0xffffffffffff)
 }
+
+// ---- output binding integration test ---------------------------------------
+
+type workflowIntegrationOutputBindingFixture struct {
+	ctx  context.Context
+	pool *pgxpool.Pool
+	cfg  *config.Config
+	ids  workflowIntegrationFixtureIDs
+}
+
+// TestExecuteWorkflowRunOutputBindingsStoredInOutputData verifies that when a
+// workflow with output_bindings completes successfully the triggered bindings
+// are persisted under output_data["__output_bindings__"].
+func TestExecuteWorkflowRunOutputBindingsStoredInOutputData(t *testing.T) {
+	fixture := workflowIntegrationNewOutputBindingFixture(t)
+
+	if err := executeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, fixture.ids.workflow); err != nil {
+		t.Fatalf("executeWorkflowRun() error = %v", err)
+	}
+
+	run, err := getWorkflowRun(fixture.ctx, fixture.pool, fixture.ids.run)
+	if err != nil {
+		t.Fatalf("getWorkflowRun() error = %v", err)
+	}
+	if run.status != runStatusCompleted {
+		t.Fatalf("run status = %q, want %q", run.status, runStatusCompleted)
+	}
+
+	// __output_bindings__ must be present.
+	bindingsAny, ok := run.outputData["__output_bindings__"]
+	if !ok {
+		t.Fatal("output_data.__output_bindings__ is missing")
+	}
+
+	// Re-marshal/unmarshal to get a typed slice (JSON round-trip through map[string]any).
+	bindingsJSON, err := json.Marshal(bindingsAny)
+	if err != nil {
+		t.Fatalf("marshal __output_bindings__: %v", err)
+	}
+	var bindings []outputBinding
+	if err := json.Unmarshal(bindingsJSON, &bindings); err != nil {
+		t.Fatalf("unmarshal __output_bindings__: %v", err)
+	}
+	if len(bindings) != 2 {
+		t.Fatalf("len(__output_bindings__) = %d, want 2", len(bindings))
+	}
+
+	foundComplete, foundStep := false, false
+	for _, b := range bindings {
+		switch b.TriggerStepID {
+		case "__workflow_complete__":
+			foundComplete = true
+			if b.WidgetID != "widget-wc" {
+				t.Errorf("workflow_complete binding widget_id = %q, want widget-wc", b.WidgetID)
+			}
+		case fixture.ids.step:
+			foundStep = true
+			if b.WidgetID != "widget-step" {
+				t.Errorf("step binding widget_id = %q, want widget-step", b.WidgetID)
+			}
+		}
+	}
+	if !foundComplete {
+		t.Error("__output_bindings__ missing __workflow_complete__ entry")
+	}
+	if !foundStep {
+		t.Errorf("__output_bindings__ missing step-specific entry for step %s", fixture.ids.step)
+	}
+}
+
+func workflowIntegrationNewOutputBindingFixture(t *testing.T) *workflowIntegrationOutputBindingFixture {
+	t.Helper()
+
+	ctx, pool, _ := workflowIntegrationOpenPool(t)
+
+	// Require migration 019 (output_bindings column).
+	var hasCol bool
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) > 0
+		FROM information_schema.columns
+		WHERE table_name = 'workflows' AND column_name = 'output_bindings'
+	`).Scan(&hasCol); err != nil {
+		t.Fatalf("check output_bindings column: %v", err)
+	}
+	if !hasCol {
+		t.Skip("workflows.output_bindings column not found — apply migration 019 first")
+	}
+
+	const encryptionKey = "workflow-integration-test-key"
+	base := uint64(time.Now().UnixNano())
+	ids := workflowIntegrationIDs(base)
+
+	workspaceSlug := fmt.Sprintf("wf-ob-it-%x", base)
+	companySlug := fmt.Sprintf("wf-ob-company-%x", base)
+	appName := fmt.Sprintf("WF Output Binding %x", base)
+	workflowName := fmt.Sprintf("wf-ob-%x", base)
+	userEmail := fmt.Sprintf("wf-ob-%x@example.test", base)
+
+	t.Cleanup(func() {
+		workflowIntegrationOutputBindingCleanup(t, pool, ids)
+	})
+
+	outputBindingsJSON := workflowIntegrationJSON(t, []map[string]any{
+		{
+			"trigger_step_id": "__workflow_complete__",
+			"widget_id":       "widget-wc",
+			"port":            "data",
+			"page_id":         "page-1",
+		},
+		{
+			"trigger_step_id": ids.step,
+			"widget_id":       "widget-step",
+			"port":            "rows",
+			"page_id":         "page-1",
+		},
+	})
+	stepConfigJSON := workflowIntegrationJSON(t, map[string]any{
+		"message": "output binding integration test notification",
+	})
+	inputDataJSON := workflowIntegrationJSON(t, map[string]any{})
+
+	workflowIntegrationExec(t, ctx, pool,
+		`INSERT INTO companies (id, name, slug) VALUES ($1, $2, $3)`,
+		ids.company, "WF Output Binding Company", companySlug,
+	)
+	workflowIntegrationExec(t, ctx, pool,
+		`INSERT INTO workspaces (id, company_id, name, slug) VALUES ($1, $2, $3, $4)`,
+		ids.workspace, ids.company, "WF Output Binding Workspace", workspaceSlug,
+	)
+	workflowIntegrationExec(t, ctx, pool,
+		`INSERT INTO users (id, company_id, email, name) VALUES ($1, $2, $3, $4)`,
+		ids.user, ids.company, userEmail, "WF Output Binding User",
+	)
+	workflowIntegrationExec(t, ctx, pool,
+		`INSERT INTO apps (id, workspace_id, name, status, dsl_source, created_by) VALUES ($1, $2, $3, 'draft', '', $4)`,
+		ids.app, ids.workspace, appName, ids.user,
+	)
+	workflowIntegrationExec(t, ctx, pool,
+		`INSERT INTO workflows (id, workspace_id, app_id, name, trigger_type, trigger_config, status, requires_approval, output_bindings, created_by) VALUES ($1, $2, $3, $4, 'manual', '{}', 'active', false, $5, $6)`,
+		ids.workflow, ids.workspace, ids.app, workflowName, outputBindingsJSON, ids.user,
+	)
+	workflowIntegrationExec(t, ctx, pool,
+		`INSERT INTO workflow_steps (id, workflow_id, step_order, name, step_type, config, ai_generated) VALUES ($1, $2, 1, $3, 'notification', $4, false)`,
+		ids.step, ids.workflow, "output binding notification step", stepConfigJSON,
+	)
+	workflowIntegrationExec(t, ctx, pool,
+		`INSERT INTO workflow_runs (id, workflow_id, workspace_id, status, triggered_by, input_data) VALUES ($1, $2, $3, 'pending', $4, $5)`,
+		ids.run, ids.workflow, ids.workspace, ids.user, inputDataJSON,
+	)
+
+	return &workflowIntegrationOutputBindingFixture{
+		ctx:  ctx,
+		pool: pool,
+		cfg:  &config.Config{CredentialsEncryptionKey: encryptionKey},
+		ids:  ids,
+	}
+}
+
+func workflowIntegrationOutputBindingCleanup(t *testing.T, pool *pgxpool.Pool, ids workflowIntegrationFixtureIDs) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	statements := []struct {
+		sql  string
+		args []any
+	}{
+		{sql: `DELETE FROM workflow_runs WHERE id = $1`, args: []any{ids.run}},
+		{sql: `DELETE FROM workflow_steps WHERE id = $1`, args: []any{ids.step}},
+		{sql: `DELETE FROM workflows WHERE id = $1`, args: []any{ids.workflow}},
+		{sql: `DELETE FROM apps WHERE id = $1`, args: []any{ids.app}},
+		{sql: `DELETE FROM workspaces WHERE id = $1`, args: []any{ids.workspace}},
+		{sql: `DELETE FROM users WHERE id = $1`, args: []any{ids.user}},
+		{sql: `DELETE FROM companies WHERE id = $1`, args: []any{ids.company}},
+	}
+
+	for _, stmt := range statements {
+		if _, err := pool.Exec(ctx, stmt.sql, stmt.args...); err != nil {
+			t.Logf("cleanup %q: %v", stmt.sql, err)
+		}
+	}
+}

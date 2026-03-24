@@ -25,6 +25,19 @@
 
 export type StyleMap = Record<string, string>
 
+export interface WidgetBinding {
+  widget_id: string
+  port: string
+  page_id: string
+}
+
+export interface OutputBinding {
+  trigger_step_id: string  // step ID or "__workflow_complete__"
+  widget_id: string
+  port: string
+  page_id: string
+}
+
 export interface AuraNode {
   element: string
   id: string
@@ -37,6 +50,8 @@ export interface AuraNode {
   with?: Record<string, string>
   transform?: string
   action?: string   // workflow ID to trigger on form submit / button click
+  widget_bindings?: Record<string, WidgetBinding>
+  output_bindings?: OutputBinding[]
   style?: StyleMap
   /** True if this node was manually edited and should survive AI rewrites */
   manuallyEdited?: boolean
@@ -108,6 +123,12 @@ export function parse(source: string): AuraDocument {
         case 'action':
           node.action = consume()
           break
+        case 'widget_bindings':
+          node.widget_bindings = JSON.parse(consumeString(tokens, pos - 1, () => consume()))
+          break
+        case 'output_bindings':
+          node.output_bindings = JSON.parse(consumeString(tokens, pos - 1, () => consume()))
+          break
         case 'style':
           node.style = parseStyleBlock(tokens, () => peek(), () => consume(), expect)
           break
@@ -145,6 +166,12 @@ function serializeNode(n: AuraNode): string {
   }
   if (n.transform !== undefined) lines.push(`  transform ${JSON.stringify(n.transform)}`)
   if (n.action !== undefined) lines.push(`  action ${n.action}`)
+  if (n.widget_bindings && Object.keys(n.widget_bindings).length > 0) {
+    lines.push(`  widget_bindings ${JSON.stringify(JSON.stringify(n.widget_bindings))}`)
+  }
+  if (n.output_bindings && n.output_bindings.length > 0) {
+    lines.push(`  output_bindings ${JSON.stringify(JSON.stringify(n.output_bindings))}`)
+  }
   if (n.style && Object.keys(n.style).length > 0) {
     lines.push(`  style {`)
     for (const [k, v] of Object.entries(n.style)) {
@@ -187,6 +214,26 @@ export function validate(doc: AuraDocument): ValidationError[] {
   for (const node of doc) {
     if (node.parentId !== 'root' && !ids.has(node.parentId)) {
       errors.push({ nodeId: node.id, message: `parentId '${node.parentId}' not found` })
+    }
+    if (node.widget_bindings) {
+      for (const [configKey, binding] of Object.entries(node.widget_bindings)) {
+        if (!ids.has(binding.widget_id)) {
+          errors.push({
+            nodeId: node.id,
+            message: `widget binding on node '${node.id}' references unknown widget '${binding.widget_id}' (key '${configKey}')`,
+          })
+        }
+      }
+    }
+    if (node.output_bindings) {
+      for (const binding of node.output_bindings) {
+        if (!ids.has(binding.widget_id)) {
+          errors.push({
+            nodeId: node.id,
+            message: `output binding on node '${node.id}' references unknown widget '${binding.widget_id}'`,
+          })
+        }
+      }
     }
   }
 
@@ -343,7 +390,7 @@ function parseStyleBlock(
   return map
 }
 
-const CLAUSES = new Set(['text', 'value', 'forEach', 'key', 'if', 'with', 'transform', 'action', 'style'])
+const CLAUSES = new Set(['text', 'value', 'forEach', 'key', 'if', 'with', 'transform', 'action', 'widget_bindings', 'output_bindings', 'style'])
 function isClause(t: string): boolean {
   return CLAUSES.has(t)
 }

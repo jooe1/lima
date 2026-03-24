@@ -437,7 +437,17 @@ const (
 	WorkflowStatusDraft    WorkflowStatus = "draft"
 	WorkflowStatusActive   WorkflowStatus = "active"
 	WorkflowStatusArchived WorkflowStatus = "archived"
+	WorkflowStatusOrphaned WorkflowStatus = "orphaned"
 )
+
+// OutputBinding describes a single slot where a workflow result should be written
+// back to a widget on a page after execution.
+type OutputBinding struct {
+	TriggerStepID string `json:"trigger_step_id"`
+	WidgetID      string `json:"widget_id"`
+	Port          string `json:"port"`
+	PageID        string `json:"page_id"`
+}
 
 // WorkflowStepType mirrors the workflow_step_type DB enum.
 type WorkflowStepType string
@@ -476,6 +486,14 @@ type Workflow struct {
 	CreatedBy        string          `json:"created_by"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
+	SourceWidgetID   *string         `json:"source_widget_id,omitempty"` // page-bound workflows only (immutable once set)
+	SourcePageID     *string         `json:"source_page_id,omitempty"`   // page-bound workflows only (immutable once set)
+	OutputBindings   []OutputBinding `json:"output_bindings"`             // workflow-level output bindings
+}
+
+// IsPageBound returns true if the workflow trigger is button_click or form_submit.
+func (w *Workflow) IsPageBound() bool {
+	return w.TriggerType == TriggerButtonClick || w.TriggerType == TriggerFormSubmit
 }
 
 // WorkflowWithSteps embeds a Workflow together with its ordered steps.

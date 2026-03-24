@@ -47,6 +47,28 @@ type combinedWorkflowPayload struct {
 	Approved    bool   `json:"approved"`
 }
 
+// collectTriggeredOutputBindings returns the subset of def.outputBindings that
+// were triggered by this run. A binding with TriggerStepID ==
+// "__workflow_complete__" fires when the run finishes without error.
+// Any other TriggerStepID fires when the named step completed successfully.
+func collectTriggeredOutputBindings(def *wfDefinition, stepResults map[string]any, completedWithError bool) []outputBinding {
+	var triggered []outputBinding
+	for _, ob := range def.outputBindings {
+		if ob.TriggerStepID == "__workflow_complete__" {
+			if !completedWithError {
+				triggered = append(triggered, ob)
+			}
+			continue
+		}
+		if sr, ok := stepResults[ob.TriggerStepID]; ok {
+			if m, ok := sr.(map[string]any); ok && m["status"] == "completed" {
+				triggered = append(triggered, ob)
+			}
+		}
+	}
+	return triggered
+}
+
 // handleWorkflow returns a jobHandler that executes or resumes workflow runs.
 func handleWorkflow(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) jobHandler {
 	return func(ctx context.Context, payload []byte) error {
@@ -128,6 +150,9 @@ func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 		return nil
 	}
 
+	if triggered := collectTriggeredOutputBindings(def, stepResults, false); len(triggered) > 0 {
+		output["__output_bindings__"] = triggered
+	}
 	_ = setRunStatus(ctx, pool, runID, runStatusCompleted, output, nil, nil)
 	log.Info("workflow run completed", zap.String("run_id", runID))
 	return nil
@@ -318,6 +343,9 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 		return nil
 	}
 
+	if triggered := collectTriggeredOutputBindings(def, stepResults, false); len(triggered) > 0 {
+		output["__output_bindings__"] = triggered
+	}
 	_ = setRunStatus(ctx, pool, runID, runStatusCompleted, output, nil, nil)
 	log.Info("workflow run completed after resume", zap.String("run_id", runID))
 	return nil

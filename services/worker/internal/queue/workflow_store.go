@@ -31,6 +31,16 @@ const (
 	runStatusFailed           workflowRunStatus = "failed"
 )
 
+// outputBinding is the worker-local mirror of model.OutputBinding.
+// It is stored as JSONB in workflows.output_bindings and emitted into
+// output_data["__output_bindings__"] when a run completes.
+type outputBinding struct {
+	TriggerStepID string `json:"trigger_step_id"`
+	WidgetID      string `json:"widget_id"`
+	Port          string `json:"port"`
+	PageID        string `json:"page_id"`
+}
+
 type wfRun struct {
 	id          string
 	workflowID  string
@@ -59,6 +69,7 @@ type wfDefinition struct {
 	workspaceID      string
 	appID            string
 	requiresApproval bool
+	outputBindings   []outputBinding
 	steps            []wfStep
 }
 
@@ -94,13 +105,17 @@ func getWorkflowRun(ctx context.Context, pool *pgxpool.Pool, runID string) (*wfR
 // getWorkflowDefinition fetches the workflow and its ordered steps.
 func getWorkflowDefinition(ctx context.Context, pool *pgxpool.Pool, workflowID string) (*wfDefinition, error) {
 	var def wfDefinition
+	var outputBindingsBytes []byte
 	err := pool.QueryRow(ctx, `
-		SELECT id, workspace_id, app_id, requires_approval
+		SELECT id, workspace_id, app_id, requires_approval, output_bindings
 		FROM workflows WHERE id = $1`,
 		workflowID,
-	).Scan(&def.id, &def.workspaceID, &def.appID, &def.requiresApproval)
+	).Scan(&def.id, &def.workspaceID, &def.appID, &def.requiresApproval, &outputBindingsBytes)
 	if err != nil {
 		return nil, fmt.Errorf("get workflow %s: %w", workflowID, err)
+	}
+	if outputBindingsBytes != nil {
+		_ = json.Unmarshal(outputBindingsBytes, &def.outputBindings)
 	}
 
 	rows, err := pool.Query(ctx, `

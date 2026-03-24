@@ -620,3 +620,76 @@ func TestNormalizeGraphQLMutationBodyRejectsInvalidPayloads(t *testing.T) {
 		})
 	}
 }
+
+func TestCollectTriggeredOutputBindings(t *testing.T) {
+	t.Parallel()
+
+	def := &wfDefinition{
+		outputBindings: []outputBinding{
+			{TriggerStepID: "__workflow_complete__", WidgetID: "w-complete", Port: "data", PageID: "p-1"},
+			{TriggerStepID: "step-a", WidgetID: "w-step-a", Port: "rows", PageID: "p-1"},
+			{TriggerStepID: "step-b", WidgetID: "w-step-b", Port: "data", PageID: "p-2"},
+		},
+	}
+
+	stepResults := map[string]any{
+		"step-a": map[string]any{"status": "completed", "result": []any{}},
+		// step-b is absent — its binding must not fire
+	}
+
+	t.Run("workflow_complete and completed-step bindings included on clean run", func(t *testing.T) {
+		t.Parallel()
+		triggered := collectTriggeredOutputBindings(def, stepResults, false)
+		if len(triggered) != 2 {
+			t.Fatalf("len(triggered) = %d, want 2", len(triggered))
+		}
+		if triggered[0].TriggerStepID != "__workflow_complete__" {
+			t.Fatalf("triggered[0].TriggerStepID = %q, want __workflow_complete__", triggered[0].TriggerStepID)
+		}
+		if triggered[1].TriggerStepID != "step-a" {
+			t.Fatalf("triggered[1].TriggerStepID = %q, want step-a", triggered[1].TriggerStepID)
+		}
+	})
+
+	t.Run("workflow_complete binding excluded when run completed with error", func(t *testing.T) {
+		t.Parallel()
+		triggered := collectTriggeredOutputBindings(def, stepResults, true)
+		if len(triggered) != 1 {
+			t.Fatalf("len(triggered) = %d, want 1", len(triggered))
+		}
+		if triggered[0].TriggerStepID != "step-a" {
+			t.Fatalf("triggered[0].TriggerStepID = %q, want step-a", triggered[0].TriggerStepID)
+		}
+	})
+
+	t.Run("only workflow_complete fires when no steps ran", func(t *testing.T) {
+		t.Parallel()
+		triggered := collectTriggeredOutputBindings(def, map[string]any{}, false)
+		if len(triggered) != 1 {
+			t.Fatalf("len(triggered) = %d, want 1", len(triggered))
+		}
+		if triggered[0].TriggerStepID != "__workflow_complete__" {
+			t.Fatalf("triggered[0].TriggerStepID = %q, want __workflow_complete__", triggered[0].TriggerStepID)
+		}
+	})
+
+	t.Run("no bindings when def has none", func(t *testing.T) {
+		t.Parallel()
+		triggered := collectTriggeredOutputBindings(&wfDefinition{}, stepResults, false)
+		if triggered != nil {
+			t.Fatalf("triggered = %v, want nil", triggered)
+		}
+	})
+
+	t.Run("step binding not fired when step status is not completed", func(t *testing.T) {
+		t.Parallel()
+		failedResults := map[string]any{
+			"step-a": map[string]any{"status": "failed", "error": "something went wrong"},
+		}
+		triggered := collectTriggeredOutputBindings(def, failedResults, true)
+		// completedWithError=true excludes __workflow_complete__; step-a is failed so excluded
+		if len(triggered) != 0 {
+			t.Fatalf("len(triggered) = %d, want 0", len(triggered))
+		}
+	})
+}

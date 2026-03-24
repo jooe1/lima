@@ -24,7 +24,7 @@ type ConnectorFormData = {
   credentials: Record<string, unknown>
 }
 
-const CONNECTOR_TYPES: ConnectorType[] = ['postgres', 'mysql', 'mssql', 'rest', 'graphql', 'managed']
+const CONNECTOR_TYPES: ConnectorType[] = ['postgres', 'mysql', 'mssql', 'rest', 'graphql', 'managed', 'csv']
 
 const TYPE_COLORS: Record<ConnectorType, { bg: string; fg: string }> = {
   postgres: { bg: '#336791', fg: '#e5e5e5' },
@@ -33,6 +33,7 @@ const TYPE_COLORS: Record<ConnectorType, { bg: string; fg: string }> = {
   rest: { bg: '#854d0e', fg: '#fbbf24' },
   graphql: { bg: '#99015544', fg: '#e535ab' },
   managed: { bg: '#1e3a5f', fg: '#60a5fa' },
+  csv: { bg: '#166534', fg: '#86efac' },
 }
 
 // ---------------------------------------------------------------------------

@@ -18,7 +18,8 @@ func (s *Store) ListWorkflows(ctx context.Context, workspaceID, appID string) ([
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, workspace_id, app_id, name, description,
 		       trigger_type, trigger_config, status, requires_approval,
-		       created_by, created_at, updated_at
+		       created_by, created_at, updated_at,
+		       source_widget_id, source_page_id, output_bindings
 		FROM workflows
 		WHERE workspace_id = $1 AND app_id = $2
 		ORDER BY name`,
@@ -32,16 +33,24 @@ func (s *Store) ListWorkflows(ctx context.Context, workspaceID, appID string) ([
 	var workflows []model.Workflow
 	for rows.Next() {
 		var w model.Workflow
-		var cfgBytes []byte
+		var cfgBytes, bindingsBytes []byte
 		if err := rows.Scan(
 			&w.ID, &w.WorkspaceID, &w.AppID, &w.Name, &w.Description,
 			&w.TriggerType, &cfgBytes, &w.Status, &w.RequiresApproval,
 			&w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
+			&w.SourceWidgetID, &w.SourcePageID, &bindingsBytes,
 		); err != nil {
 			return nil, fmt.Errorf("list workflows scan: %w", err)
 		}
 		if err := json.Unmarshal(cfgBytes, &w.TriggerConfig); err != nil {
 			w.TriggerConfig = map[string]any{}
+		}
+		if bindingsBytes != nil {
+			if err := json.Unmarshal(bindingsBytes, &w.OutputBindings); err != nil {
+				w.OutputBindings = []model.OutputBinding{}
+			}
+		} else {
+			w.OutputBindings = []model.OutputBinding{}
 		}
 		workflows = append(workflows, w)
 	}
@@ -52,11 +61,12 @@ func (s *Store) ListWorkflows(ctx context.Context, workspaceID, appID string) ([
 // Returns ErrNotFound if no matching workflow exists for the given workspace.
 func (s *Store) GetWorkflowWithSteps(ctx context.Context, workspaceID, workflowID string) (*model.WorkflowWithSteps, error) {
 	var w model.WorkflowWithSteps
-	var cfgBytes []byte
+	var cfgBytes, bindingsBytes []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, workspace_id, app_id, name, description,
 		       trigger_type, trigger_config, status, requires_approval,
-		       created_by, created_at, updated_at
+		       created_by, created_at, updated_at,
+		       source_widget_id, source_page_id, output_bindings
 		FROM workflows
 		WHERE id = $1 AND workspace_id = $2`,
 		workflowID, workspaceID,
@@ -64,6 +74,7 @@ func (s *Store) GetWorkflowWithSteps(ctx context.Context, workspaceID, workflowI
 		&w.ID, &w.WorkspaceID, &w.AppID, &w.Name, &w.Description,
 		&w.TriggerType, &cfgBytes, &w.Status, &w.RequiresApproval,
 		&w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
+		&w.SourceWidgetID, &w.SourcePageID, &bindingsBytes,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -73,6 +84,13 @@ func (s *Store) GetWorkflowWithSteps(ctx context.Context, workspaceID, workflowI
 	}
 	if err := json.Unmarshal(cfgBytes, &w.TriggerConfig); err != nil {
 		w.TriggerConfig = map[string]any{}
+	}
+	if bindingsBytes != nil {
+		if err := json.Unmarshal(bindingsBytes, &w.OutputBindings); err != nil {
+			w.OutputBindings = []model.OutputBinding{}
+		}
+	} else {
+		w.OutputBindings = []model.OutputBinding{}
 	}
 
 	steps, err := s.listWorkflowSteps(ctx, workflowID)
@@ -88,7 +106,8 @@ func (s *Store) GetWorkflowWithSteps(ctx context.Context, workspaceID, workflowI
 // derived from their position (0-based) so callers do not need to set it.
 func (s *Store) CreateWorkflow(ctx context.Context, workspaceID, appID, name string, description *string,
 	triggerType model.WorkflowTrigger, triggerConfig map[string]any,
-	requiresApproval bool, createdBy string, steps []model.WorkflowStep,
+	requiresApproval bool, createdBy string, sourceWidgetID, sourcePageID *string,
+	steps []model.WorkflowStep,
 ) (*model.WorkflowWithSteps, error) {
 	cfgBytes, err := json.Marshal(triggerConfig)
 	if err != nil {
@@ -102,20 +121,24 @@ func (s *Store) CreateWorkflow(ctx context.Context, workspaceID, appID, name str
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	var w model.Workflow
+	var bindingsBytes []byte
 	err = tx.QueryRow(ctx, `
 		INSERT INTO workflows
 		    (workspace_id, app_id, name, description,
-		     trigger_type, trigger_config, status, requires_approval, created_by)
-		VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8)
+		     trigger_type, trigger_config, status, requires_approval, created_by,
+		     source_widget_id, source_page_id)
+		VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8,$9,$10)
 		RETURNING id, workspace_id, app_id, name, description,
 		          trigger_type, trigger_config, status, requires_approval,
-		          created_by, created_at, updated_at`,
+		          created_by, created_at, updated_at,
+		          source_widget_id, source_page_id, output_bindings`,
 		workspaceID, appID, name, description,
-		triggerType, cfgBytes, requiresApproval, createdBy,
+		triggerType, cfgBytes, requiresApproval, createdBy, sourceWidgetID, sourcePageID,
 	).Scan(
 		&w.ID, &w.WorkspaceID, &w.AppID, &w.Name, &w.Description,
 		&w.TriggerType, &cfgBytes, &w.Status, &w.RequiresApproval,
 		&w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
+		&w.SourceWidgetID, &w.SourcePageID, &bindingsBytes,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert workflow: %w", err)
@@ -123,6 +146,7 @@ func (s *Store) CreateWorkflow(ctx context.Context, workspaceID, appID, name str
 	if err := json.Unmarshal(cfgBytes, &w.TriggerConfig); err != nil {
 		w.TriggerConfig = map[string]any{}
 	}
+	w.OutputBindings = []model.OutputBinding{}
 
 	inserted := make([]model.WorkflowStep, 0, len(steps))
 	for i, step := range steps {
@@ -145,25 +169,37 @@ func (s *Store) CreateWorkflow(ctx context.Context, workspaceID, appID, name str
 func (s *Store) PatchWorkflow(ctx context.Context, workspaceID, workflowID string,
 	name *string, description *string,
 	triggerType *model.WorkflowTrigger, triggerConfig map[string]any,
-	requiresApproval *bool,
+	requiresApproval *bool, outputBindings []model.OutputBinding,
 ) (*model.Workflow, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, workspace_id, app_id, name, description,
 		       trigger_type, trigger_config, status, requires_approval,
-		       created_by, created_at, updated_at
+		       created_by, created_at, updated_at,
+		       source_widget_id, source_page_id, output_bindings
 		FROM workflows WHERE id = $1 AND workspace_id = $2`,
 		workflowID, workspaceID,
 	)
 	var w model.Workflow
-	var cfgBytes []byte
+	var cfgBytes, bindingsBytes []byte
 	if err := row.Scan(
 		&w.ID, &w.WorkspaceID, &w.AppID, &w.Name, &w.Description,
 		&w.TriggerType, &cfgBytes, &w.Status, &w.RequiresApproval,
 		&w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
+		&w.SourceWidgetID, &w.SourcePageID, &bindingsBytes,
 	); errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, fmt.Errorf("get workflow for patch: %w", err)
+	}
+	if err := json.Unmarshal(cfgBytes, &w.TriggerConfig); err != nil {
+		w.TriggerConfig = map[string]any{}
+	}
+	if bindingsBytes != nil {
+		if err := json.Unmarshal(bindingsBytes, &w.OutputBindings); err != nil {
+			w.OutputBindings = []model.OutputBinding{}
+		}
+	} else {
+		w.OutputBindings = []model.OutputBinding{}
 	}
 
 	if name != nil {
@@ -181,19 +217,26 @@ func (s *Store) PatchWorkflow(ctx context.Context, workspaceID, workflowID strin
 	if requiresApproval != nil {
 		w.RequiresApproval = *requiresApproval
 	}
+	if outputBindings != nil {
+		w.OutputBindings = outputBindings
+	}
 
 	newCfg, err := json.Marshal(w.TriggerConfig)
 	if err != nil {
 		return nil, fmt.Errorf("marshal trigger config: %w", err)
 	}
+	newBindings, err := json.Marshal(w.OutputBindings)
+	if err != nil {
+		return nil, fmt.Errorf("marshal output bindings: %w", err)
+	}
 
 	_, err = s.pool.Exec(ctx, `
 		UPDATE workflows
 		SET name=$1, description=$2, trigger_type=$3, trigger_config=$4,
-		    requires_approval=$5, updated_at=now()
-		WHERE id=$6 AND workspace_id=$7`,
+		    requires_approval=$5, output_bindings=$6, updated_at=now()
+		WHERE id=$7 AND workspace_id=$8`,
 		w.Name, w.Description, w.TriggerType, newCfg, w.RequiresApproval,
-		workflowID, workspaceID,
+		newBindings, workflowID, workspaceID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("patch workflow: %w", err)
@@ -215,18 +258,20 @@ func (s *Store) ArchiveWorkflow(ctx context.Context, workspaceID, workflowID str
 
 func (s *Store) setWorkflowStatus(ctx context.Context, workspaceID, workflowID string, status model.WorkflowStatus) (*model.Workflow, error) {
 	var w model.Workflow
-	var cfgBytes []byte
+	var cfgBytes, bindingsBytes []byte
 	err := s.pool.QueryRow(ctx, `
 		UPDATE workflows SET status=$1, updated_at=now()
 		WHERE id=$2 AND workspace_id=$3
 		RETURNING id, workspace_id, app_id, name, description,
 		          trigger_type, trigger_config, status, requires_approval,
-		          created_by, created_at, updated_at`,
+		          created_by, created_at, updated_at,
+		          source_widget_id, source_page_id, output_bindings`,
 		status, workflowID, workspaceID,
 	).Scan(
 		&w.ID, &w.WorkspaceID, &w.AppID, &w.Name, &w.Description,
 		&w.TriggerType, &cfgBytes, &w.Status, &w.RequiresApproval,
 		&w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
+		&w.SourceWidgetID, &w.SourcePageID, &bindingsBytes,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -236,6 +281,13 @@ func (s *Store) setWorkflowStatus(ctx context.Context, workspaceID, workflowID s
 	}
 	if err := json.Unmarshal(cfgBytes, &w.TriggerConfig); err != nil {
 		w.TriggerConfig = map[string]any{}
+	}
+	if bindingsBytes != nil {
+		if err := json.Unmarshal(bindingsBytes, &w.OutputBindings); err != nil {
+			w.OutputBindings = []model.OutputBinding{}
+		}
+	} else {
+		w.OutputBindings = []model.OutputBinding{}
 	}
 	return &w, nil
 }
@@ -253,6 +305,62 @@ func (s *Store) DeleteWorkflow(ctx context.Context, workspaceID, workflowID stri
 		return ErrNotFound
 	}
 	return nil
+}
+
+// MarkWorkflowOrphaned sets status='orphaned' for all page-bound workflows
+// that reference the given widget ID within the given app.
+func (s *Store) MarkWorkflowOrphaned(ctx context.Context, appID, widgetID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE workflows SET status='orphaned', updated_at=NOW()
+		WHERE app_id=$1 AND source_widget_id=$2 AND status != 'archived'`,
+		appID, widgetID,
+	)
+	if err != nil {
+		return fmt.Errorf("mark workflow orphaned: %w", err)
+	}
+	return nil
+}
+
+// UpdateWorkflowOutputBindings replaces the output_bindings JSON for a workflow.
+func (s *Store) UpdateWorkflowOutputBindings(ctx context.Context, workspaceID, workflowID string, bindings []model.OutputBinding) (*model.Workflow, error) {
+	bindingsBytes, err := json.Marshal(bindings)
+	if err != nil {
+		return nil, fmt.Errorf("marshal output bindings: %w", err)
+	}
+
+	var w model.Workflow
+	var cfgBytes, bindingsResult []byte
+	err = s.pool.QueryRow(ctx, `
+		UPDATE workflows SET output_bindings=$1, updated_at=now()
+		WHERE id=$2 AND workspace_id=$3
+		RETURNING id, workspace_id, app_id, name, description,
+		          trigger_type, trigger_config, status, requires_approval,
+		          created_by, created_at, updated_at,
+		          source_widget_id, source_page_id, output_bindings`,
+		bindingsBytes, workflowID, workspaceID,
+	).Scan(
+		&w.ID, &w.WorkspaceID, &w.AppID, &w.Name, &w.Description,
+		&w.TriggerType, &cfgBytes, &w.Status, &w.RequiresApproval,
+		&w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
+		&w.SourceWidgetID, &w.SourcePageID, &bindingsResult,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update output bindings: %w", err)
+	}
+	if err := json.Unmarshal(cfgBytes, &w.TriggerConfig); err != nil {
+		w.TriggerConfig = map[string]any{}
+	}
+	if bindingsResult != nil {
+		if err := json.Unmarshal(bindingsResult, &w.OutputBindings); err != nil {
+			w.OutputBindings = []model.OutputBinding{}
+		}
+	} else {
+		w.OutputBindings = []model.OutputBinding{}
+	}
+	return &w, nil
 }
 
 // ---- Workflow steps ---------------------------------------------------------
@@ -273,7 +381,7 @@ func (s *Store) listWorkflowSteps(ctx context.Context, workflowID string) ([]mod
 	}
 	defer rows.Close()
 
-	var steps []model.WorkflowStep
+	steps := make([]model.WorkflowStep, 0)
 	for rows.Next() {
 		var step model.WorkflowStep
 		var cfgBytes []byte

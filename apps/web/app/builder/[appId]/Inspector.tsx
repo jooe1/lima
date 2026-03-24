@@ -15,7 +15,9 @@ interface Props {
   onDelete: (id: string) => void
   workspaceId: string
   appId: string
+  pageId: string
   onOpenCanvas?: (workflowId: string) => void
+  onOpenSplitView?: (workflowId: string) => void
 }
 
 /**
@@ -61,7 +63,7 @@ function setPropValue(node: AuraNode, propName: string, value: string): AuraNode
   return updated
 }
 
-export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, onOpenCanvas }: Props) {
+export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, pageId, onOpenCanvas, onOpenSplitView }: Props) {
   if (!node) {
     return (
       <aside style={panelStyle}>
@@ -192,12 +194,14 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, o
                 <WorkflowCard
                   workspaceId={workspaceId}
                   appId={appId}
+                  pageId={pageId}
                   triggerType={n.element === 'form' ? 'form_submit' : 'button_click'}
                   widgetId={n.id}
                   workflowId={n.action}
                   onLink={workflowId => onUpdate({ ...n, manuallyEdited: true, action: workflowId })}
                   onUnlink={() => onUpdate({ ...n, manuallyEdited: true, action: undefined })}
                   onOpenCanvas={onOpenCanvas}
+                  onOpenSplitView={onOpenSplitView}
                 />
               </div>
             ) : (
@@ -1322,17 +1326,19 @@ function FilterDataSourceEditor({
 interface WorkflowCardProps {
   workspaceId: string
   appId: string
+  pageId: string
   triggerType: 'form_submit' | 'button_click'
   widgetId: string
   workflowId?: string
   onLink: (workflowId: string) => void
   onUnlink: () => void
   onOpenCanvas?: (workflowId: string) => void
+  onOpenSplitView?: (workflowId: string) => void
 }
 
 function WorkflowCard({
-  workspaceId, appId, triggerType, widgetId,
-  workflowId, onLink, onUnlink, onOpenCanvas,
+  workspaceId, appId, pageId, triggerType, widgetId,
+  workflowId, onLink, onUnlink, onOpenCanvas, onOpenSplitView,
 }: WorkflowCardProps) {
   const [workflow, setWorkflow] = React.useState<Workflow | null>(null)
   const [creating, setCreating] = React.useState(false)
@@ -1361,10 +1367,12 @@ function WorkflowCard({
         trigger_config: { widget_id: widgetId },
         requires_approval: true,
         steps: [],
+        source_widget_id: widgetId,
+        source_page_id: pageId,
       })
       onLink(wf.id)
       setWorkflow(wf)
-      onOpenCanvas?.(wf.id)
+      onOpenSplitView?.(wf.id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create workflow')
     } finally {
@@ -1404,7 +1412,7 @@ function WorkflowCard({
         <div style={{ display: 'flex', gap: 5 }}>
           <button
             style={smallBtn(true)}
-            onClick={() => onOpenCanvas?.(workflow.id)}
+            onClick={() => (onOpenSplitView ?? onOpenCanvas)?.(workflow.id)}
           >
             Edit workflow
           </button>

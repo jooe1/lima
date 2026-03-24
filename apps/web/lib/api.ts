@@ -492,7 +492,20 @@ export type WorkflowTrigger =
   | 'schedule'
   | 'webhook'
 
-export type WorkflowStatus = 'draft' | 'active' | 'archived'
+export type WorkflowStatus = 'draft' | 'active' | 'archived' | 'orphaned'
+
+export interface OutputBinding {
+  trigger_step_id: string   // step ID or "__workflow_complete__"
+  widget_id: string
+  port: string
+  page_id: string
+}
+
+export interface WidgetBinding {
+  widget_id: string
+  port: string
+  page_id: string
+}
 
 export type WorkflowStepType =
   | 'query'
@@ -535,6 +548,10 @@ export interface Workflow {
   trigger_config: Record<string, unknown>
   status: WorkflowStatus
   requires_approval: boolean
+  source_widget_id?: string | null
+  source_page_id?: string | null
+  output_bindings: OutputBinding[]
+  is_page_bound: boolean
   created_by: string
   created_at: string
   updated_at: string
@@ -574,6 +591,8 @@ export interface CreateWorkflowInput {
   trigger_config?: Record<string, unknown>
   requires_approval?: boolean
   steps?: WorkflowStepInput[]
+  source_widget_id?: string
+  source_page_id?: string
 }
 
 export function listWorkflows(workspaceId: string, appId: string) {
@@ -658,6 +677,18 @@ export function putWorkflowSteps(
   )
 }
 
+export function putWorkflowOutputBindings(
+  workspaceId: string,
+  appId: string,
+  workflowId: string,
+  outputBindings: OutputBinding[],
+): Promise<Workflow> {
+  return request<Workflow>(
+    `/v1/workspaces/${workspaceId}/apps/${appId}/workflows/${workflowId}/output-bindings`,
+    { method: 'PUT', body: JSON.stringify({ output_bindings: outputBindings }) },
+  )
+}
+
 export function reviewStep(
   workspaceId: string,
   appId: string,
@@ -701,7 +732,7 @@ export function runConnectorQuery(
 
 // ---- Connectors (Phase 4) --------------------------------------------------
 
-export type ConnectorType = 'postgres' | 'mysql' | 'mssql' | 'rest' | 'graphql' | 'managed'
+export type ConnectorType = 'postgres' | 'mysql' | 'mssql' | 'rest' | 'graphql' | 'managed' | 'csv'
 
 export interface Connector {
   id: string

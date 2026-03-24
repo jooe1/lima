@@ -51,6 +51,7 @@ const pill = (status: string): React.CSSProperties => {
     draft:             ['#854d0e33', '#fbbf24'],
     active:            ['#16653433', '#4ade80'],
     archived:          ['#1a1a1a',   '#555'],
+    orphaned:          ['#78350f55', '#fb923c'],
     pending:           ['#1e3a8a33', '#93c5fd'],
     running:           ['#1e3a8a33', '#6ee7b7'],
     awaiting_approval: ['#92400e33', '#fcd34d'],
@@ -109,6 +110,7 @@ interface Props {
   appId: string
   triggerTargets?: WorkflowTriggerTarget[]
   onOpenCanvas?: (workflowId: string) => void
+  onOpenSplitView?: (workflowId: string) => void
 }
 
 function getStringConfigValue(config: Record<string, unknown>, key: string) {
@@ -286,7 +288,7 @@ function getTriggerHelperText(triggerType: WorkflowTrigger) {
 // ============================================================================
 // WorkflowEditor
 // ============================================================================
-export function WorkflowEditor({ appId, triggerTargets = [], onOpenCanvas }: Props) {
+export function WorkflowEditor({ appId, triggerTargets = [], onOpenCanvas, onOpenSplitView }: Props) {
   const { workspace, user } = useAuth()
   const isAdmin   = user?.role === 'workspace_admin'
   const isBuilder = user?.role === 'app_builder' || isAdmin
@@ -508,7 +510,41 @@ export function WorkflowEditor({ appId, triggerTargets = [], onOpenCanvas }: Pro
           {!loading && workflows.length === 0 && (
             <div style={{ padding: 12, color: C.muted }}>No workflows yet</div>
           )}
-          {workflows.map(wf => (
+          {!loading && workflows.some(wf => wf.is_page_bound) && (
+            <div style={{ padding: '6px 12px 2px', color: C.muted, fontSize: '0.6rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1px solid ${C.border}` }}>
+              Page Workflows
+              <div style={{ fontSize: '0.55rem', fontWeight: 400, textTransform: 'none', letterSpacing: 0, marginTop: 1, color: '#3a3a3a' }}>Created from widget Inspectors</div>
+            </div>
+          )}
+          {workflows.filter(wf => wf.is_page_bound).map(wf => (
+            <div
+              key={wf.id}
+              onClick={() => { selectWorkflow(wf); wf.is_page_bound ? onOpenSplitView?.(wf.id) : onOpenCanvas?.(wf.id) }}
+              style={{
+                padding: '8px 12px',
+                cursor: 'pointer',
+                borderBottom: `1px solid ${C.border}`,
+                background: selected?.id === wf.id ? '#161616' : 'transparent',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {wf.name}
+              </span>
+              {wf.status === 'orphaned' && (
+                <span style={{ fontSize: '0.58rem', padding: '1px 6px', borderRadius: 99, background: '#78350f55', color: '#fb923c', flexShrink: 0 }}>⚠ Orphaned</span>
+              )}
+              <span style={pill(wf.status)}>{wf.status}</span>
+            </div>
+          ))}
+          {!loading && workflows.some(wf => !wf.is_page_bound) && (
+            <div style={{ padding: '6px 12px 2px', color: C.muted, fontSize: '0.6rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1px solid ${C.border}` }}>
+              Standalone Workflows
+            </div>
+          )}
+          {workflows.filter(wf => !wf.is_page_bound).map(wf => (
             <div
               key={wf.id}
               onClick={() => { selectWorkflow(wf); onOpenCanvas?.(wf.id) }}

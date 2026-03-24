@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parse, serialize, validate, diff, applyDiff, ParseError } from '../src/index'
+import { parse, serialize, validate, diff, applyDiff, ParseError, type WidgetBinding, type OutputBinding } from '../src/index'
 
 const SIMPLE_DSL = `
 table orders-table @ root
@@ -157,5 +157,90 @@ button submit-btn @ root
     expect(doc[0].action).toBeUndefined()
     const src = serialize(doc)
     expect(src).not.toContain('action')
+  })
+})
+
+describe('widget_bindings and output_bindings', () => {
+  const WB: Record<string, WidgetBinding> = {
+    'config.form': { widget_id: 'form1', port: 'data', page_id: 'page-1' },
+  }
+  const OB: OutputBinding[] = [
+    { trigger_step_id: '__workflow_complete__', widget_id: 'table1', port: 'data', page_id: 'page-1' },
+  ]
+
+  it('parses a node with widget_bindings clause', () => {
+    const source = `step step1 @ root\n  widget_bindings ${JSON.stringify(JSON.stringify(WB))}\n;`
+    const doc = parse(source)
+    expect(doc[0].widget_bindings).toEqual(WB)
+  })
+
+  it('parses a node with output_bindings clause', () => {
+    const source = `step step1 @ root\n  output_bindings ${JSON.stringify(JSON.stringify(OB))}\n;`
+    const doc = parse(source)
+    expect(doc[0].output_bindings).toEqual(OB)
+  })
+
+  it('validates that unknown widget_id in widget_bindings produces a ValidationError', () => {
+    const badWB: Record<string, WidgetBinding> = {
+      'config.form': { widget_id: 'form99', port: 'data', page_id: 'page-1' },
+    }
+    const source = `step step1 @ root\n  widget_bindings ${JSON.stringify(JSON.stringify(badWB))}\n;`
+    const doc = parse(source)
+    const errs = validate(doc)
+    expect(errs.some((e) => e.message.includes('form99'))).toBe(true)
+  })
+
+  it('validates that unknown widget_id in output_bindings produces a ValidationError', () => {
+    const badOB: OutputBinding[] = [
+      { trigger_step_id: '__workflow_complete__', widget_id: 'table99', port: 'data', page_id: 'page-1' },
+    ]
+    const source = `step step1 @ root\n  output_bindings ${JSON.stringify(JSON.stringify(badOB))}\n;`
+    const doc = parse(source)
+    const errs = validate(doc)
+    expect(errs.some((e) => e.message.includes('table99'))).toBe(true)
+  })
+
+  it('does NOT flag unknown widget_id when the widget exists in the document', () => {
+    const source = [
+      `step step1 @ root\n  widget_bindings ${JSON.stringify(JSON.stringify(WB))}\n;`,
+      `form form1 @ root\n;`,
+    ].join('\n')
+    const doc = parse(source)
+    const errs = validate(doc).filter((e) => e.message.includes('widget'))
+    expect(errs).toHaveLength(0)
+  })
+
+  it('round-trips widget_bindings through parse → serialize → parse', () => {
+    const source = [
+      `step step1 @ root\n  widget_bindings ${JSON.stringify(JSON.stringify(WB))}\n;`,
+      `form form1 @ root\n;`,
+    ].join('\n')
+    const doc1 = parse(source)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
+
+  it('round-trips output_bindings through parse → serialize → parse', () => {
+    const source = [
+      `step step1 @ root\n  output_bindings ${JSON.stringify(JSON.stringify(OB))}\n;`,
+      `table table1 @ root\n;`,
+    ].join('\n')
+    const doc1 = parse(source)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
+
+  it('widget_bindings treated as opaque in diff (not field-diffed)', () => {
+    const wbA: Record<string, WidgetBinding> = { 'cfg.x': { widget_id: 'w1', port: 'p', page_id: 'pg' } }
+    const wbB: Record<string, WidgetBinding> = { 'cfg.x': { widget_id: 'w2', port: 'p', page_id: 'pg' } }
+    const srcA = `step s1 @ root\n  widget_bindings ${JSON.stringify(JSON.stringify(wbA))}\n;\nform w1 @ root\n;\nform w2 @ root\n;`
+    const srcB = `step s1 @ root\n  widget_bindings ${JSON.stringify(JSON.stringify(wbB))}\n;\nform w1 @ root\n;\nform w2 @ root\n;`
+    const from = parse(srcA)
+    const to = parse(srcB)
+    const ops = diff(from, to)
+    const updateOp = ops.find((o) => o.op === 'update' && o.id === 's1') as { op: 'update'; id: string; patch: Partial<import('../src/index').AuraNode> } | undefined
+    expect(updateOp?.patch.widget_bindings).toEqual(wbB)
   })
 })

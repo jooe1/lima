@@ -35,6 +35,7 @@ import {
   ApprovalGateNode, NotificationNode, EndNode,
   type WFNode, type WFEdge, type WFNodeData,
 } from './workflow-nodes'
+import type { OutputPortDrag } from './PortTray'
 
 // ---- colour palette ---------------------------------------------------------
 const C = {
@@ -110,11 +111,28 @@ function stepsToFlow(steps: WorkflowStep[], triggerLabel: string): { nodes: WFNo
   })
 
   let prevId = '__start__'
-  const sorted = [...steps].sort((a, b) => a.step_order - b.step_order)
+  const sorted = [...(steps ?? [])].sort((a, b) => a.step_order - b.step_order)
 
   sorted.forEach((step, i) => {
     const x = 160
     const y = 120 + i * 120
+
+    // Parse inputBindings from step.config.input_bindings (if any)
+    const rawIb = step.config?.input_bindings
+    const inputBindings: Record<string, { widgetId: string; portName: string; widgetLabel: string }> = {}
+    if (rawIb && typeof rawIb === 'object' && !Array.isArray(rawIb)) {
+      for (const [k, v] of Object.entries(rawIb as Record<string, unknown>)) {
+        if (v && typeof v === 'object') {
+          const vObj = v as Record<string, unknown>
+          inputBindings[k] = {
+            widgetId: String(vObj.widget_id ?? ''),
+            portName: String(vObj.port ?? k),
+            widgetLabel: String(vObj.widget_label ?? vObj.widget_id ?? ''),
+          }
+        }
+      }
+    }
+
     nodes.push({
       id: step.id,
       type: step.step_type as WFNode['type'],
@@ -126,6 +144,7 @@ function stepsToFlow(steps: WorkflowStep[], triggerLabel: string): { nodes: WFNo
         config: step.config,
         aiGenerated: step.ai_generated,
         reviewed: !!step.reviewed_by,
+        ...(Object.keys(inputBindings).length > 0 ? { inputBindings } : {}),
       },
     })
 
@@ -205,7 +224,7 @@ function stepsToFlow(steps: WorkflowStep[], triggerLabel: string): { nodes: WFNo
 // Convert the current canvas nodes/edges back to WorkflowStepInput[] for saving.
 function flowToSteps(nodes: WFNode[], edges: WFEdge[], existingSteps: WorkflowStep[]): WorkflowStepInput[] {
   const stepNodes = nodes.filter(n => n.type !== 'start' && n.type !== 'end' && n.data.stepType)
-  const existingById = Object.fromEntries(existingSteps.map(s => [s.id, s]))
+  const existingById = Object.fromEntries((existingSteps ?? []).map(s => [s.id, s]))
 
   return stepNodes.map((node) => {
     const existing = existingById[node.id]
@@ -630,9 +649,10 @@ export interface WorkflowCanvasProps {
   onClose: () => void
   isAdmin: boolean
   threadId?: string       // optional; if provided, AI messages go to this thread
+  pageId?: string         // source page for widget binding page_id
 }
 
-export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 'Trigger', onClose, isAdmin, threadId: threadIdProp }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 'Trigger', onClose, isAdmin, threadId: threadIdProp, pageId = '' }: WorkflowCanvasProps) {
   const [wf, setWf] = useState<WorkflowWithSteps | null>(null)
   const [nodes, setNodes, onNodesChange] = useNodesState<WFNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<WFEdge>([])
@@ -646,6 +666,72 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
   const [aiGenerating, setAiGenerating] = useState(false)
   const [connectors, setConnectors] = useState<Connector[]>([])
 
+  // ── Widget binding callbacks ──────────────────────────────────────────────
+
+  const handleBindingDropped = useCallback(
+    ({ portDrag, stepId }: { portDrag: OutputPortDrag; stepId: string }) => {
+      setNodes(ns => ns.map(n => {
+        if (n.data.stepId !== stepId) return n
+        const prevBindings = (n.data.inputBindings ?? {}) as Record<string, { widgetId: string; portName: string; widgetLabel: string }>
+        const inputBindings = {
+          ...prevBindings,
+          [portDrag.portName]: {
+            widgetId: portDrag.widgetId,
+            portName: portDrag.portName,
+            widgetLabel: portDrag.widgetLabel,
+          },
+        }
+        const prevIb = (n.data.config?.input_bindings ?? {}) as Record<string, unknown>
+        const newConfig = {
+          ...n.data.config,
+          input_bindings: {
+            ...prevIb,
+            [portDrag.portName]: {
+              widget_id: portDrag.widgetId,
+              port: portDrag.portName,
+              page_id: pageId,
+              widget_label: portDrag.widgetLabel,
+            },
+          },
+        }
+        return { ...n, data: { ...n.data, inputBindings, config: newConfig } }
+      }))
+    },
+    [setNodes, pageId],
+  )
+
+  const handleBindingRemoved = useCallback(
+    ({ key, stepId }: { key: string; stepId: string }) => {
+      setNodes(ns => ns.map(n => {
+        if (n.data.stepId !== stepId) return n
+        const inputBindings = { ...((n.data.inputBindings ?? {}) as Record<string, { widgetId: string; portName: string; widgetLabel: string }>) }
+        delete inputBindings[key]
+        const prevIb = { ...((n.data.config?.input_bindings ?? {}) as Record<string, unknown>) }
+        delete prevIb[key]
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            inputBindings: Object.keys(inputBindings).length > 0 ? inputBindings : undefined,
+            config: { ...n.data.config, input_bindings: prevIb },
+          },
+        }
+      }))
+    },
+    [setNodes],
+  )
+
+  // Inject binding callbacks into all step nodes (called after any stepsToFlow sync)
+  const injectBindingCallbacks = useCallback(
+    (nodes: WFNode[]): WFNode[] =>
+      nodes.map(n =>
+        n.type === 'start' || n.type === 'end'
+          ? n
+          : { ...n, data: { ...n.data, onBindingDropped: handleBindingDropped, onBindingRemoved: handleBindingRemoved } },
+      ),
+    [handleBindingDropped, handleBindingRemoved],
+  )
+
   // Load workflow
   useEffect(() => {
     if (!workspaceId || !appId || !workflowId) return
@@ -656,12 +742,12 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
         setWf(data)
         setName(data.name)
         const { nodes: n, edges: e } = stepsToFlow(data.steps, triggerLabel)
-        setNodes(n)
+        setNodes(injectBindingCallbacks(n))
         setEdges(e)
       })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load') })
     return () => { cancelled = true }
-  }, [workspaceId, appId, workflowId, triggerLabel, setNodes, setEdges])
+  }, [workspaceId, appId, workflowId, triggerLabel, setNodes, setEdges, injectBindingCallbacks])
 
   // Load connectors for the config panel pickers
   useEffect(() => {
@@ -694,10 +780,12 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
         config: { ...STEP_DEFAULT_CONFIGS[type] },
         aiGenerated: false,
         reviewed: true,
+        onBindingDropped: handleBindingDropped,
+        onBindingRemoved: handleBindingRemoved,
       },
     }
     setNodes(ns => [...ns, newNode])
-  }, [nodes.length, setNodes])
+  }, [nodes.length, setNodes, handleBindingDropped, handleBindingRemoved])
 
   // Update node data from config panel
   const handleNodeSave = useCallback((nodeId: string, updatedData: Partial<WFNodeData>) => {
@@ -716,14 +804,14 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
       setWf(prev => prev ? { ...prev, steps: res.steps } : null)
       // Re-sync to reflect any server-assigned IDs / step_order
       const { nodes: n, edges: e } = stepsToFlow(res.steps, triggerLabel)
-      setNodes(n)
+      setNodes(injectBindingCallbacks(n))
       setEdges(e)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save')
     } finally {
       setSaving(false)
     }
-  }, [wf, nodes, edges, workspaceId, appId, workflowId, triggerLabel, setNodes, setEdges])
+  }, [wf, nodes, edges, workspaceId, appId, workflowId, triggerLabel, setNodes, setEdges, injectBindingCallbacks])
 
   // Activate
   const handleActivate = useCallback(async () => {

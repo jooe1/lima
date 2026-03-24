@@ -22,6 +22,8 @@ import { LayersPanel } from './LayersPanel'
 import { VersionHistory } from './VersionHistory'
 import { WorkflowCanvas } from './WorkflowCanvas'
 import { WorkflowEditor } from './WorkflowEditor'
+import { SplitViewOverlay } from './SplitViewOverlay'
+import { FloatingWorkflowPanel } from './FloatingWorkflowPanel'
 import { formatProductionIssues, getAppProductionIssues } from '../../../lib/appValidation'
 
 type PublicationAudienceSelection = PublicationCapability | ''
@@ -47,6 +49,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector')
   const [showWorkflowModal, setShowWorkflowModal] = useState(false)
   const [canvasWorkflowId, setCanvasWorkflowId] = useState<string | null>(null)
+  const [splitViewWorkflowId, setSplitViewWorkflowId] = useState<string | null>(null)
+  const [floatingPanelWorkflowId, setFloatingPanelWorkflowId] = useState<string | null>(null)
   // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
   const [nodeMetadata, setNodeMetadata] = useState<Record<string, { manuallyEdited: boolean }>>({})
   const [showAppSettings, setShowAppSettings] = useState(false)
@@ -610,7 +614,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             onDelete={handleDeleteWidget}
             workspaceId={workspace?.id ?? ''}
             appId={appId}
+            pageId={appId}
             onOpenCanvas={setCanvasWorkflowId}
+            onOpenSplitView={setSplitViewWorkflowId}
           />
         ) : rightPanel === 'chat' && workspace ? (
           <div style={{ width: 280, flexShrink: 0 }}>
@@ -659,7 +665,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               ✕
             </button>
             <div style={{ flex: 1, overflow: 'hidden' }}>
-              <WorkflowEditor appId={appId} triggerTargets={workflowTriggerTargets} onOpenCanvas={setCanvasWorkflowId} />
+              <WorkflowEditor appId={appId} triggerTargets={workflowTriggerTargets} onOpenCanvas={setCanvasWorkflowId} onOpenSplitView={setSplitViewWorkflowId} />
             </div>
           </div>
         </div>
@@ -799,6 +805,34 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           triggerLabel="Workflow"
           onClose={() => setCanvasWorkflowId(null)}
           isAdmin={user?.role === 'workspace_admin'}
+        />
+      )}
+
+      {/* Split-view overlay for page-bound workflow editing */}
+      {splitViewWorkflowId && workspace && (
+        <SplitViewOverlay
+          workflowId={splitViewWorkflowId}
+          workspaceId={workspace.id}
+          appId={appId}
+          pageId={appId}
+          onClose={() => setSplitViewWorkflowId(null)}
+          onPopOut={(wfId) => { setSplitViewWorkflowId(null); setFloatingPanelWorkflowId(wfId) }}
+          pageDocument={history.doc}
+          isAdmin={user?.role === 'workspace_admin'}
+        />
+      )}
+
+      {/* Floating panel for page-bound workflow editing (WF-33–WF-37) */}
+      {floatingPanelWorkflowId && workspace && (
+        <FloatingWorkflowPanel
+          workflowId={floatingPanelWorkflowId}
+          workspaceId={workspace.id}
+          appId={appId}
+          pageId={appId}
+          pageDocument={history.doc}
+          isAdmin={user?.role === 'workspace_admin'}
+          onClose={() => setFloatingPanelWorkflowId(null)}
+          onSnapBack={() => { setSplitViewWorkflowId(floatingPanelWorkflowId); setFloatingPanelWorkflowId(null) }}
         />
       )}
     </div>

@@ -29,6 +29,12 @@ var errWorkflowQueueUnavailable = errors.New("workflow queue unavailable")
 
 var cronFieldPattern = regexp.MustCompile(`^[0-9*/,-]+$`)
 
+// workflowListItem wraps Workflow for list responses, adding the computed is_page_bound field.
+type workflowListItem struct {
+	model.Workflow
+	IsPageBound bool `json:"is_page_bound"`
+}
+
 // ListWorkflows returns all workflows for an app.
 func ListWorkflows(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -41,10 +47,11 @@ func ListWorkflows(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			respondErr(w, http.StatusInternalServerError, "db_error", "failed to list workflows")
 			return
 		}
-		if workflows == nil {
-			workflows = []model.Workflow{}
+		items := make([]workflowListItem, len(workflows))
+		for i, wf := range workflows {
+			items[i] = workflowListItem{Workflow: wf, IsPageBound: wf.IsPageBound()}
 		}
-		respond(w, http.StatusOK, map[string]any{"workflows": workflows})
+		respond(w, http.StatusOK, map[string]any{"workflows": items})
 	}
 }
 
@@ -81,6 +88,8 @@ func CreateWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			TriggerConfig    map[string]any        `json:"trigger_config"`
 			RequiresApproval *bool                 `json:"requires_approval"`
 			Steps            []workflowStepInput   `json:"steps"`
+			SourceWidgetID   *string               `json:"source_widget_id"`
+			SourcePageID     *string               `json:"source_page_id"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
@@ -108,10 +117,21 @@ func CreateWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			requiresApproval = *req.RequiresApproval
 		}
 
+		// Page-bound workflows require both source fields.
+		if req.TriggerType == model.TriggerButtonClick || req.TriggerType == model.TriggerFormSubmit {
+			if req.SourceWidgetID == nil || strings.TrimSpace(*req.SourceWidgetID) == "" ||
+				req.SourcePageID == nil || strings.TrimSpace(*req.SourcePageID) == "" {
+				respondErr(w, http.StatusBadRequest, "bad_request",
+					"source_widget_id and source_page_id are required for button_click and form_submit workflows")
+				return
+			}
+		}
+
 		steps := stepsFromInput(req.Steps)
 
 		wf, err := s.CreateWorkflow(r.Context(), workspaceID, appID, req.Name, req.Description,
-			req.TriggerType, req.TriggerConfig, requiresApproval, claims.UserID, steps)
+			req.TriggerType, req.TriggerConfig, requiresApproval, claims.UserID,
+			req.SourceWidgetID, req.SourcePageID, steps)
 		if err != nil {
 			log.Error("create workflow", zap.Error(err))
 			respondErr(w, http.StatusInternalServerError, "db_error", "failed to create workflow")
@@ -134,6 +154,7 @@ func PatchWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			TriggerType      *model.WorkflowTrigger `json:"trigger_type"`
 			TriggerConfig    map[string]any         `json:"trigger_config"`
 			RequiresApproval *bool                  `json:"requires_approval"`
+			OutputBindings   []model.OutputBinding  `json:"output_bindings"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
@@ -174,7 +195,8 @@ func PatchWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 		}
 
 		wf, err := s.PatchWorkflow(r.Context(), workspaceID, workflowID,
-			req.Name, req.Description, req.TriggerType, req.TriggerConfig, req.RequiresApproval)
+			req.Name, req.Description, req.TriggerType, req.TriggerConfig, req.RequiresApproval,
+			req.OutputBindings)
 		if err != nil {
 			handleStoreErr(w, err)
 			return
@@ -204,6 +226,9 @@ func ActivateWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 				return
 			}
 		}
+
+		// TODO(page-binding): if the workflow has any broken output bindings
+		// (target widget no longer exists on its page), block activation here.
 
 		updated, err := s.ActivateWorkflow(r.Context(), workspaceID, workflowID)
 		if err != nil {
@@ -240,6 +265,33 @@ func DeleteWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 		respond(w, http.StatusOK, map[string]string{"status": "deleted"})
+	}
+}
+
+// PutWorkflowOutputBindings replaces the output_bindings for a workflow.
+// Requires app_builder role (enforced in router).
+func PutWorkflowOutputBindings(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID := chi.URLParam(r, "workspaceID")
+		workflowID := chi.URLParam(r, "workflowID")
+
+		var req struct {
+			OutputBindings []model.OutputBinding `json:"output_bindings"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			return
+		}
+		if req.OutputBindings == nil {
+			req.OutputBindings = []model.OutputBinding{}
+		}
+
+		updated, err := s.UpdateWorkflowOutputBindings(r.Context(), workspaceID, workflowID, req.OutputBindings)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		respond(w, http.StatusOK, updated)
 	}
 }
 
