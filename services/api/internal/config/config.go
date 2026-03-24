@@ -22,10 +22,23 @@ type Config struct {
 	CredentialsEncryptionKeyPrevious string // set during key rotation; cleared after re-encryption
 	AllowOrigins                     []string
 	// OIDC / SSO
-	OIDCIssuerURL    string
-	OIDCClientID     string
-	OIDCClientSecret string
-	OIDCRedirectURL  string
+	OIDCIssuerURL      string
+	OIDCClientID       string
+	OIDCClientSecret   string
+	OIDCRedirectURL    string
+	OIDCCompanySlug    string
+	DefaultCompanySlug string
+	// Google OAuth (separate from generic OIDC so both can coexist)
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string
+	GoogleCompanySlug  string
+	// Magic link email auth
+	SMTPHost  string
+	SMTPPort  string
+	SMTPUser  string
+	SMTPPass  string
+	EmailFrom string
 	// Frontend base URL (used to build post-login redirect)
 	FrontendURL string
 }
@@ -70,6 +83,17 @@ func Load() *Config {
 		OIDCClientID:                     getEnv("OIDC_CLIENT_ID", ""),
 		OIDCClientSecret:                 getEnv("OIDC_CLIENT_SECRET", ""),
 		OIDCRedirectURL:                  getEnv("OIDC_REDIRECT_URL", "http://localhost:8080/v1/auth/sso/callback"),
+		OIDCCompanySlug:                  getEnv("OIDC_COMPANY_SLUG", ""),
+		DefaultCompanySlug:               getEnv("DEFAULT_COMPANY_SLUG", ""),
+		GoogleClientID:                   getEnv("GOOGLE_CLIENT_ID", ""),
+		GoogleClientSecret:               getEnv("GOOGLE_CLIENT_SECRET", ""),
+		GoogleRedirectURL:                getEnv("GOOGLE_REDIRECT_URL", "http://localhost:8080/v1/auth/google/callback"),
+		GoogleCompanySlug:                getEnv("GOOGLE_COMPANY_SLUG", ""),
+		SMTPHost:                         getEnv("SMTP_HOST", ""),
+		SMTPPort:                         getEnv("SMTP_PORT", "587"),
+		SMTPUser:                         getEnv("SMTP_USER", ""),
+		SMTPPass:                         getEnv("SMTP_PASS", ""),
+		EmailFrom:                        getEnv("EMAIL_FROM", "noreply@localhost"),
 		FrontendURL:                      getEnv("FRONTEND_URL", "http://localhost:3000"),
 	}
 }

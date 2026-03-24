@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { type AuraNode, type AuraDocument } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType, type PropDef } from '@lima/widget-catalog'
 import { getGrid, CELL, COLS } from './CanvasEditor'
-import { listConnectors, runConnectorQuery, type Connector, type DashboardQueryResponse } from '../../../lib/api'
+import { listConnectors, runConnectorQuery, createWorkflow, getWorkflow, type Connector, type DashboardQueryResponse, type Workflow } from '../../../lib/api'
 import { applyTableDataBinding, getConnectorQuerySQL, getConnectorSchemaColumns, mergeColumns } from '../../../lib/tableBinding'
 import { WorkflowSelector } from './widgets/WorkflowSelector'
 
@@ -15,6 +15,7 @@ interface Props {
   onDelete: (id: string) => void
   workspaceId: string
   appId: string
+  onOpenCanvas?: (workflowId: string) => void
 }
 
 /**
@@ -60,7 +61,7 @@ function setPropValue(node: AuraNode, propName: string, value: string): AuraNode
   return updated
 }
 
-export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId }: Props) {
+export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, onOpenCanvas }: Props) {
   if (!node) {
     return (
       <aside style={panelStyle}>
@@ -188,12 +189,15 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId }:
                 <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4 }}>
                   {def.label}
                 </label>
-                <WorkflowSelector
+                <WorkflowCard
                   workspaceId={workspaceId}
                   appId={appId}
                   triggerType={n.element === 'form' ? 'form_submit' : 'button_click'}
-                  value={n.action}
-                  onChange={workflowId => onUpdate({ ...n, manuallyEdited: true, action: workflowId })}
+                  widgetId={n.id}
+                  workflowId={n.action}
+                  onLink={workflowId => onUpdate({ ...n, manuallyEdited: true, action: workflowId })}
+                  onUnlink={() => onUpdate({ ...n, manuallyEdited: true, action: undefined })}
+                  onOpenCanvas={onOpenCanvas}
                 />
               </div>
             ) : (
@@ -1309,6 +1313,143 @@ function FilterDataSourceEditor({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+/* ---- WorkflowCard: widget-centric workflow binding ----------------------- */
+
+interface WorkflowCardProps {
+  workspaceId: string
+  appId: string
+  triggerType: 'form_submit' | 'button_click'
+  widgetId: string
+  workflowId?: string
+  onLink: (workflowId: string) => void
+  onUnlink: () => void
+  onOpenCanvas?: (workflowId: string) => void
+}
+
+function WorkflowCard({
+  workspaceId, appId, triggerType, widgetId,
+  workflowId, onLink, onUnlink, onOpenCanvas,
+}: WorkflowCardProps) {
+  const [workflow, setWorkflow] = React.useState<Workflow | null>(null)
+  const [creating, setCreating] = React.useState(false)
+  const [linkExpanded, setLinkExpanded] = React.useState(false)
+  const [error, setError] = React.useState('')
+
+  // Load bound workflow details when workflowId changes.
+  React.useEffect(() => {
+    if (!workflowId || !workspaceId || !appId) { setWorkflow(null); return }
+    let cancelled = false
+    getWorkflow(workspaceId, appId, workflowId)
+      .then(wf => { if (!cancelled) setWorkflow(wf) })
+      .catch(() => { if (!cancelled) setWorkflow(null) })
+    return () => { cancelled = true }
+  }, [workflowId, workspaceId, appId])
+
+  const handleCreate = async () => {
+    if (creating) return
+    setCreating(true)
+    setError('')
+    try {
+      const label = triggerType === 'form_submit' ? 'Form' : 'Button'
+      const wf = await createWorkflow(workspaceId, appId, {
+        name: `${label} Workflow`,
+        trigger_type: triggerType,
+        trigger_config: { widget_id: widgetId },
+        requires_approval: true,
+        steps: [],
+      })
+      onLink(wf.id)
+      setWorkflow(wf)
+      onOpenCanvas?.(wf.id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create workflow')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const cardStyle: React.CSSProperties = {
+    background: '#111',
+    border: '1px solid #1e1e1e',
+    borderRadius: 4,
+    padding: '8px 10px',
+  }
+
+  const smallBtn = (primary = false): React.CSSProperties => ({
+    background: primary ? '#1d4ed8' : '#1a1a1a',
+    color: primary ? '#bfdbfe' : '#aaa',
+    border: primary ? 'none' : '1px solid #1e1e1e',
+    borderRadius: 3,
+    padding: '3px 9px',
+    fontSize: '0.68rem',
+    cursor: 'pointer',
+  })
+
+  if (workflow) {
+    const statusColor = workflow.status === 'active' ? '#4ade80' : workflow.status === 'archived' ? '#555' : '#fbbf24'
+    return (
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#e5e5e5', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {workflow.name}
+          </span>
+          <span style={{ fontSize: '0.58rem', padding: '1px 6px', borderRadius: 99, background: statusColor + '22', color: statusColor, flexShrink: 0 }}>
+            {workflow.status}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 5 }}>
+          <button
+            style={smallBtn(true)}
+            onClick={() => onOpenCanvas?.(workflow.id)}
+          >
+            Edit workflow
+          </button>
+          <button
+            style={smallBtn()}
+            onClick={onUnlink}
+          >
+            Unlink
+          </button>
+        </div>
+        {error && <div style={{ fontSize: '0.65rem', color: '#fca5a5', marginTop: 5 }}>{error}</div>}
+      </div>
+    )
+  }
+
+  return (
+    <div style={cardStyle}>
+      <button
+        style={{ ...smallBtn(true), width: '100%', textAlign: 'center' }}
+        onClick={handleCreate}
+        disabled={creating}
+      >
+        {creating ? 'Creating…' : '+ Create Workflow'}
+      </button>
+
+      {/* Link existing — advanced / escape hatch */}
+      <button
+        style={{ ...smallBtn(), width: '100%', textAlign: 'center', marginTop: 5 }}
+        onClick={() => setLinkExpanded(e => !e)}
+      >
+        {linkExpanded ? '▴ Link existing' : '▾ Link existing'}
+      </button>
+
+      {linkExpanded && (
+        <div style={{ marginTop: 5 }}>
+          <WorkflowSelector
+            workspaceId={workspaceId}
+            appId={appId}
+            triggerType={triggerType}
+            value={workflowId}
+            onChange={id => { if (id) onLink(id) }}
+          />
+        </div>
+      )}
+      {error && <div style={{ fontSize: '0.65rem', color: '#fca5a5', marginTop: 5 }}>{error}</div>}
     </div>
   )
 }

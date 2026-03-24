@@ -20,6 +20,7 @@ import { ChatPanel } from './ChatPanel'
 import { Inspector } from './Inspector'
 import { LayersPanel } from './LayersPanel'
 import { VersionHistory } from './VersionHistory'
+import { WorkflowCanvas } from './WorkflowCanvas'
 import { WorkflowEditor } from './WorkflowEditor'
 import { formatProductionIssues, getAppProductionIssues } from '../../../lib/appValidation'
 
@@ -27,7 +28,7 @@ type PublicationAudienceSelection = PublicationCapability | ''
 
 export default function AppEditorPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
-  const { workspace, company } = useAuth()
+  const { workspace, company, user } = useAuth()
   const [app, setApp] = useState<App | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -45,6 +46,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   // 'inspector' | 'chat' — controls the right-hand panel
   const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector')
   const [showWorkflowModal, setShowWorkflowModal] = useState(false)
+  const [canvasWorkflowId, setCanvasWorkflowId] = useState<string | null>(null)
   // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
   const [nodeMetadata, setNodeMetadata] = useState<Record<string, { manuallyEdited: boolean }>>({})
   const [showAppSettings, setShowAppSettings] = useState(false)
@@ -608,6 +610,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             onDelete={handleDeleteWidget}
             workspaceId={workspace?.id ?? ''}
             appId={appId}
+            onOpenCanvas={setCanvasWorkflowId}
           />
         ) : rightPanel === 'chat' && workspace ? (
           <div style={{ width: 280, flexShrink: 0 }}>
@@ -656,7 +659,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               ✕
             </button>
             <div style={{ flex: 1, overflow: 'hidden' }}>
-              <WorkflowEditor appId={appId} triggerTargets={workflowTriggerTargets} />
+              <WorkflowEditor appId={appId} triggerTargets={workflowTriggerTargets} onOpenCanvas={setCanvasWorkflowId} />
             </div>
           </div>
         </div>
@@ -784,6 +787,18 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             }).catch(() => {})
           }}
           onClose={() => setShowVersionHistory(false)}
+        />
+      )}
+
+      {/* Workflow canvas overlay */}
+      {canvasWorkflowId && (
+        <WorkflowCanvas
+          workspaceId={workspace!.id}
+          appId={appId}
+          workflowId={canvasWorkflowId}
+          triggerLabel="Workflow"
+          onClose={() => setCanvasWorkflowId(null)}
+          isAdmin={user?.role === 'workspace_admin'}
         />
       )}
     </div>

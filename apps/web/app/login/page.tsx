@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '../../lib/auth'
-import { getSSOLoginURL, type Company } from '../../lib/api'
+import { getSSOLoginURL, getGoogleLoginURL, type Company } from '../../lib/api'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -15,6 +15,29 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
 
   const isDev = process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_DEV_LOGIN === 'true'
+  const isGoogleEnabled = process.env.NEXT_PUBLIC_GOOGLE_AUTH_ENABLED === 'true'
+  const defaultCompanySlug = process.env.NEXT_PUBLIC_DEFAULT_COMPANY_SLUG || ''
+
+  const [magicEmail, setMagicEmail] = useState('')
+  const [magicSlug, setMagicSlug] = useState('')
+  const [magicSent, setMagicSent] = useState(false)
+  const [magicLoading, setMagicLoading] = useState(false)
+  const [magicError, setMagicError] = useState('')
+
+  async function handleMagicLink(e: React.FormEvent) {
+    e.preventDefault()
+    setMagicError('')
+    setMagicLoading(true)
+    try {
+      const { requestMagicLink } = await import('../../lib/api')
+      await requestMagicLink(magicEmail, defaultCompanySlug || magicSlug || undefined)
+      setMagicSent(true)
+    } catch (err: unknown) {
+      setMagicError(err instanceof Error ? err.message : 'Failed to send link')
+    } finally {
+      setMagicLoading(false)
+    }
+  }
 
   async function handleDevLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -50,6 +73,59 @@ export default function LoginPage() {
         >
           Continue with SSO
         </a>
+
+        {isGoogleEnabled && (
+          <a
+            href={getGoogleLoginURL()}
+            style={{
+              display: 'block', textAlign: 'center', padding: '0.75rem',
+              background: '#1e1e1e', color: '#fff', borderRadius: 8,
+              textDecoration: 'none', fontWeight: 600, fontSize: '0.875rem',
+              border: '1px solid #333', marginBottom: '0.75rem',
+            }}
+          >
+            Continue with Google
+          </a>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '1.5rem', marginTop: '0.75rem' }}>
+          <div style={{ flex: 1, height: 1, background: '#333' }} />
+          <span style={{ color: '#555', fontSize: '0.75rem' }}>or continue with email</span>
+          <div style={{ flex: 1, height: 1, background: '#333' }} />
+        </div>
+
+        {magicSent ? (
+          <div style={{ textAlign: 'center', padding: '1rem', color: '#a3e635', fontSize: '0.875rem' }}>
+            Check your inbox — we&#39;ve sent a login link to <strong>{magicEmail}</strong>.
+          </div>
+        ) : (
+          <form onSubmit={handleMagicLink} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <input
+              type="email" required placeholder="Email"
+              value={magicEmail} onChange={e => setMagicEmail(e.target.value)}
+              style={inputStyle}
+            />
+            {!defaultCompanySlug && (
+              <input
+                type="text" placeholder="Company slug (e.g. acme)"
+                value={magicSlug} onChange={e => setMagicSlug(e.target.value)}
+                style={inputStyle}
+              />
+            )}
+            {magicError && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: 0 }}>{magicError}</p>}
+            <button
+              type="submit" disabled={magicLoading}
+              style={{
+                padding: '0.75rem', background: '#2563eb', color: '#fff',
+                border: 'none', borderRadius: 8, fontWeight: 600,
+                fontSize: '0.875rem', cursor: magicLoading ? 'not-allowed' : 'pointer',
+                opacity: magicLoading ? 0.7 : 1,
+              }}
+            >
+              {magicLoading ? 'Sending…' : 'Send magic link'}
+            </button>
+          </form>
+        )}
 
         {/* Dev login — only shown in development */}
         {isDev && (

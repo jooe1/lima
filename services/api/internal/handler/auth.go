@@ -15,6 +15,7 @@ import (
 	"github.com/lima/api/internal/config"
 	"github.com/lima/api/internal/model"
 	"github.com/lima/api/internal/store"
+	goredis "github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 )
@@ -62,6 +63,16 @@ func randomState() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// consumerEmailDomains is a set of well-known consumer/free email providers.
+var consumerEmailDomains = map[string]bool{
+	"gmail.com": true, "googlemail.com": true,
+	"outlook.com": true, "hotmail.com": true, "live.com": true,
+	"yahoo.com": true, "yahoo.co.uk": true,
+	"icloud.com": true, "me.com": true, "mac.com": true,
+	"proton.me": true, "protonmail.com": true,
+	"aol.com": true, "msn.com": true,
 }
 
 // oidcProvider builds the OIDC provider from the issuer URL.
@@ -182,11 +193,22 @@ func SSOCallback(cfg *config.Config, s *store.Store, log *zap.Logger) http.Handl
 			return
 		}
 
-		// Derive company slug from email domain.
-		domain := strings.SplitN(idClaims.Email, "@", 2)
-		companySlug := "company"
-		if len(domain) == 2 {
-			companySlug = strings.ReplaceAll(strings.Split(domain[1], ".")[0], "-", "")
+		// Resolve company slug: prefer explicit configuration, fall back to domain derivation
+		// only for non-consumer domains. Consumer domains (gmail, outlook, etc.) are rejected
+		// without explicit configuration to prevent multi-tenant isolation failures.
+		companySlug := cfg.OIDCCompanySlug
+		if companySlug == "" {
+			parts := strings.SplitN(strings.ToLower(idClaims.Email), "@", 2)
+			if len(parts) == 2 && !consumerEmailDomains[parts[1]] {
+				companySlug = strings.ReplaceAll(strings.Split(parts[1], ".")[0], "-", "")
+			}
+		}
+		if companySlug == "" {
+			log.Warn("sso login rejected: consumer email domain with no OIDC_COMPANY_SLUG configured",
+				zap.String("email", idClaims.Email))
+			respondErr(w, http.StatusServiceUnavailable, "sso_unconfigured",
+				"SSO company is not configured — set OIDC_COMPANY_SLUG")
+			return
 		}
 		company, err := s.FindOrCreateCompany(r.Context(), companySlug, companySlug)
 		if err != nil {
@@ -334,4 +356,291 @@ func Authenticate(jwtSecret string) func(http.Handler) http.Handler {
 func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
 	c, ok := ctx.Value(claimsKey).(*Claims)
 	return c, ok
+}
+
+// ---------------------------------------------------------------------------
+// Magic link auth
+// ---------------------------------------------------------------------------
+
+const magicLinkPrefix = "magic_link:"
+const magicLinkTTL = 15 * time.Minute
+
+// MagicLinkRequest accepts an email address and sends a one-time login link.
+// POST /v1/auth/magic-link/request
+// Body: {"email": "alice@acme.com", "company_slug": "acme"}
+func MagicLinkRequest(cfg *config.Config, s *store.Store, rdb *goredis.Client, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Email       string `json:"email"`
+			CompanySlug string `json:"company_slug"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			return
+		}
+		req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+		if req.Email == "" {
+			respondErr(w, http.StatusBadRequest, "bad_request", "email is required")
+			return
+		}
+
+		// Resolve company slug.
+		companySlug := strings.TrimSpace(req.CompanySlug)
+		if companySlug == "" {
+			companySlug = cfg.DefaultCompanySlug
+		}
+		if companySlug == "" {
+			// Try domain derivation for non-consumer domains.
+			parts := strings.SplitN(req.Email, "@", 2)
+			if len(parts) == 2 && !consumerEmailDomains[parts[1]] {
+				companySlug = strings.ReplaceAll(strings.Split(parts[1], ".")[0], "-", "")
+			}
+		}
+		if companySlug == "" {
+			respondErr(w, http.StatusBadRequest, "consumer_email_domain",
+				"consumer email domains require an explicit company slug")
+			return
+		}
+
+		company, err := s.FindOrCreateCompany(r.Context(), companySlug, companySlug)
+		if err != nil {
+			log.Error("magic link find company", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to resolve company")
+			return
+		}
+
+		user, err := s.CreateUser(r.Context(), company.ID, req.Email, req.Email)
+		if err != nil {
+			log.Error("magic link create user", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to resolve user")
+			return
+		}
+		if err := s.ReconcileProvisionedUserAccess(r.Context(), company.ID, user.ID); err != nil {
+			log.Error("magic link reconcile access", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to provision access")
+			return
+		}
+
+		token, err := randomState()
+		if err != nil {
+			respondErr(w, http.StatusInternalServerError, "token_error", "failed to generate token")
+			return
+		}
+
+		val := company.ID + ":" + req.Email
+		if err := rdb.Set(r.Context(), magicLinkPrefix+token, val, magicLinkTTL).Err(); err != nil {
+			log.Error("magic link redis set", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "cache_error", "failed to store token")
+			return
+		}
+
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		magicURL := fmt.Sprintf("%s://%s/v1/auth/magic-link/verify?token=%s", scheme, r.Host, token)
+
+		if err := sendMagicLinkEmail(cfg, log, req.Email, magicURL); err != nil {
+			log.Error("magic link send email", zap.Error(err))
+			// Don't expose email errors to caller; link is logged in dev mode.
+		}
+
+		respond(w, http.StatusOK, map[string]string{"status": "sent"})
+	}
+}
+
+// MagicLinkVerify exchanges a one-time token for a Lima JWT.
+// GET /v1/auth/magic-link/verify?token=<tok>
+func MagicLinkVerify(cfg *config.Config, s *store.Store, rdb *goredis.Client, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			respondErr(w, http.StatusBadRequest, "missing_token", "token query parameter required")
+			return
+		}
+
+		key := magicLinkPrefix + token
+		val, err := rdb.Get(r.Context(), key).Result()
+		if err != nil {
+			respondErr(w, http.StatusBadRequest, "invalid_or_expired_token", "magic link is invalid or has expired")
+			return
+		}
+		// Delete immediately — single use.
+		_ = rdb.Del(r.Context(), key)
+
+		// val is "companyID:email"
+		parts := strings.SplitN(val, ":", 2)
+		if len(parts) != 2 {
+			respondErr(w, http.StatusInternalServerError, "token_corrupt", "stored token data is invalid")
+			return
+		}
+		companyID, email := parts[0], parts[1]
+
+		user, err := s.FindUserByEmail(r.Context(), companyID, email)
+		if err != nil {
+			log.Error("magic link verify find user", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to resolve user")
+			return
+		}
+
+		tokenStr, err := issueJWT(cfg, user, "", model.RoleEndUser)
+		if err != nil {
+			respondErr(w, http.StatusInternalServerError, "jwt_error", "failed to issue token")
+			return
+		}
+
+		http.Redirect(w, r, fmt.Sprintf("%s/auth/callback?token=%s", cfg.FrontendURL, tokenStr), http.StatusFound)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Google OAuth
+// ---------------------------------------------------------------------------
+
+const googleStateCookieName = "lima_google_state"
+
+// GoogleLogin initiates the Google OAuth flow.
+// GET /v1/auth/google/login
+func GoogleLogin(cfg *config.Config, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg.GoogleClientID == "" || cfg.GoogleCompanySlug == "" {
+			respondErr(w, http.StatusServiceUnavailable, "google_unconfigured",
+				"Google OAuth is not configured — set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_COMPANY_SLUG")
+			return
+		}
+
+		provider, err := oidc.NewProvider(r.Context(), "https://accounts.google.com")
+		if err != nil {
+			log.Error("google oidc provider init", zap.Error(err))
+			respondErr(w, http.StatusServiceUnavailable, "google_unavailable", "Google provider not reachable")
+			return
+		}
+
+		state, err := randomState()
+		if err != nil {
+			respondErr(w, http.StatusInternalServerError, "state_error", "failed to generate state")
+			return
+		}
+
+		oauth2Cfg := &oauth2.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleRedirectURL,
+			Endpoint:     provider.Endpoint(),
+			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
+		}
+
+		http.SetCookie(w, &http.Cookie{
+			Name:     googleStateCookieName,
+			Value:    state,
+			Path:     "/",
+			MaxAge:   int(stateCookieTTL.Seconds()),
+			HttpOnly: true,
+			Secure:   cfg.Env != "development",
+			SameSite: http.SameSiteLaxMode,
+		})
+
+		http.Redirect(w, r, oauth2Cfg.AuthCodeURL(state), http.StatusFound)
+	}
+}
+
+// GoogleCallback handles the Google OAuth authorization code callback.
+// GET /v1/auth/google/callback
+func GoogleCallback(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stateCookie, err := r.Cookie(googleStateCookieName)
+		if err != nil || r.URL.Query().Get("state") != stateCookie.Value {
+			respondErr(w, http.StatusBadRequest, "invalid_state", "OAuth state mismatch")
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     googleStateCookieName,
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+		})
+
+		provider, err := oidc.NewProvider(r.Context(), "https://accounts.google.com")
+		if err != nil {
+			log.Error("google oidc provider init", zap.Error(err))
+			respondErr(w, http.StatusServiceUnavailable, "google_unavailable", "Google provider not reachable")
+			return
+		}
+
+		oauth2Cfg := &oauth2.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleRedirectURL,
+			Endpoint:     provider.Endpoint(),
+			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
+		}
+
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			respondErr(w, http.StatusBadRequest, "missing_code", "authorization code missing")
+			return
+		}
+
+		oauth2Token, err := oauth2Cfg.Exchange(r.Context(), code)
+		if err != nil {
+			log.Error("google oauth2 exchange", zap.Error(err))
+			respondErr(w, http.StatusBadRequest, "token_exchange_failed", "code exchange failed")
+			return
+		}
+
+		rawIDToken, ok := oauth2Token.Extra("id_token").(string)
+		if !ok {
+			respondErr(w, http.StatusBadRequest, "no_id_token", "id_token missing from Google response")
+			return
+		}
+
+		verifier := provider.Verifier(&oidc.Config{ClientID: cfg.GoogleClientID})
+		idToken, err := verifier.Verify(r.Context(), rawIDToken)
+		if err != nil {
+			log.Error("google id token verify", zap.Error(err))
+			respondErr(w, http.StatusUnauthorized, "invalid_id_token", "id_token verification failed")
+			return
+		}
+
+		var idClaims struct {
+			Email string `json:"email"`
+			Name  string `json:"name"`
+		}
+		if err := idToken.Claims(&idClaims); err != nil {
+			respondErr(w, http.StatusInternalServerError, "claims_error", "failed to parse id_token claims")
+			return
+		}
+		if idClaims.Email == "" {
+			respondErr(w, http.StatusBadRequest, "missing_email", "email claim missing from Google id_token")
+			return
+		}
+
+		company, err := s.FindOrCreateCompany(r.Context(), cfg.GoogleCompanySlug, cfg.GoogleCompanySlug)
+		if err != nil {
+			log.Error("google find company", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to resolve company")
+			return
+		}
+
+		user, err := s.UpsertUserSSO(r.Context(), company.ID, idClaims.Email, idClaims.Name, idToken.Subject)
+		if err != nil {
+			log.Error("google upsert user", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to resolve user")
+			return
+		}
+		if err := s.ReconcileProvisionedUserAccess(r.Context(), company.ID, user.ID); err != nil {
+			log.Error("google reconcile access", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to provision access")
+			return
+		}
+
+		tokenStr, err := issueJWT(cfg, user, "", model.RoleEndUser)
+		if err != nil {
+			respondErr(w, http.StatusInternalServerError, "jwt_error", "failed to issue token")
+			return
+		}
+
+		http.Redirect(w, r, fmt.Sprintf("%s/auth/callback?token=%s", cfg.FrontendURL, tokenStr), http.StatusFound)
+	}
 }

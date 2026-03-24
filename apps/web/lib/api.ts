@@ -66,6 +66,17 @@ export function getSSOLoginURL() {
   return `${API_BASE}/v1/auth/sso/login`
 }
 
+export function requestMagicLink(email: string, companySlug?: string) {
+  return request<{ status: string }>('/v1/auth/magic-link/request', {
+    method: 'POST',
+    body: JSON.stringify({ email, company_slug: companySlug || undefined }),
+  })
+}
+
+export function getGoogleLoginURL() {
+  return `${API_BASE}/v1/auth/google/login`
+}
+
 // ---- Tenancy ---------------------------------------------------------------
 
 export interface Company {
@@ -168,7 +179,7 @@ interface WorkspaceMemberGrantEnvelope {
 export function upsertWorkspaceMember(
   companyId: string,
   workspaceId: string,
-  data: { user_id: string; role: WorkspaceRole },
+  data: { user_id?: string; email?: string; role: WorkspaceRole },
 ) {
   return request<WorkspaceMemberGrantEnvelope>(
     `/v1/companies/${companyId}/workspaces/${workspaceId}/members`,
@@ -186,6 +197,19 @@ export function removeWorkspaceMember(companyId: string, workspaceId: string, us
       method: 'DELETE',
     },
   )
+}
+
+export interface CompanyUser {
+  id: string
+  company_id: string
+  email: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
+export function listCompanyUsers(companyId: string) {
+  return request<{ users: CompanyUser[] }>(`/v1/companies/${companyId}/users`)
 }
 
 export function getWorkspaceAccessPolicy(companyId: string, workspaceId: string) {
@@ -489,6 +513,8 @@ export interface WorkflowStep {
   id: string
   workflow_id: string
   step_order: number
+  next_step_id?: string
+  false_branch_step_id?: string
   name: string
   step_type: WorkflowStepType
   config: Record<string, unknown>
@@ -537,6 +563,8 @@ export interface WorkflowStepInput {
   step_type: WorkflowStepType
   config: Record<string, unknown>
   ai_generated: boolean
+  next_step_id?: string
+  false_branch_step_id?: string
 }
 
 export interface CreateWorkflowInput {

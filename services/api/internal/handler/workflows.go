@@ -387,10 +387,12 @@ func ListWorkflowRuns(s *store.Store, log *zap.Logger) http.HandlerFunc {
 // ---- helpers ----------------------------------------------------------------
 
 type workflowStepInput struct {
-	Name        string                 `json:"name"`
-	StepType    model.WorkflowStepType `json:"step_type"`
-	Config      map[string]any         `json:"config"`
-	AIGenerated bool                   `json:"ai_generated"`
+	Name              string                 `json:"name"`
+	StepType          model.WorkflowStepType `json:"step_type"`
+	Config            map[string]any         `json:"config"`
+	AIGenerated       bool                   `json:"ai_generated"`
+	NextStepID        *string                `json:"next_step_id,omitempty"`
+	FalseBranchStepID *string                `json:"false_branch_step_id,omitempty"`
 }
 
 type workflowRunCleanupStore interface {
@@ -570,10 +572,12 @@ func stepsFromInput(inputs []workflowStepInput) []model.WorkflowStep {
 			config = map[string]any{}
 		}
 		steps = append(steps, model.WorkflowStep{
-			Name:        strings.TrimSpace(inp.Name),
-			StepType:    inp.StepType,
-			Config:      config,
-			AIGenerated: inp.AIGenerated,
+			Name:              strings.TrimSpace(inp.Name),
+			StepType:          inp.StepType,
+			Config:            config,
+			AIGenerated:       inp.AIGenerated,
+			NextStepID:        inp.NextStepID,
+			FalseBranchStepID: inp.FalseBranchStepID,
 		})
 	}
 	return steps

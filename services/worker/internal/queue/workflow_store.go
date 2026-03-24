@@ -42,14 +42,16 @@ type wfRun struct {
 }
 
 type wfStep struct {
-	id          string
-	workflowID  string
-	stepOrder   int
-	name        string
-	stepType    workflowStepType
-	config      map[string]any
-	aiGenerated bool
-	reviewedBy  *string
+	id                string
+	workflowID        string
+	stepOrder         int
+	nextStepID        *string
+	falseBranchStepID *string
+	name              string
+	stepType          workflowStepType
+	config            map[string]any
+	aiGenerated       bool
+	reviewedBy        *string
 }
 
 type wfDefinition struct {
@@ -102,7 +104,8 @@ func getWorkflowDefinition(ctx context.Context, pool *pgxpool.Pool, workflowID s
 	}
 
 	rows, err := pool.Query(ctx, `
-		SELECT id, workflow_id, step_order, name, step_type, config, ai_generated, reviewed_by
+		SELECT id, workflow_id, step_order, next_step_id, false_branch_step_id,
+		       name, step_type, config, ai_generated, reviewed_by
 		FROM workflow_steps WHERE workflow_id = $1 ORDER BY step_order`,
 		workflowID,
 	)
@@ -115,7 +118,8 @@ func getWorkflowDefinition(ctx context.Context, pool *pgxpool.Pool, workflowID s
 		var s wfStep
 		var cfgBytes []byte
 		if err := rows.Scan(
-			&s.id, &s.workflowID, &s.stepOrder, &s.name, &s.stepType,
+			&s.id, &s.workflowID, &s.stepOrder, &s.nextStepID, &s.falseBranchStepID,
+			&s.name, &s.stepType,
 			&cfgBytes, &s.aiGenerated, &s.reviewedBy,
 		); err != nil {
 			return nil, fmt.Errorf("scan step: %w", err)

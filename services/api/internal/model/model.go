@@ -489,17 +489,19 @@ type WorkflowWithSteps struct {
 // ai_generated=true means the step config was written by the AI agent and
 // must be reviewed by a builder before the workflow can be activated.
 type WorkflowStep struct {
-	ID          string           `json:"id"`
-	WorkflowID  string           `json:"workflow_id"`
-	StepOrder   int              `json:"step_order"`
-	Name        string           `json:"name"`
-	StepType    WorkflowStepType `json:"step_type"`
-	Config      map[string]any   `json:"config"`
-	AIGenerated bool             `json:"ai_generated"`
-	ReviewedBy  *string          `json:"reviewed_by,omitempty"`
-	ReviewedAt  *time.Time       `json:"reviewed_at,omitempty"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	ID                string           `json:"id"`
+	WorkflowID        string           `json:"workflow_id"`
+	StepOrder         int              `json:"step_order"`
+	NextStepID        *string          `json:"next_step_id,omitempty"`
+	FalseBranchStepID *string          `json:"false_branch_step_id,omitempty"`
+	Name              string           `json:"name"`
+	StepType          WorkflowStepType `json:"step_type"`
+	Config            map[string]any   `json:"config"`
+	AIGenerated       bool             `json:"ai_generated"`
+	ReviewedBy        *string          `json:"reviewed_by,omitempty"`
+	ReviewedAt        *time.Time       `json:"reviewed_at,omitempty"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
 }
 
 // WorkflowRun records a single execution of a workflow.

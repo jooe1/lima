@@ -126,7 +126,7 @@ func (s *Store) CreateWorkflow(ctx context.Context, workspaceID, appID, name str
 
 	inserted := make([]model.WorkflowStep, 0, len(steps))
 	for i, step := range steps {
-		s2, err := insertWorkflowStep(ctx, tx, w.ID, i, step.Name, step.StepType, step.Config, step.AIGenerated)
+		s2, err := insertWorkflowStep(ctx, tx, w.ID, i, step.Name, step.StepType, step.Config, step.AIGenerated, step.NextStepID, step.FalseBranchStepID)
 		if err != nil {
 			return nil, err
 		}
@@ -260,7 +260,8 @@ func (s *Store) DeleteWorkflow(ctx context.Context, workspaceID, workflowID stri
 // listWorkflowSteps returns the ordered steps for a workflow.
 func (s *Store) listWorkflowSteps(ctx context.Context, workflowID string) ([]model.WorkflowStep, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, workflow_id, step_order, name, step_type, config,
+		SELECT id, workflow_id, step_order, next_step_id, false_branch_step_id,
+		       name, step_type, config,
 		       ai_generated, reviewed_by, reviewed_at, created_at, updated_at
 		FROM workflow_steps
 		WHERE workflow_id = $1
@@ -277,7 +278,8 @@ func (s *Store) listWorkflowSteps(ctx context.Context, workflowID string) ([]mod
 		var step model.WorkflowStep
 		var cfgBytes []byte
 		if err := rows.Scan(
-			&step.ID, &step.WorkflowID, &step.StepOrder, &step.Name, &step.StepType,
+			&step.ID, &step.WorkflowID, &step.StepOrder, &step.NextStepID, &step.FalseBranchStepID,
+			&step.Name, &step.StepType,
 			&cfgBytes, &step.AIGenerated, &step.ReviewedBy, &step.ReviewedAt,
 			&step.CreatedAt, &step.UpdatedAt,
 		); err != nil {
@@ -315,7 +317,7 @@ func (s *Store) UpsertWorkflowSteps(ctx context.Context, workspaceID, workflowID
 
 	inserted := make([]model.WorkflowStep, 0, len(steps))
 	for i, step := range steps {
-		s2, err := insertWorkflowStep(ctx, tx, workflowID, i, step.Name, step.StepType, step.Config, step.AIGenerated)
+		s2, err := insertWorkflowStep(ctx, tx, workflowID, i, step.Name, step.StepType, step.Config, step.AIGenerated, step.NextStepID, step.FalseBranchStepID)
 		if err != nil {
 			return nil, err
 		}
@@ -340,12 +342,14 @@ func (s *Store) ReviewStep(ctx context.Context, workspaceID, workflowID, stepID,
 		  AND ws.workflow_id=w.id
 		  AND w.id=$3
 		  AND w.workspace_id=$4
-		RETURNING ws.id, ws.workflow_id, ws.step_order, ws.name, ws.step_type,
+		RETURNING ws.id, ws.workflow_id, ws.step_order, ws.next_step_id, ws.false_branch_step_id,
+		          ws.name, ws.step_type,
 		          ws.config, ws.ai_generated, ws.reviewed_by, ws.reviewed_at,
 		          ws.created_at, ws.updated_at`,
 		reviewerID, stepID, workflowID, workspaceID,
 	).Scan(
-		&step.ID, &step.WorkflowID, &step.StepOrder, &step.Name, &step.StepType,
+		&step.ID, &step.WorkflowID, &step.StepOrder, &step.NextStepID, &step.FalseBranchStepID,
+		&step.Name, &step.StepType,
 		&cfgBytes, &step.AIGenerated, &step.ReviewedBy, &step.ReviewedAt,
 		&step.CreatedAt, &step.UpdatedAt,
 	)
@@ -521,6 +525,7 @@ type execer interface {
 
 func insertWorkflowStep(ctx context.Context, tx execer, workflowID string, order int,
 	name string, stepType model.WorkflowStepType, config map[string]any, aiGenerated bool,
+	nextStepID *string, falseBranchStepID *string,
 ) (*model.WorkflowStep, error) {
 	cfgBytes, err := json.Marshal(config)
 	if err != nil {
@@ -531,13 +536,17 @@ func insertWorkflowStep(ctx context.Context, tx execer, workflowID string, order
 	var cfgOut []byte
 	err = tx.QueryRow(ctx, `
 		INSERT INTO workflow_steps
-		    (workflow_id, step_order, name, step_type, config, ai_generated)
-		VALUES ($1,$2,$3,$4,$5,$6)
-		RETURNING id, workflow_id, step_order, name, step_type, config,
+		    (workflow_id, step_order, name, step_type, config, ai_generated,
+		     next_step_id, false_branch_step_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		RETURNING id, workflow_id, step_order, next_step_id, false_branch_step_id,
+		          name, step_type, config,
 		          ai_generated, reviewed_by, reviewed_at, created_at, updated_at`,
 		workflowID, order, name, stepType, cfgBytes, aiGenerated,
+		nextStepID, falseBranchStepID,
 	).Scan(
-		&step.ID, &step.WorkflowID, &step.StepOrder, &step.Name, &step.StepType,
+		&step.ID, &step.WorkflowID, &step.StepOrder, &step.NextStepID, &step.FalseBranchStepID,
+		&step.Name, &step.StepType,
 		&cfgOut, &step.AIGenerated, &step.ReviewedBy, &step.ReviewedAt,
 		&step.CreatedAt, &step.UpdatedAt,
 	)

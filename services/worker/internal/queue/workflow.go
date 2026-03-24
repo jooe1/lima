@@ -102,38 +102,138 @@ func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 		stepResults = map[string]any{}
 	}
 
-	for _, step := range def.steps {
-		// Skip steps already completed (shouldn't happen on fresh run, but defensive).
-		if sr, ok := stepResults[step.id]; ok {
-			if m, ok := sr.(map[string]any); ok {
-				if m["status"] == "completed" {
-					continue
-				}
+	if err := runStepGraph(ctx, cfg, pool, log, run, def, stepResults); err != nil {
+		// runStepGraph returns nil for paused (awaiting_approval) — only non-nil on hard error.
+		errStr := err.Error()
+		output["steps"] = stepResults
+		_ = setRunStatus(ctx, pool, runID, runStatusFailed, output, &errStr, nil)
+		log.Error("workflow run failed", zap.String("run_id", runID), zap.Error(err))
+		return nil // don't propagate — run is marked failed in DB
+	}
+
+	// Check if we're paused (some step set awaiting_approval status internally).
+	output["steps"] = stepResults
+	paused := false
+	for _, v := range stepResults {
+		if m, ok := v.(map[string]any); ok {
+			if m["status"] == "awaiting_approval" {
+				paused = true
+				break
 			}
 		}
+	}
+	if paused {
+		_ = setRunStatus(ctx, pool, runID, runStatusAwaitingApproval, output, nil, nil)
+		log.Info("workflow run paused awaiting approval", zap.String("run_id", runID))
+		return nil
+	}
 
-		paused, err := executeStep(ctx, cfg, pool, log, run, def, step, stepResults)
-		if err != nil {
-			errStr := err.Error()
-			output["steps"] = stepResults
-			_ = setRunStatus(ctx, pool, runID, runStatusFailed, output, &errStr, nil)
-			log.Error("workflow run failed", zap.String("run_id", runID), zap.String("step", step.name), zap.Error(err))
-			return nil // don't propagate — run is marked failed in DB
-		}
-		if paused {
-			// Step created an approval gate; run is now awaiting_approval.
-			output["steps"] = stepResults
-			// approvalID was linked inside executeStep via createApprovalForRun.
-			_ = setRunStatus(ctx, pool, runID, runStatusAwaitingApproval, output, nil, nil)
-			log.Info("workflow run paused awaiting approval",
-				zap.String("run_id", runID), zap.String("step", step.name))
-			return nil
+	_ = setRunStatus(ctx, pool, runID, runStatusCompleted, output, nil, nil)
+	log.Info("workflow run completed", zap.String("run_id", runID))
+	return nil
+}
+
+// runStepGraph executes or resumes the workflow step graph.
+// It returns nil when the run has completed or been paused (awaiting_approval via a step result).
+// It returns a non-nil error only on hard infrastructure failures.
+func runStepGraph(
+	ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger,
+	run *wfRun, def *wfDefinition, stepResults map[string]any,
+) error {
+	if len(def.steps) == 0 {
+		return nil
+	}
+
+	// Build step index for O(1) lookup.
+	byID := make(map[string]*wfStep, len(def.steps))
+	for i := range def.steps {
+		s := &def.steps[i]
+		byID[s.id] = s
+	}
+
+	// Find start step: the step with the lowest step_order.
+	start := &def.steps[0]
+	for i := range def.steps {
+		if def.steps[i].stepOrder < start.stepOrder {
+			start = &def.steps[i]
 		}
 	}
 
-	output["steps"] = stepResults
-	_ = setRunStatus(ctx, pool, runID, runStatusCompleted, output, nil, nil)
-	log.Info("workflow run completed", zap.String("run_id", runID))
+	visited := make(map[string]bool, len(def.steps))
+	current := start
+
+	for current != nil {
+		if visited[current.id] {
+			return fmt.Errorf("cycle detected at step %q — workflow graph is invalid", current.name)
+		}
+		visited[current.id] = true
+
+		// Skip steps already completed (resume path).
+		if sr, ok := stepResults[current.id]; ok {
+			if m, ok := sr.(map[string]any); ok && m["status"] == "completed" {
+				current = nextStep(current, stepResults, byID, def.steps)
+				continue
+			}
+		}
+
+		paused, err := executeStep(ctx, cfg, pool, log, run, def, *current, stepResults)
+		if err != nil {
+			return fmt.Errorf("step %q: %w", current.name, err)
+		}
+		if paused {
+			// Step created an approval gate — runner will detect this and set the run status.
+			return nil
+		}
+
+		current = nextStep(current, stepResults, byID, def.steps)
+	}
+	return nil
+}
+
+// nextStep resolves which step to execute after the current one.
+// For condition steps it checks the boolean result and branches accordingly.
+// Falls back to linear step_order+1 when no explicit next_step_id is set.
+func nextStep(step *wfStep, stepResults map[string]any, byID map[string]*wfStep, allSteps []wfStep) *wfStep {
+	// Determine the explicit next ID (may be nil).
+	var nextID *string
+	if step.stepType == stepTypeCondition {
+		// Condition: check result to pick true or false branch.
+		result := false
+		if sr, ok := stepResults[step.id]; ok {
+			if m, ok := sr.(map[string]any); ok {
+				switch v := m["result"].(type) {
+				case bool:
+					result = v
+				case string:
+					result = v == "true" || v == "1" || v == "yes"
+				}
+			}
+		}
+		if result {
+			nextID = step.nextStepID
+		} else {
+			nextID = step.falseBranchStepID
+		}
+	} else {
+		nextID = step.nextStepID
+	}
+
+	// If an explicit next step is set, use it.
+	if nextID != nil {
+		if s, ok := byID[*nextID]; ok {
+			return s
+		}
+		// Referenced step doesn't exist — treat as terminal.
+		return nil
+	}
+
+	// Linear fallback: find step with step_order == current.step_order + 1.
+	targetOrder := step.stepOrder + 1
+	for i := range allSteps {
+		if allSteps[i].stepOrder == targetOrder {
+			return &allSteps[i]
+		}
+	}
 	return nil
 }
 
@@ -192,34 +292,32 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 		return fmt.Errorf("set resuming status: %w", err)
 	}
 
-	for _, step := range def.steps {
-		if sr, ok := stepResults[step.id]; ok {
-			if m, ok := sr.(map[string]any); ok {
-				if m["status"] == "completed" {
-					continue
-				}
-			}
-		}
-
-		paused, err := executeStep(ctx, cfg, pool, log, run, def, step, stepResults)
-		if err != nil {
-			errStr := err.Error()
-			output["steps"] = stepResults
-			_ = setRunStatus(ctx, pool, runID, runStatusFailed, output, &errStr, nil)
-			log.Error("workflow run failed after resume",
-				zap.String("run_id", runID), zap.String("step", step.name), zap.Error(err))
-			return nil
-		}
-		if paused {
-			output["steps"] = stepResults
-			_ = setRunStatus(ctx, pool, runID, runStatusAwaitingApproval, output, nil, nil)
-			log.Info("workflow run paused again awaiting approval",
-				zap.String("run_id", runID), zap.String("step", step.name))
-			return nil
-		}
+	// Continue execution from where we left off (graph-aware).
+	if err := runStepGraph(ctx, cfg, pool, log, run, def, stepResults); err != nil {
+		errStr := err.Error()
+		output["steps"] = stepResults
+		_ = setRunStatus(ctx, pool, runID, runStatusFailed, output, &errStr, nil)
+		log.Error("workflow run failed on resume", zap.String("run_id", runID), zap.Error(err))
+		return nil
 	}
 
+	// Check if we're paused again.
 	output["steps"] = stepResults
+	pausedAgain := false
+	for _, v := range stepResults {
+		if m, ok := v.(map[string]any); ok {
+			if m["status"] == "awaiting_approval" {
+				pausedAgain = true
+				break
+			}
+		}
+	}
+	if pausedAgain {
+		_ = setRunStatus(ctx, pool, runID, runStatusAwaitingApproval, output, nil, nil)
+		log.Info("workflow run paused again awaiting approval", zap.String("run_id", runID))
+		return nil
+	}
+
 	_ = setRunStatus(ctx, pool, runID, runStatusCompleted, output, nil, nil)
 	log.Info("workflow run completed after resume", zap.String("run_id", runID))
 	return nil

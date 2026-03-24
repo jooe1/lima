@@ -109,7 +109,7 @@ export default function MembersPage() {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
 
-  const [manualUserId, setManualUserId] = useState('')
+  const [manualEmail, setManualEmail] = useState('')
   const [manualRole, setManualRole] = useState<WorkspaceRole>('end_user')
   const [manualSubmitting, setManualSubmitting] = useState(false)
   const [manualError, setManualError] = useState<string | null>(null)
@@ -184,7 +184,7 @@ export default function MembersPage() {
 
   const handleManualSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!companyId || !workspaceId || !manualUserId.trim()) return
+    if (!companyId || !workspaceId || !manualEmail.trim()) return
 
     setManualSubmitting(true)
     setManualError(null)
@@ -192,10 +192,10 @@ export default function MembersPage() {
 
     try {
       await upsertWorkspaceMember(companyId, workspaceId, {
-        user_id: manualUserId.trim(),
+        email: manualEmail.trim(),
         role: manualRole,
       })
-      setManualUserId('')
+      setManualEmail('')
       await loadData('refresh')
     } catch (err) {
       setManualError(err instanceof Error ? err.message : 'Failed to update manual membership')
@@ -345,17 +345,17 @@ export default function MembersPage() {
               <div>
                 <h2 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600 }}>Manual Membership</h2>
                 <p style={{ margin: '0.25rem 0 0', color: '#555', fontSize: '0.72rem' }}>
-                  Create or update a manual workspace grant for a company user by ID.
+                  Create or update a manual workspace grant for a company user by email.
                 </p>
               </div>
             </div>
 
             <form onSubmit={handleManualSubmit} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <input
-                type="text"
-                placeholder="User ID"
-                value={manualUserId}
-                onChange={event => setManualUserId(event.target.value)}
+                type="email"
+                placeholder="Email"
+                value={manualEmail}
+                onChange={event => setManualEmail(event.target.value)}
                 style={{
                   flex: '1 1 280px',
                   padding: '0.4rem 0.6rem',
@@ -386,16 +386,16 @@ export default function MembersPage() {
               </select>
               <button
                 type="submit"
-                disabled={manualSubmitting || !manualUserId.trim()}
+                disabled={manualSubmitting || !manualEmail.trim()}
                 style={{
                   padding: '0.4rem 0.85rem',
                   borderRadius: 6,
                   fontSize: '0.78rem',
                   fontWeight: 600,
                   border: '1px solid #2563eb',
-                  background: manualSubmitting || !manualUserId.trim() ? '#1e3a8a33' : '#2563eb',
-                  color: manualSubmitting || !manualUserId.trim() ? '#93c5fd66' : '#fff',
-                  cursor: manualSubmitting || !manualUserId.trim() ? 'default' : 'pointer',
+                  background: manualSubmitting || !manualEmail.trim() ? '#1e3a8a33' : '#2563eb',
+                  color: manualSubmitting || !manualEmail.trim() ? '#93c5fd66' : '#fff',
+                  cursor: manualSubmitting || !manualEmail.trim() ? 'default' : 'pointer',
                 }}
               >
                 {manualSubmitting ? 'Saving…' : 'Save Grant'}

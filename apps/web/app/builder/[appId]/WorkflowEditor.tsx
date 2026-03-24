@@ -108,6 +108,7 @@ interface WorkflowTriggerTarget {
 interface Props {
   appId: string
   triggerTargets?: WorkflowTriggerTarget[]
+  onOpenCanvas?: (workflowId: string) => void
 }
 
 function getStringConfigValue(config: Record<string, unknown>, key: string) {
@@ -285,7 +286,7 @@ function getTriggerHelperText(triggerType: WorkflowTrigger) {
 // ============================================================================
 // WorkflowEditor
 // ============================================================================
-export function WorkflowEditor({ appId, triggerTargets = [] }: Props) {
+export function WorkflowEditor({ appId, triggerTargets = [], onOpenCanvas }: Props) {
   const { workspace, user } = useAuth()
   const isAdmin   = user?.role === 'workspace_admin'
   const isBuilder = user?.role === 'app_builder' || isAdmin
@@ -295,9 +296,10 @@ export function WorkflowEditor({ appId, triggerTargets = [] }: Props) {
   const [runs, setRuns]               = useState<WorkflowRun[]>([])
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState('')
-  const [creating, setCreating]       = useState(false)
-  const [newName, setNewName]         = useState('')
-  const [actionErr, setActionErr]     = useState('')
+  const [creating, setCreating]           = useState(false)
+  const [newName, setNewName]             = useState('')
+  const [newTriggerType, setNewTriggerType] = useState<WorkflowTrigger>('manual')
+  const [actionErr, setActionErr]         = useState('')
 
   // Load workflow list
   const reload = useCallback(async () => {
@@ -361,17 +363,18 @@ export function WorkflowEditor({ appId, triggerTargets = [] }: Props) {
     try {
       await createWorkflow(workspace.id, appId, {
         name: newName.trim(),
-        trigger_type: 'manual',
+        trigger_type: newTriggerType,
         requires_approval: true,
         steps: [],
       })
       setNewName('')
+      setNewTriggerType('manual')
       setCreating(false)
       await reload()
     } catch (e) {
       setActionErr(e instanceof Error ? e.message : 'Failed to create workflow')
     }
-  }, [workspace, appId, newName, reload])
+  }, [workspace, appId, newName, newTriggerType, reload])
 
   // Delete workflow
   const handleDelete = useCallback(async (wfId: string) => {
@@ -479,13 +482,22 @@ export function WorkflowEditor({ appId, triggerTargets = [] }: Props) {
               autoFocus
               value={newName}
               onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setCreating(false) }}
+              onKeyDown={e => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') { setCreating(false); setNewTriggerType('manual') } }}
               placeholder="Workflow name…"
               style={{ width: '100%', boxSizing: 'border-box', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 3, padding: '4px 8px', color: C.text, fontSize: '0.72rem', marginBottom: 6 }}
             />
+            <select
+              value={newTriggerType}
+              onChange={e => setNewTriggerType(e.target.value as WorkflowTrigger)}
+              style={{ width: '100%', boxSizing: 'border-box', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 3, padding: '4px 8px', color: C.text, fontSize: '0.72rem', marginBottom: 6 }}
+            >
+              <option value="manual">Manual</option>
+              <option value="schedule">Schedule</option>
+              <option value="webhook">Webhook</option>
+            </select>
             <div style={{ display: 'flex', gap: 6 }}>
               <button style={btn(true)} onClick={handleCreate}>Create</button>
-              <button style={btn()} onClick={() => setCreating(false)}>Cancel</button>
+              <button style={btn()} onClick={() => { setCreating(false); setNewTriggerType('manual') }}>Cancel</button>
             </div>
           </div>
         )}
@@ -499,7 +511,7 @@ export function WorkflowEditor({ appId, triggerTargets = [] }: Props) {
           {workflows.map(wf => (
             <div
               key={wf.id}
-              onClick={() => selectWorkflow(wf)}
+              onClick={() => { selectWorkflow(wf); onOpenCanvas?.(wf.id) }}
               style={{
                 padding: '8px 12px',
                 cursor: 'pointer',

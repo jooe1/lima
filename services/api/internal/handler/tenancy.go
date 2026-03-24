@@ -111,6 +111,25 @@ func GetWorkspace(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	}
 }
 
+// ListCompanyUsers returns all users provisioned in a company.
+// Requires company_admin or workspace_admin; used by the members UI to look
+// up users by email instead of asking admins to know internal UUIDs.
+func ListCompanyUsers(s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		companyID := chi.URLParam(r, "companyID")
+		users, err := s.ListCompanyUsers(r.Context(), companyID)
+		if err != nil {
+			log.Error("list company users", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "db_error", "failed to list company users")
+			return
+		}
+		if users == nil {
+			users = []model.User{}
+		}
+		respond(w, http.StatusOK, map[string]any{"users": users})
+	}
+}
+
 // ListMembers returns all workspace members with their roles.
 func ListMembers(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -148,18 +167,29 @@ func UpsertMember(s *store.Store, log *zap.Logger) http.HandlerFunc {
 
 		var req struct {
 			UserID string              `json:"user_id"`
+			Email  string              `json:"email"`
 			Role   model.WorkspaceRole `json:"role"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 			return
 		}
-		if req.UserID == "" || !isValidWorkspaceRole(req.Role) {
-			respondErr(w, http.StatusUnprocessableEntity, "validation_error", "user_id and a valid role are required")
+		if req.UserID == "" && req.Email == "" {
+			respondErr(w, http.StatusUnprocessableEntity, "validation_error", "user_id or email is required")
+			return
+		}
+		if !isValidWorkspaceRole(req.Role) {
+			respondErr(w, http.StatusUnprocessableEntity, "validation_error", "a valid role is required")
 			return
 		}
 
-		user, err := s.GetUser(r.Context(), req.UserID)
+		var user *model.User
+		var err error
+		if req.UserID != "" {
+			user, err = s.GetUser(r.Context(), req.UserID)
+		} else {
+			user, err = s.FindUserByEmail(r.Context(), companyID, req.Email)
+		}
 		if err != nil {
 			handleStoreErr(w, err)
 			return

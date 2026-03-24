@@ -13,10 +13,11 @@ import (
 	"github.com/lima/api/internal/model"
 	"github.com/lima/api/internal/queue"
 	"github.com/lima/api/internal/store"
+	goredis "github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
-func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.Handler {
+func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqueuer, rdb *goredis.Client, log *zap.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(chimiddleware.RequestID)
@@ -46,6 +47,12 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 			if cfg.Env == "development" {
 				r.Post("/dev/login", handler.DevLogin(cfg, s, log))
 			}
+			if rdb != nil {
+				r.Post("/magic-link/request", handler.MagicLinkRequest(cfg, s, rdb, log))
+				r.Get("/magic-link/verify", handler.MagicLinkVerify(cfg, s, rdb, log))
+			}
+			r.Get("/google/login", handler.GoogleLogin(cfg, log))
+			r.Get("/google/callback", handler.GoogleCallback(cfg, s, log))
 		})
 
 		// All routes below require a valid session JWT
@@ -61,6 +68,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 			r.Route("/companies/{companyID}", func(r chi.Router) {
 				r.Use(handler.RequireCompanyClaim)
 				r.Get("/", handler.GetCompany(s, log))
+				r.Get("/users", handler.ListCompanyUsers(s, log))
 				r.Route("/workspaces", func(r chi.Router) {
 					r.Get("/", handler.ListWorkspaces(s, log))
 					r.Post("/", handler.CreateWorkspace(s, log))

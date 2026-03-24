@@ -19,6 +19,7 @@ import (
 	"github.com/lima/api/internal/queue"
 	"github.com/lima/api/internal/router"
 	"github.com/lima/api/internal/store"
+	goredis "github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -88,7 +89,15 @@ func serve(cfg *config.Config, log *zap.Logger) error {
 	// set, fail startup after a few retries so queue-backed features do not
 	// silently degrade into stuck pending runs.
 	var enq *queue.Enqueuer
+	var rdb *goredis.Client
 	if cfg.RedisURL != "" {
+		opt, parseErr := goredis.ParseURL(cfg.RedisURL)
+		if parseErr != nil {
+			return fmt.Errorf("redis url parse failed: %w", parseErr)
+		}
+		rdb = goredis.NewClient(opt)
+		defer rdb.Close()
+
 		for attempt := 1; attempt <= redisEnqueuerMaxAttempts; attempt++ {
 			enq, err = queue.NewEnqueuer(context.Background(), cfg.RedisURL)
 			if err == nil {
@@ -103,7 +112,7 @@ func serve(cfg *config.Config, log *zap.Logger) error {
 		}
 	}
 
-	r := router.New(cfg, pool, s, enq, log)
+	r := router.New(cfg, pool, s, enq, rdb, log)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
