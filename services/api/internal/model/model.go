@@ -488,7 +488,7 @@ type Workflow struct {
 	UpdatedAt        time.Time       `json:"updated_at"`
 	SourceWidgetID   *string         `json:"source_widget_id,omitempty"` // page-bound workflows only (immutable once set)
 	SourcePageID     *string         `json:"source_page_id,omitempty"`   // page-bound workflows only (immutable once set)
-	OutputBindings   []OutputBinding `json:"output_bindings"`             // workflow-level output bindings
+	OutputBindings   []OutputBinding `json:"output_bindings"`            // workflow-level output bindings
 }
 
 // IsPageBound returns true if the workflow trigger is button_click or form_submit.
