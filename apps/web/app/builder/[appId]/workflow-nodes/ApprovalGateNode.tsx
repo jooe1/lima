@@ -13,6 +13,9 @@ export function ApprovalGateNode({ data, selected }: NodeProps<WFNode>) {
       <Handle type="target" position={Position.Top} style={{ background: '#a78bfa' }} />
       <div style={{ fontWeight: 600 }}>✅ Approval Gate</div>
       <div style={{ color: '#64748b', marginTop: 2 }}>{data.label}</div>
+      <div style={{ color: '#5b21b6', fontSize: '0.58rem', marginTop: 2, fontStyle: 'italic' }}>
+        {String(data.config?.description ?? '').slice(0, 50) || 'Awaits admin approval'}
+      </div>
       <Handle type="source" position={Position.Bottom} style={{ background: '#a78bfa' }} />
     </div>
   )

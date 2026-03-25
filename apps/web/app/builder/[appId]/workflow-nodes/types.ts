@@ -2,7 +2,7 @@ import type { Node, Edge } from '@xyflow/react'
 import type { WorkflowStepType } from '../../../../lib/api'
 import type { OutputPortDrag } from '../PortTray'
 
-export type WFNodeType = 'start' | 'query' | 'mutation' | 'condition' | 'approval_gate' | 'notification' | 'end'
+export type WFNodeType = 'start' | 'query' | 'mutation' | 'condition' | 'approval_gate' | 'notification' | 'end' | 'widget_source'
 
 export interface WFNodeData extends Record<string, unknown> {
   label: string
@@ -19,3 +19,10 @@ export interface WFNodeData extends Record<string, unknown> {
 
 export type WFNode = Node<WFNodeData, WFNodeType>
 export type WFEdge = Edge
+
+export interface WidgetSourceNodeData extends Record<string, unknown> {
+  widgetId: string
+  widgetLabel: string
+  widgetType: string
+  ports: Array<{ portName: string; portLabel: string; portType: string }>
+}

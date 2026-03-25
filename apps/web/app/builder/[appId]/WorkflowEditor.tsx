@@ -366,7 +366,7 @@ export function WorkflowEditor({ appId, triggerTargets = [], onOpenCanvas, onOpe
       await createWorkflow(workspace.id, appId, {
         name: newName.trim(),
         trigger_type: newTriggerType,
-        requires_approval: true,
+        requires_approval: false,
         steps: [],
       })
       setNewName('')
@@ -493,8 +493,10 @@ export function WorkflowEditor({ appId, triggerTargets = [], onOpenCanvas, onOpe
               onChange={e => setNewTriggerType(e.target.value as WorkflowTrigger)}
               style={{ width: '100%', boxSizing: 'border-box', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 3, padding: '4px 8px', color: C.text, fontSize: '0.72rem', marginBottom: 6 }}
             >
-              <option value="manual">Manual</option>
-              <option value="schedule">Schedule</option>
+              <option value="manual">Manual (run from builder)</option>
+              <option value="form_submit">Form Submit</option>
+              <option value="button_click">Button Click</option>
+              <option value="schedule">Schedule (cron)</option>
               <option value="webhook">Webhook</option>
             </select>
             <div style={{ display: 'flex', gap: 6 }}>

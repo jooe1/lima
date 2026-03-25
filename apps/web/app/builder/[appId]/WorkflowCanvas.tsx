@@ -30,12 +30,14 @@ import {
   type WorkflowStepType,
   type Connector,
 } from '../../../lib/api'
+import { type AuraNode } from '@lima/aura-dsl'
 import {
   StartNode, QueryNode, MutationNode, ConditionNode,
-  ApprovalGateNode, NotificationNode, EndNode,
-  type WFNode, type WFEdge, type WFNodeData,
+  ApprovalGateNode, NotificationNode, EndNode, WidgetSourceNode,
+  type WFNode, type WFEdge, type WFNodeData, type WidgetSourceNodeData,
 } from './workflow-nodes'
 import type { OutputPortDrag } from './PortTray'
+import { WORKFLOW_TEMPLATES, type WorkflowTemplate } from './workflowTemplates'
 
 // ---- colour palette ---------------------------------------------------------
 const C = {
@@ -58,6 +60,7 @@ const nodeTypes: NodeTypes = {
   approval_gate: ApprovalGateNode as React.ComponentType<any>,
   notification:  NotificationNode as React.ComponentType<any>,
   end:           EndNode as React.ComponentType<any>,
+  widget_source: WidgetSourceNode as React.ComponentType<any>,
 }
 
 const STEP_DEFAULT_CONFIGS: Record<WorkflowStepType, Record<string, unknown>> = {
@@ -95,9 +98,48 @@ const btn = (primary = false, danger = false): React.CSSProperties => ({
   flexShrink: 0,
 })
 
+// ---- Port extraction helpers (mirrors PortTray logic) ----------------------
+
+interface WidgetOutputPort {
+  portName: string
+  portLabel: string
+  portType: string
+}
+
+function getWidgetOutputPorts(node: AuraNode): WidgetOutputPort[] {
+  switch (node.element) {
+    case 'form': {
+      const fieldsStr = node.style?.fields ?? node.with?.fields ?? ''
+      const fields = fieldsStr.split(',').map((f: string) => f.trim()).filter(Boolean)
+      return fields.map(field => ({ portName: field, portLabel: field, portType: 'text' }))
+    }
+    case 'button':
+      return [{ portName: 'clicked_at', portLabel: 'clicked at', portType: 'date' }]
+    case 'table': {
+      const colsStr = node.style?.columns ?? ''
+      const cols = colsStr.split(',').map((c: string) => c.trim()).filter(Boolean)
+      if (cols.length > 0) {
+        return cols.map(col => ({ portName: `selected_row.${col}`, portLabel: col, portType: 'text' }))
+      }
+      return [{ portName: 'selected_row', portLabel: 'selected row', portType: 'object' }]
+    }
+    case 'text_input':
+      return [{ portName: 'value', portLabel: 'value', portType: 'text' }]
+    case 'select':
+      return [
+        { portName: 'selected_value', portLabel: 'selected value', portType: 'text' },
+        { portName: 'selected_label', portLabel: 'selected label', portType: 'text' },
+      ]
+    default:
+      return []
+  }
+}
+
+const WIDGET_SOURCE_TYPES = new Set(['form', 'button', 'table', 'text_input', 'select'])
+
 // ---- helpers: convert WorkflowStep[] <-> React Flow nodes/edges ------------
 
-function stepsToFlow(steps: WorkflowStep[], triggerLabel: string): { nodes: WFNode[]; edges: WFEdge[] } {
+function stepsToFlow(steps: WorkflowStep[], triggerLabel: string, pageDocument: AuraNode[] = []): { nodes: WFNode[]; edges: WFEdge[] } {
   const nodes: WFNode[] = []
   const edges: WFEdge[] = []
 
@@ -223,7 +265,7 @@ function stepsToFlow(steps: WorkflowStep[], triggerLabel: string): { nodes: WFNo
 
 // Convert the current canvas nodes/edges back to WorkflowStepInput[] for saving.
 function flowToSteps(nodes: WFNode[], edges: WFEdge[], existingSteps: WorkflowStep[]): WorkflowStepInput[] {
-  const stepNodes = nodes.filter(n => n.type !== 'start' && n.type !== 'end' && n.data.stepType)
+  const stepNodes = nodes.filter(n => n.type !== 'start' && n.type !== 'end' && n.type !== 'widget_source' && n.data.stepType)
   const existingById = Object.fromEntries((existingSteps ?? []).map(s => [s.id, s]))
 
   return stepNodes.map((node) => {
@@ -292,17 +334,32 @@ function buildInsertSQL(table: string, mapping: { column: string; value: string 
 // ---- Config panel for a selected node ---------------------------------------
 
 function NodeConfigPanel({
-  node, onSave, onReview, canReview, connectors,
+  node, onSave, onReview, canReview, connectors, pageDocument,
 }: {
   node: WFNode
   onSave: (nodeId: string, updatedData: Partial<WFNodeData>) => void
   onReview: (stepId: string) => void
   canReview: boolean
   connectors: Connector[]
+  pageDocument?: AuraNode[]
 }) {
   const [config, setConfig] = useState<Record<string, unknown>>(node.data.config ?? {})
   const [name, setName] = useState(String(node.data.label))
   const [advancedSql, setAdvancedSql] = useState(false)
+
+  // Compute available widget ports for source picker dropdowns
+  const availablePorts: Array<{ label: string; value: string }> = []
+  if (pageDocument) {
+    for (const wNode of pageDocument) {
+      const ports = getWidgetOutputPorts(wNode)
+      for (const port of ports) {
+        availablePorts.push({
+          label: `${wNode.text ?? wNode.id} → ${port.portLabel}`,
+          value: `{{input.${port.portName}}}`,
+        })
+      }
+    }
+  }
 
   // Reset when selected node changes
   useEffect(() => {
@@ -333,16 +390,33 @@ function NodeConfigPanel({
   // Resolved connector + schema
   const selectedConnector = connectors.find(c => c.id === String(config.connector_id ?? ''))
   const isSql = selectedConnector && ['postgres', 'mysql', 'mssql'].includes(selectedConnector.type)
+  const isManaged = selectedConnector?.type === 'managed'
   const tables = getConnectorTables(selectedConnector)
   const tableName = String(config.table ?? '')
   const columns = getConnectorColumns(selectedConnector, tableName)
+
+  // For managed (Lima Table) connectors, columns live at schema_cache.columns
+  const managedColumns: string[] = (() => {
+    if (!isManaged) return []
+    const cols = selectedConnector?.schema_cache?.columns
+    if (!Array.isArray(cols)) return []
+    return cols.flatMap(c => {
+      if (typeof c === 'string') return c !== 'id' ? [c] : []
+      if (c && typeof c === 'object' && 'name' in c) {
+        const n = (c as Record<string, unknown>).name
+        return typeof n === 'string' && n.trim() && n !== 'id' ? [n] : []
+      }
+      return []
+    })
+  })()
 
   // Field mapping for INSERT: use saved mapping or derive from schema columns
   const savedMapping = Array.isArray(config.field_mapping)
     ? (config.field_mapping as { column: string; value: string }[])
     : null
+  const effectiveColumns = isManaged ? managedColumns : columns
   const fieldMapping: { column: string; value: string }[] =
-    savedMapping ?? columns.map(c => ({ column: c, value: '' }))
+    savedMapping ?? effectiveColumns.map(c => ({ column: c, value: '' }))
 
   const handleConnectorChange = (connId: string) => {
     setConfig(prev => ({ ...prev, connector_id: connId, table: '', field_mapping: undefined, sql: '' }))
@@ -364,7 +438,12 @@ function NodeConfigPanel({
 
   const handleMappingChange = (column: string, value: string) => {
     const newMapping = fieldMapping.map(m => m.column === column ? { ...m, value } : m)
-    setConfig(prev => ({ ...prev, field_mapping: newMapping, sql: buildInsertSQL(tableName, newMapping) }))
+    setConfig(prev => ({
+      ...prev,
+      field_mapping: newMapping,
+      // managed connectors don't use SQL — worker reads field_mapping directly
+      ...(isManaged ? {} : { sql: buildInsertSQL(tableName, newMapping) }),
+    }))
   }
 
   // Shared: connector dropdown
@@ -425,13 +504,28 @@ function NodeConfigPanel({
             {(!isSql || advancedSql) && (
               <>
                 <label style={fieldLabel}>SQL query</label>
+                {availablePorts.length > 0 && (
+                  <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4 }}>
+                    {availablePorts.map(p => (
+                      <button
+                        key={p.value}
+                        type="button"
+                        style={{ background: '#1e3a8a22', border: '1px solid #1e3a8a66', color: '#93c5fd', borderRadius: 3, padding: '2px 7px', fontSize: '0.58rem', cursor: 'pointer' }}
+                        onClick={() => setField('sql', String(config.sql ?? '') + p.value)}
+                        title={`Insert ${p.value}`}
+                      >
+                        + {p.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   style={{ ...inputStyle, height: 80, resize: 'vertical', fontFamily: 'monospace', fontSize: '0.65rem' }}
                   value={String(config.sql ?? '')}
                   onChange={e => setField('sql', e.target.value)}
                   placeholder="SELECT * FROM contacts WHERE status = '{{input.status}}'"
                 />
-                <span style={hintStyle}>Tip: use {'{{input.fieldname}}'} to filter by a value the user entered in a form.</span>
+                <span style={hintStyle}>Click a field above to insert it, or type {'{{input.fieldname}}'} directly.</span>
                 {advancedSql && (
                   <button style={{ ...linkBtn, marginTop: 4 }} onClick={() => setAdvancedSql(false)}>← Back to simple mode</button>
                 )}
@@ -444,8 +538,9 @@ function NodeConfigPanel({
       // ── Save to Database ───────────────────────────────────────────────────
       case 'mutation': {
         const operation = String(config.operation ?? 'insert')
-        const showMapper = isSql && tableName && operation === 'insert' && !advancedSql
+        const showMapper = (isSql && tableName && operation === 'insert' && !advancedSql) || (isManaged && operation === 'insert')
         const showSqlHint = isSql && tableName && operation !== 'insert' && !advancedSql
+        const showManagedUpdateDelete = isManaged && operation !== 'insert'
 
         return (
           <>
@@ -462,17 +557,79 @@ function NodeConfigPanel({
             </select>
             {isSql && tablePicker}
 
+            {/* managed: UPDATE/DELETE by record id */}
+            {showManagedUpdateDelete && (
+              <>
+                <label style={fieldLabel}>Record ID</label>
+                <div style={{ display: 'flex', gap: 3 }}>
+                  <input
+                    style={{ ...inputStyle, flex: 1 }}
+                    value={String(config.record_id ?? '')}
+                    onChange={e => setField('record_id', e.target.value)}
+                    placeholder="{{input.id}}"
+                  />
+                  {availablePorts.length > 0 && (
+                    <select
+                      style={{ background: '#111', border: `1px solid ${C.border}`, borderRadius: 3, padding: '2px 2px', color: '#60a5fa', fontSize: '0.6rem', cursor: 'pointer', flexShrink: 0, width: 22 }}
+                      value="" title="Pick a field"
+                      onChange={e => { if (e.target.value) setField('record_id', e.target.value) }}
+                    >
+                      <option value="">⬜</option>
+                      {availablePorts.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                    </select>
+                  )}
+                </div>
+                {operation === 'update' && (
+                  <>
+                    <label style={{ ...fieldLabel, marginTop: 8 }}>Fields to update</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginTop: 4 }}>
+                      {managedColumns.map(col => {
+                        const saved = Array.isArray(config.field_mapping)
+                          ? (config.field_mapping as { column: string; value: string }[]).find(m => m.column === col)
+                          : undefined
+                        return (
+                          <div key={col} style={{ display: 'grid', gridTemplateColumns: '1fr 14px 1fr', gap: 4, alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.65rem', color: '#fdba74', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col}</span>
+                            <span style={{ fontSize: '0.6rem', color: C.muted, textAlign: 'center' }}>=</span>
+                            <div style={{ display: 'flex', gap: 3 }}>
+                              <input
+                                style={{ ...inputStyle, padding: '3px 6px', flex: 1, minWidth: 0 }}
+                                value={saved?.value ?? ''}
+                                placeholder={`{{input.${col}}}`}
+                                onChange={e => handleMappingChange(col, e.target.value)}
+                              />
+                              {availablePorts.length > 0 && (
+                                <select
+                                  style={{ background: '#111', border: `1px solid ${C.border}`, borderRadius: 3, padding: '2px 2px', color: '#60a5fa', fontSize: '0.6rem', cursor: 'pointer', flexShrink: 0, width: 22 }}
+                                  value="" title="Pick a field"
+                                  onChange={e => { if (e.target.value) handleMappingChange(col, e.target.value) }}
+                                >
+                                  <option value="">⬜</option>
+                                  {availablePorts.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                                </select>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+                <span style={hintStyle}>Use ⬜ or type {'{{input.fieldname}}'} to reference a form field.</span>
+              </>
+            )}
+
             {/* INSERT: visual field mapper */}
             {showMapper && (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
                   <span style={{ fontSize: '0.65rem', color: C.muted, fontWeight: 600 }}>
-                    {columns.length > 0 ? 'What values to save?' : 'Set column values'}
+                    {effectiveColumns.length > 0 ? 'What values to save?' : 'Set column values'}
                   </span>
-                  <button style={linkBtn} onClick={() => setAdvancedSql(true)}>SQL mode</button>
+                  {!isManaged && <button style={linkBtn} onClick={() => setAdvancedSql(true)}>SQL mode</button>}
                 </div>
-                {fieldMapping.length === 0 && tableName && (
-                  <span style={hintStyle}>No columns found for this table. Try refreshing the schema in the Connectors panel.</span>
+                {fieldMapping.length === 0 && (tableName || isManaged) && (
+                  <span style={hintStyle}>{isManaged ? 'No columns defined yet. Add columns in the Connectors panel first.' : 'No columns found for this table. Try refreshing the schema in the Connectors panel.'}</span>
                 )}
                 <span style={hintStyle}>
                   Use {'{{input.fieldname}}'} to copy a value the user typed into the form.
@@ -485,12 +642,32 @@ function NodeConfigPanel({
                         {m.column}
                       </span>
                       <span style={{ fontSize: '0.6rem', color: C.muted, textAlign: 'center' }}>=</span>
-                      <input
-                        style={{ ...inputStyle, padding: '3px 6px' }}
-                        value={m.value}
-                        placeholder={`{{input.${m.column}}}`}
-                        onChange={e => handleMappingChange(m.column, e.target.value)}
-                      />
+                      <div style={{ display: 'flex', gap: 3 }}>
+                        <input
+                          style={{ ...inputStyle, padding: '3px 6px', flex: 1, minWidth: 0 }}
+                          value={m.value}
+                          placeholder={`{{input.${m.column}}}`}
+                          onChange={e => handleMappingChange(m.column, e.target.value)}
+                        />
+                        {availablePorts.length > 0 && (
+                          <select
+                            style={{
+                              background: '#111', border: `1px solid ${C.border}`,
+                              borderRadius: 3, padding: '2px 2px',
+                              color: '#60a5fa', fontSize: '0.6rem', cursor: 'pointer',
+                              flexShrink: 0, width: 22,
+                            }}
+                            value=""
+                            title="Pick a widget field"
+                            onChange={e => { if (e.target.value) handleMappingChange(m.column, e.target.value) }}
+                          >
+                            <option value="">⬜</option>
+                            {availablePorts.map(p => (
+                              <option key={p.value} value={p.value}>{p.label}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -501,6 +678,21 @@ function NodeConfigPanel({
             {showSqlHint && (
               <>
                 <label style={fieldLabel}>SQL statement</label>
+                {availablePorts.length > 0 && (
+                  <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4 }}>
+                    {availablePorts.map(p => (
+                      <button
+                        key={p.value}
+                        type="button"
+                        style={{ background: '#7c2d1222', border: '1px solid #7c2d1266', color: '#fdba74', borderRadius: 3, padding: '2px 7px', fontSize: '0.58rem', cursor: 'pointer' }}
+                        onClick={() => setField('sql', String(config.sql ?? '') + p.value)}
+                        title={`Insert ${p.value}`}
+                      >
+                        + {p.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   style={{ ...inputStyle, height: 80, resize: 'vertical', fontFamily: 'monospace', fontSize: '0.65rem' }}
                   value={String(config.sql ?? '')}
@@ -510,7 +702,7 @@ function NodeConfigPanel({
                     : `DELETE FROM "${tableName}" WHERE "id" = '{{input.id}}'`
                   }
                 />
-                <span style={hintStyle}>Use {'{{input.fieldname}}'} to reference a value the user entered.</span>
+                <span style={hintStyle}>Click a field above to insert it, or type {'{{input.fieldname}}'} directly.</span>
               </>
             )}
 
@@ -523,13 +715,28 @@ function NodeConfigPanel({
                     <button style={linkBtn} onClick={() => setAdvancedSql(false)}>← Field mapper</button>
                   )}
                 </div>
+                {availablePorts.length > 0 && (
+                  <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4 }}>
+                    {availablePorts.map(p => (
+                      <button
+                        key={p.value}
+                        type="button"
+                        style={{ background: '#7c2d1222', border: '1px solid #7c2d1266', color: '#fdba74', borderRadius: 3, padding: '2px 7px', fontSize: '0.58rem', cursor: 'pointer' }}
+                        onClick={() => setField('sql', String(config.sql ?? '') + p.value)}
+                        title={`Insert ${p.value}`}
+                      >
+                        + {p.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   style={{ ...inputStyle, height: 90, resize: 'vertical', fontFamily: 'monospace', fontSize: '0.65rem' }}
                   value={String(config.sql ?? '')}
                   onChange={e => setField('sql', e.target.value)}
                   placeholder="INSERT INTO ..."
                 />
-                <span style={hintStyle}>Use {'{{input.fieldname}}'} to reference form values.</span>
+                <span style={hintStyle}>Click a field above to insert it, or type {'{{input.fieldname}}'} directly.</span>
               </>
             )}
           </>
@@ -541,13 +748,26 @@ function NodeConfigPanel({
         return (
           <>
             <label style={fieldLabel}>If this value…</label>
-            <input
-              style={inputStyle}
-              value={String(config.left ?? '')}
-              onChange={e => setField('left', e.target.value)}
-              placeholder="{{input.status}}"
-            />
-            <span style={hintStyle}>Use {'{{input.fieldname}}'} to reference a value from the form.</span>
+            <div style={{ display: 'flex', gap: 3 }}>
+              <input
+                style={{ ...inputStyle, flex: 1 }}
+                value={String(config.left ?? '')}
+                onChange={e => setField('left', e.target.value)}
+                placeholder="{{input.status}}"
+              />
+              {availablePorts.length > 0 && (
+                <select
+                  style={{ background: '#111', border: `1px solid ${C.border}`, borderRadius: 3, padding: '2px 2px', color: '#60a5fa', fontSize: '0.6rem', cursor: 'pointer', flexShrink: 0, width: 22 }}
+                  value=""
+                  title="Insert a form field"
+                  onChange={e => { if (e.target.value) setField('left', e.target.value) }}
+                >
+                  <option value="">⬜</option>
+                  {availablePorts.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                </select>
+              )}
+            </div>
+            <span style={hintStyle}>Pick a field from the ⬜ button or type {'{{input.fieldname}}'} directly.</span>
             <label style={fieldLabel}>…is…</label>
             <select style={inputStyle} value={String(config.op ?? 'eq')} onChange={e => setField('op', e.target.value)}>
               <option value="eq">equal to</option>
@@ -589,13 +809,28 @@ function NodeConfigPanel({
         return (
           <>
             <label style={fieldLabel}>Message to send</label>
+            {availablePorts.length > 0 && (
+              <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4 }}>
+                {availablePorts.map(p => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    style={{ background: '#1e3a8a22', border: '1px solid #1e3a8a66', color: '#93c5fd', borderRadius: 3, padding: '2px 7px', fontSize: '0.58rem', cursor: 'pointer' }}
+                    onClick={() => setField('message', String(config.message ?? '') + p.value)}
+                    title={`Insert ${p.value}`}
+                  >
+                    + {p.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <textarea
               style={{ ...inputStyle, height: 70, resize: 'vertical' }}
               value={String(config.message ?? '')}
               onChange={e => setField('message', e.target.value)}
               placeholder="New contact {{input.first_name}} {{input.last_name}} has been added."
             />
-            <span style={hintStyle}>Use {'{{input.fieldname}}'} to include form values in the message.</span>
+            <span style={hintStyle}>Click a field above to insert it, or type {'{{input.fieldname}}'} directly.</span>
           </>
         )
 
@@ -650,9 +885,10 @@ export interface WorkflowCanvasProps {
   isAdmin: boolean
   threadId?: string       // optional; if provided, AI messages go to this thread
   pageId?: string         // source page for widget binding page_id
+  pageDocument?: AuraNode[]  // widgets to show as source nodes in the graph
 }
 
-export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 'Trigger', onClose, isAdmin, threadId: threadIdProp, pageId = '' }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 'Trigger', onClose, isAdmin, threadId: threadIdProp, pageId = '', pageDocument = [] }: WorkflowCanvasProps) {
   const [wf, setWf] = useState<WorkflowWithSteps | null>(null)
   const [nodes, setNodes, onNodesChange] = useNodesState<WFNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<WFEdge>([])
@@ -665,6 +901,8 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiGenerating, setAiGenerating] = useState(false)
   const [connectors, setConnectors] = useState<Connector[]>([])
+  const [showTemplateGallery, setShowTemplateGallery] = useState(false)
+  const [applyingTemplate, setApplyingTemplate] = useState(false)
 
   // ── Widget binding callbacks ──────────────────────────────────────────────
 
@@ -725,7 +963,7 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
   const injectBindingCallbacks = useCallback(
     (nodes: WFNode[]): WFNode[] =>
       nodes.map(n =>
-        n.type === 'start' || n.type === 'end'
+        n.type === 'start' || n.type === 'end' || n.type === 'widget_source'
           ? n
           : { ...n, data: { ...n.data, onBindingDropped: handleBindingDropped, onBindingRemoved: handleBindingRemoved } },
       ),
@@ -741,13 +979,17 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
         if (cancelled) return
         setWf(data)
         setName(data.name)
-        const { nodes: n, edges: e } = stepsToFlow(data.steps, triggerLabel)
+        const { nodes: n, edges: e } = stepsToFlow(data.steps, triggerLabel, pageDocument)
         setNodes(injectBindingCallbacks(n))
         setEdges(e)
+        // Show template gallery if workflow has no steps yet
+        if (data.steps.length === 0) {
+          setShowTemplateGallery(true)
+        }
       })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load') })
     return () => { cancelled = true }
-  }, [workspaceId, appId, workflowId, triggerLabel, setNodes, setEdges, injectBindingCallbacks])
+  }, [workspaceId, appId, workflowId, triggerLabel, pageDocument, setNodes, setEdges, injectBindingCallbacks])
 
   // Load connectors for the config panel pickers
   useEffect(() => {
@@ -756,8 +998,39 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
   }, [workspaceId])
 
   const onConnect = useCallback(
-    (connection: Connection) => setEdges(eds => addEdge(connection, eds)),
-    [setEdges],
+    (connection: Connection) => {
+      const sourceNode = nodes.find(n => n.id === connection.source)
+      if (sourceNode?.type === 'widget_source' && connection.target && connection.target !== '__end__' && connection.target !== '__start__') {
+        // Widget → step connection: create an input_binding on the target step
+        const widgetData = sourceNode.data as unknown as WidgetSourceNodeData
+        const portName = connection.sourceHandle ?? ''
+        const port = widgetData.ports.find(p => p.portName === portName)
+        if (port) {
+          const portDrag: OutputPortDrag = {
+            widgetId: widgetData.widgetId,
+            widgetLabel: widgetData.widgetLabel,
+            portName: port.portName,
+            portType: port.portType as OutputPortDrag['portType'],
+            portKind: 'output',
+          }
+          // Find target step node's stepId
+          const targetNode = nodes.find(n => n.id === connection.target)
+          if (targetNode?.data.stepId) {
+            handleBindingDropped({ portDrag, stepId: targetNode.data.stepId })
+          }
+          // Add a styled data edge
+          setEdges(eds => addEdge({
+            ...connection,
+            id: `data-${connection.source}-${portName}-${connection.target}`,
+            style: { stroke: '#3b82f6', strokeDasharray: '5 3', strokeWidth: 2 },
+            animated: true,
+          }, eds))
+        }
+      } else {
+        setEdges(eds => addEdge(connection, eds))
+      }
+    },
+    [nodes, setEdges, handleBindingDropped],
   )
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: WFNode) => {
@@ -803,7 +1076,7 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
       const res = await putWorkflowSteps(workspaceId, appId, workflowId, steps)
       setWf(prev => prev ? { ...prev, steps: res.steps } : null)
       // Re-sync to reflect any server-assigned IDs / step_order
-      const { nodes: n, edges: e } = stepsToFlow(res.steps, triggerLabel)
+      const { nodes: n, edges: e } = stepsToFlow(res.steps, triggerLabel, pageDocument)
       setNodes(injectBindingCallbacks(n))
       setEdges(e)
     } catch (e) {
@@ -863,6 +1136,24 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
       setName(wf.name) // revert
     }
   }, [wf, name, workspaceId, appId, workflowId])
+
+  const handleApplyTemplate = useCallback(async (template: WorkflowTemplate) => {
+    if (!wf) return
+    setApplyingTemplate(true)
+    setError('')
+    try {
+      const res = await putWorkflowSteps(workspaceId, appId, workflowId, template.steps)
+      setWf(prev => prev ? { ...prev, steps: res.steps } : null)
+      const { nodes: n, edges: e } = stepsToFlow(res.steps, triggerLabel, pageDocument)
+      setNodes(injectBindingCallbacks(n))
+      setEdges(e)
+      setShowTemplateGallery(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to apply template')
+    } finally {
+      setApplyingTemplate(false)
+    }
+  }, [wf, workspaceId, appId, workflowId, triggerLabel, pageDocument, setNodes, setEdges, injectBindingCallbacks])
 
   const handleAiGenerate = useCallback(async () => {
     if (!aiPrompt.trim() || !wf) return
@@ -994,94 +1285,195 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
         </div>
       </div>
 
-      {/* Body: palette | canvas | config */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Left palette */}
+      {/* Body: canvas (full width) + bottom toolbar */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+        {/* Main canvas + right config drawer */}
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+          {/* React Flow canvas */}
+          <div style={{ flex: 1, position: 'relative' }}>
+            {/* Template gallery / empty state overlay */}
+            {showTemplateGallery && nodes.filter(n => n.type !== 'start' && n.type !== 'end' && n.type !== 'widget_source').length === 0 && (
+              <div style={{
+                position: 'absolute', inset: 0,
+                background: 'rgba(6,6,6,0.92)',
+                display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center',
+                zIndex: 20, padding: '24px 16px',
+                backdropFilter: 'blur(2px)',
+              }}>
+                <div style={{ maxWidth: 720, width: '100%' }}>
+                  <div style={{ textAlign: 'center', marginBottom: 20 }}>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#e5e5e5', marginBottom: 4 }}>
+                      Choose a starting point
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: '#555' }}>
+                      Pick a template or start with a blank canvas
+                    </div>
+                  </div>
+
+                  {/* Template cards grid */}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
+                    gap: 10,
+                    marginBottom: 16,
+                  }}>
+                    {WORKFLOW_TEMPLATES.map(template => (
+                      <button
+                        key={template.id}
+                        onClick={() => handleApplyTemplate(template)}
+                        disabled={applyingTemplate}
+                        style={{
+                          background: template.accentColor + '18',
+                          border: `1px solid ${template.accentColor}55`,
+                          borderRadius: 8,
+                          padding: '14px 14px',
+                          cursor: applyingTemplate ? 'default' : 'pointer',
+                          textAlign: 'left',
+                          opacity: applyingTemplate ? 0.6 : 1,
+                          transition: 'background 0.15s, border-color 0.15s',
+                        }}
+                        onMouseEnter={e => {
+                          if (!applyingTemplate) {
+                            (e.currentTarget as HTMLButtonElement).style.background = template.accentColor + '33'
+                            ;(e.currentTarget as HTMLButtonElement).style.borderColor = template.accentColor + 'aa'
+                          }
+                        }}
+                        onMouseLeave={e => {
+                          (e.currentTarget as HTMLButtonElement).style.background = template.accentColor + '18'
+                          ;(e.currentTarget as HTMLButtonElement).style.borderColor = template.accentColor + '55'
+                        }}
+                      >
+                        <div style={{ fontSize: '1.4rem', marginBottom: 8 }}>{template.icon}</div>
+                        <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#ddd', marginBottom: 4 }}>
+                          {template.name}
+                        </div>
+                        <div style={{ fontSize: '0.65rem', color: '#666', lineHeight: 1.5 }}>
+                          {template.description}
+                        </div>
+                        <div style={{ marginTop: 8, display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+                          {template.steps.map((s, i) => (
+                            <span key={i} style={{
+                              fontSize: '0.55rem', color: template.accentColor,
+                              background: template.accentColor + '22',
+                              border: `1px solid ${template.accentColor}44`,
+                              borderRadius: 3, padding: '1px 5px',
+                            }}>
+                              {s.step_type === 'query' ? 'Read' : s.step_type === 'mutation' ? 'Write' : s.step_type === 'approval_gate' ? 'Approval' : s.step_type === 'notification' ? 'Notify' : s.step_type}
+                            </span>
+                          ))}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Start blank link */}
+                  <div style={{ textAlign: 'center' }}>
+                    <button
+                      onClick={() => setShowTemplateGallery(false)}
+                      style={{
+                        background: 'none', border: 'none',
+                        color: '#444', fontSize: '0.72rem',
+                        cursor: 'pointer', textDecoration: 'underline',
+                        padding: '4px 8px',
+                      }}
+                    >
+                      Start with a blank canvas
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onNodeClick={onNodeClick}
+              onPaneClick={onPaneClick}
+              nodeTypes={nodeTypes}
+              fitView
+              style={{ background: C.bg }}
+              deleteKeyCode="Delete"
+            >
+              <Background color="#1a1a1a" gap={20} />
+              <Controls style={{ background: '#111', border: `1px solid ${C.border}`, borderRadius: 4 }} />
+              <MiniMap
+                style={{ background: '#111', border: `1px solid ${C.border}` }}
+                nodeColor={() => '#1e3a8a'}
+              />
+            </ReactFlow>
+          </div>
+
+          {/* Right config panel — slide-in drawer */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            height: '100%',
+            width: 300,
+            background: C.surface,
+            borderLeft: `1px solid ${C.border}`,
+            overflowY: 'auto',
+            flexShrink: 0,
+            transform: selectedNode ? 'translateX(0)' : 'translateX(100%)',
+            transition: 'transform 220ms ease',
+            zIndex: 10,
+            display: 'flex',
+            flexDirection: 'column',
+          }}>
+            <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+              <span style={{ fontSize: '0.72rem', fontWeight: 600, color: C.text }}>Configure Step</span>
+              <button style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => setSelectedNode(null)}>✕</button>
+            </div>
+            {selectedNode && (
+              <NodeConfigPanel
+                node={selectedNode}
+                onSave={handleNodeSave}
+                onReview={handleReview}
+                canReview={isAdmin || true}
+                connectors={connectors}
+                pageDocument={pageDocument}
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Bottom toolbar — step palette */}
         <div style={{
-          width: 160, borderRight: `1px solid ${C.border}`,
-          padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 6,
-          overflowY: 'auto', flexShrink: 0,
+          height: 52,
+          borderTop: `1px solid ${C.border}`,
+          background: C.surface,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '0 16px',
+          flexShrink: 0,
+          overflowX: 'auto',
         }}>
-          <div style={{ fontSize: '0.65rem', color: C.muted, fontWeight: 600, marginBottom: 4, paddingLeft: 2 }}>ADD STEP</div>
+          <span style={{ fontSize: '0.6rem', color: C.muted, fontWeight: 700, letterSpacing: '0.06em', flexShrink: 0, marginRight: 4 }}>ADD STEP</span>
           {STEP_PALETTE.map(({ type, label, color, hint }) => (
             <button
               key={type}
               onClick={() => addNode(type)}
               title={hint}
               style={{
-                background: color + '22', border: `1px solid ${color}66`,
-                borderRadius: 4, padding: '7px 10px',
-                color: C.text, fontSize: '0.68rem', cursor: 'pointer',
-                textAlign: 'left',
+                background: color + '22',
+                border: `1px solid ${color}66`,
+                borderRadius: 4,
+                padding: '6px 12px',
+                color: C.text,
+                fontSize: '0.68rem',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
               }}
             >
               {label}
             </button>
           ))}
         </div>
-
-        {/* React Flow canvas */}
-        <div style={{ flex: 1, position: 'relative' }}>
-          {/* Empty state hint */}
-          {nodes.filter(n => n.type !== 'start' && n.type !== 'end').length === 0 && (
-            <div style={{
-              position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
-              alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', zIndex: 5,
-            }}>
-              <div style={{ textAlign: 'center', maxWidth: 280 }}>
-                <div style={{ fontSize: '2rem', marginBottom: 8, opacity: 0.15 }}>◈</div>
-                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#3a3a3a', marginBottom: 6 }}>
-                  No steps yet
-                </div>
-                <div style={{ fontSize: '0.7rem', color: '#2a2a2a', lineHeight: 1.6 }}>
-                  Click a step type on the left to add it,<br />
-                  or use <strong style={{ color: '#1d4ed8' }}>✦ Generate with AI</strong> to build<br />
-                  this workflow automatically.
-                </div>
-              </div>
-            </div>
-          )}
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={onNodeClick}
-            onPaneClick={onPaneClick}
-            nodeTypes={nodeTypes}
-            fitView
-            style={{ background: C.bg }}
-            deleteKeyCode="Delete"
-          >
-            <Background color="#1a1a1a" gap={20} />
-            <Controls style={{ background: '#111', border: `1px solid ${C.border}`, borderRadius: 4 }} />
-            <MiniMap
-              style={{ background: '#111', border: `1px solid ${C.border}` }}
-              nodeColor={() => '#1e3a8a'}
-            />
-          </ReactFlow>
-        </div>
-
-        {/* Right config panel */}
-        {selectedNode && (
-          <div style={{
-            width: 260, borderLeft: `1px solid ${C.border}`,
-            overflowY: 'auto', flexShrink: 0,
-          }}>
-            <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '0.72rem', fontWeight: 600, color: C.text }}>Step Config</span>
-              <button style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: '0.75rem' }} onClick={() => setSelectedNode(null)}>✕</button>
-            </div>
-            <NodeConfigPanel
-              node={selectedNode}
-              onSave={handleNodeSave}
-              onReview={handleReview}
-              canReview={isAdmin || true}
-              connectors={connectors}
-            />
-          </div>
-        )}
       </div>
     </div>
   )

@@ -49,15 +49,31 @@ export function MutationNode({ data, selected }: NodeProps<WFNode>) {
       onDrop={handleDrop}
       style={{
         background: isDragOver ? '#1c2a1e' : '#1c0a02',
-        border, borderRadius: 6,
+        borderTop: border, borderRight: border, borderBottom: border,
+        borderLeft: '3px solid #fb923c',
+        borderRadius: 6,
         padding: '8px 12px', color: '#fdba74', fontSize: '0.72rem',
         minWidth: 140, boxShadow: ring,
-        transition: 'background 0.15s, border 0.15s',
+        transition: 'background 0.15s, border-color 0.15s',
       }}
     >
       <Handle type="target" position={Position.Top} style={{ background: '#fb923c' }} />
-      <div style={{ fontWeight: 600, marginBottom: 2 }}>✏ Mutation</div>
+      <div style={{ fontWeight: 600, marginBottom: 2 }}>💾 Write Data</div>
       <div style={{ color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>{data.label}</div>
+      <div style={{ color: '#334155', fontSize: '0.58rem', marginTop: 2, fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>
+        {(() => {
+          const op = data.config?.operation ? String(data.config.operation) : 'insert'
+          const table = data.config?.table ? String(data.config.table) : ''
+          const isManaged = !table && data.config?.connector_id
+          const hasMappings = Array.isArray(data.config?.field_mapping) && (data.config.field_mapping as unknown[]).length > 0
+          if (!table && !isManaged) return 'Not configured'
+          const label = table || 'managed table'
+          if (isManaged && !hasMappings && op === 'insert') return 'Add row (no fields mapped)'
+          if (op === 'update') return `Updates ${label}`
+          if (op === 'delete') return `Deletes from ${label}`
+          return `Adds row to ${label}`
+        })()}
+      </div>
       {data.aiGenerated && !data.reviewed && (
         <div style={{ fontSize: '0.6rem', marginTop: 4, color: '#fbbf24' }}>⚠ needs review</div>
       )}

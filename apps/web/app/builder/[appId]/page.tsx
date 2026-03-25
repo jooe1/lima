@@ -23,6 +23,7 @@ import { VersionHistory } from './VersionHistory'
 import { WorkflowCanvas } from './WorkflowCanvas'
 import { WorkflowEditor } from './WorkflowEditor'
 import { SplitViewOverlay } from './SplitViewOverlay'
+import { WorkflowOverlay } from './WorkflowOverlay'
 import { FloatingWorkflowPanel } from './FloatingWorkflowPanel'
 import { formatProductionIssues, getAppProductionIssues } from '../../../lib/appValidation'
 
@@ -808,9 +809,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         />
       )}
 
-      {/* Split-view overlay for page-bound workflow editing */}
+      {/* Workflow overlay for page-bound workflow editing */}
       {splitViewWorkflowId && workspace && (
-        <SplitViewOverlay
+        <WorkflowOverlay
           workflowId={splitViewWorkflowId}
           workspaceId={workspace.id}
           appId={appId}

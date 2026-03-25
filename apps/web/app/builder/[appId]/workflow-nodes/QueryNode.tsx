@@ -49,15 +49,20 @@ export function QueryNode({ data, selected }: NodeProps<WFNode>) {
       onDrop={handleDrop}
       style={{
         background: isDragOver ? '#0c2a1e' : '#0c1a2e',
-        border, borderRadius: 6,
+        borderTop: border, borderRight: border, borderBottom: border,
+        borderLeft: '3px solid #3b82f6',
+        borderRadius: 6,
         padding: '8px 12px', color: '#93c5fd', fontSize: '0.72rem',
         minWidth: 140, boxShadow: ring,
-        transition: 'background 0.15s, border 0.15s',
+        transition: 'background 0.15s, border-color 0.15s',
       }}
     >
       <Handle type="target" position={Position.Top} style={{ background: '#3b82f6' }} />
-      <div style={{ fontWeight: 600, marginBottom: 2 }}>🔍 Query</div>
+      <div style={{ fontWeight: 600, marginBottom: 2 }}>📋 Read Data</div>
       <div style={{ color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>{data.label}</div>
+      <div style={{ color: '#334155', fontSize: '0.58rem', marginTop: 2, fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>
+        {data.config?.table ? `Reads from ${String(data.config.table)}` : data.config?.sql ? 'Custom SQL query' : 'Not configured'}
+      </div>
       {data.aiGenerated && !data.reviewed && (
         <div style={{ fontSize: '0.6rem', marginTop: 4, color: '#fbbf24' }}>⚠ needs review</div>
       )}
