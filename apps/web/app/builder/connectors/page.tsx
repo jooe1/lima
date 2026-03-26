@@ -3,14 +3,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../../../lib/auth'
 import {
-  listConnectors, createConnector, patchConnector, deleteConnector,
+  listConnectors, createConnector, getEditableConnector, patchConnector, deleteConnector,
   testConnector, getConnectorSchema, runConnectorQuery,
   getManagedTableColumns, setManagedTableColumns,
   listManagedTableRows, insertManagedTableRow, updateManagedTableRow, deleteManagedTableRow,
   seedManagedTableFromCSV, exportManagedTableCSVUrl,
+  listConnectorActions, upsertConnectorAction, deleteConnectorAction,
   type Connector, type ConnectorType, type TestConnectorResponse,
   type ConnectorSchemaResponse, type ManagedTableColumn, type ManagedTableRow,
-  type DashboardQueryResponse,
+  type DashboardQueryResponse, type ActionDefinition, type ActionDefinitionInput,
 } from '../../../lib/api'
 import { ConnectorGrantsTab } from './ConnectorGrantsTab'
 
@@ -221,11 +222,55 @@ function ConnectorForm({ workspaceId, editing, onSaved, onCancel }: {
   onSaved: (c: Connector) => void
   onCancel: () => void
 }) {
-  const [name, setName] = useState(editing?.name ?? '')
-  const [type, setType] = useState<ConnectorType>(editing?.type ?? 'postgres')
+  const [name, setName] = useState('')
+  const [type, setType] = useState<ConnectorType>('postgres')
   const [creds, setCreds] = useState<Record<string, unknown>>({})
+  const [storedSecrets, setStoredSecrets] = useState<Record<string, boolean>>({})
+  const [loadingExisting, setLoadingExisting] = useState(false)
+  const [readyToSubmit, setReadyToSubmit] = useState(editing == null)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
+
+  useEffect(() => {
+  let cancelled = false
+
+  if (!editing) {
+    setName('')
+    setType('postgres')
+    setCreds({})
+    setStoredSecrets({})
+    setLoadingExisting(false)
+    setReadyToSubmit(true)
+    setErr('')
+    return () => {
+    cancelled = true
+    }
+  }
+
+  setLoadingExisting(true)
+  setReadyToSubmit(false)
+  setErr('')
+  getEditableConnector(workspaceId, editing.id)
+    .then(result => {
+    if (cancelled) return
+    setName(result.connector.name)
+    setType(result.connector.type)
+    setCreds(result.editable_credentials ?? {})
+    setStoredSecrets(result.stored_secrets ?? {})
+    setReadyToSubmit(true)
+    })
+    .catch((e: unknown) => {
+    if (cancelled) return
+    setErr(e instanceof Error ? e.message : 'Failed to load connector settings')
+    })
+    .finally(() => {
+    if (!cancelled) setLoadingExisting(false)
+    })
+
+  return () => {
+    cancelled = true
+  }
+  }, [editing, workspaceId])
 
   function updateCred(key: string, value: unknown) {
     setCreds(prev => ({ ...prev, [key]: value }))
@@ -233,6 +278,7 @@ function ConnectorForm({ workspaceId, editing, onSaved, onCancel }: {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!readyToSubmit) return
     if (!name.trim()) { setErr('Name is required'); return }
     setSaving(true)
     setErr('')
@@ -282,10 +328,14 @@ function ConnectorForm({ workspaceId, editing, onSaved, onCancel }: {
       </div>
 
       {/* Dynamic credential fields */}
-      <CredentialFields type={type} creds={creds} onChange={updateCred} />
+      {loadingExisting ? (
+        <p style={{ color: '#555', fontSize: '0.8rem', margin: '0 0 8px' }}>Loading saved connector settings…</p>
+      ) : (
+        <CredentialFields type={type} creds={creds} storedSecrets={storedSecrets} onChange={updateCred} />
+      )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-        <button type="submit" disabled={saving} style={primaryBtn}>
+        <button type="submit" disabled={saving || !readyToSubmit} style={primaryBtn}>
           {saving ? 'Saving…' : editing ? 'Update' : 'Create'}
         </button>
         <button type="button" onClick={onCancel} style={ghostBtn}>Cancel</button>
@@ -298,9 +348,10 @@ function ConnectorForm({ workspaceId, editing, onSaved, onCancel }: {
 // Dynamic credential fields
 // ---------------------------------------------------------------------------
 
-function CredentialFields({ type, creds, onChange }: {
+function CredentialFields({ type, creds, storedSecrets, onChange }: {
   type: ConnectorType
   creds: Record<string, unknown>
+  storedSecrets: Record<string, boolean>
   onChange: (key: string, value: unknown) => void
 }) {
   if (type === 'managed') return (
@@ -319,8 +370,9 @@ function CredentialFields({ type, creds, onChange }: {
         <input placeholder="Database" value={(creds.database as string) ?? ''} onChange={e => onChange('database', e.target.value)} style={inputStyle} />
         <div style={{ display: 'flex', gap: 8 }}>
           <input placeholder="Username" value={(creds.username as string) ?? ''} onChange={e => onChange('username', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-          <input placeholder="Password" type="password" value={(creds.password as string) ?? ''} onChange={e => onChange('password', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+          <input placeholder={storedSecrets.password ? 'Stored password unchanged' : 'Password'} type="password" value={(creds.password as string) ?? ''} onChange={e => onChange('password', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
         </div>
+        {storedSecrets.password && <span style={helperTextStyle}>Leave the password blank to keep the current stored password.</span>}
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#888', fontSize: '0.8rem' }}>
           <input type="checkbox" checked={!!creds.ssl} onChange={e => onChange('ssl', e.target.checked)} />
           Use SSL
@@ -338,23 +390,40 @@ function CredentialFields({ type, creds, onChange }: {
         <select value={authType} onChange={e => onChange('auth_type', e.target.value)} style={inputStyle}>
           <option value="none">No auth</option>
           <option value="bearer">Bearer token</option>
+          <option value="token">Token auth (e.g. MOCO)</option>
           <option value="basic">Basic auth</option>
           <option value="api_key">API key</option>
         </select>
         {authType === 'bearer' && (
-          <input placeholder="Token" type="password" value={(creds.token as string) ?? ''} onChange={e => onChange('token', e.target.value)} style={inputStyle} />
+          <>
+            <input placeholder={storedSecrets.token ? 'Stored token unchanged' : 'Token'} type="password" value={(creds.token as string) ?? ''} onChange={e => onChange('token', e.target.value)} style={inputStyle} />
+            {storedSecrets.token && <span style={helperTextStyle}>Leave the token blank to keep the current stored token.</span>}
+          </>
+        )}
+        {authType === 'token' && (
+          <>
+            <input placeholder={storedSecrets.token ? 'Stored token unchanged' : 'API token'} type="password" value={(creds.token as string) ?? ''} onChange={e => onChange('token', e.target.value)} style={inputStyle} />
+            <span style={helperTextStyle}>Sends: <code>Authorization: Token token=&lt;value&gt;</code> — used by MOCO and similar APIs.</span>
+            {storedSecrets.token && <span style={helperTextStyle}>Leave the token blank to keep the current stored token.</span>}
+          </>
         )}
         {authType === 'basic' && (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input placeholder="Username" value={(creds.username as string) ?? ''} onChange={e => onChange('username', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-            <input placeholder="Password" type="password" value={(creds.password as string) ?? ''} onChange={e => onChange('password', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-          </div>
+          <>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input placeholder="Username" value={(creds.username as string) ?? ''} onChange={e => onChange('username', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <input placeholder={storedSecrets.password ? 'Stored password unchanged' : 'Password'} type="password" value={(creds.password as string) ?? ''} onChange={e => onChange('password', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+            </div>
+            {storedSecrets.password && <span style={helperTextStyle}>Leave the password blank to keep the current stored password.</span>}
+          </>
         )}
         {authType === 'api_key' && (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input placeholder="API key" type="password" value={(creds.api_key as string) ?? ''} onChange={e => onChange('api_key', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-            <input placeholder="Header name (default: X-API-Key)" value={(creds.api_key_header as string) ?? ''} onChange={e => onChange('api_key_header', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-          </div>
+          <>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input placeholder={storedSecrets.api_key ? 'Stored API key unchanged' : 'API key'} type="password" value={(creds.api_key as string) ?? ''} onChange={e => onChange('api_key', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <input placeholder="Header name (default: X-API-Key)" value={(creds.api_key_header as string) ?? ''} onChange={e => onChange('api_key_header', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+            </div>
+            {storedSecrets.api_key && <span style={helperTextStyle}>Leave the API key blank to keep the current stored key.</span>}
+          </>
         )}
 
         {/* Named endpoints — let widget users pick from a dropdown instead of typing raw paths */}
@@ -421,7 +490,10 @@ function CredentialFields({ type, creds, onChange }: {
           <option value="bearer">Bearer token</option>
         </select>
         {authType === 'bearer' && (
-          <input placeholder="Token" type="password" value={(creds.token as string) ?? ''} onChange={e => onChange('token', e.target.value)} style={inputStyle} />
+          <>
+            <input placeholder={storedSecrets.token ? 'Stored token unchanged' : 'Token'} type="password" value={(creds.token as string) ?? ''} onChange={e => onChange('token', e.target.value)} style={inputStyle} />
+            {storedSecrets.token && <span style={helperTextStyle}>Leave the token blank to keep the current stored token.</span>}
+          </>
         )}
       </div>
     )
@@ -472,7 +544,14 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
   const [queryError, setQueryError] = useState('')
 
   // Active tab
-  const [activeTab, setActiveTab] = useState<'details' | 'permissions'>('details')
+  const [activeTab, setActiveTab] = useState<'details' | 'permissions' | 'actions'>('details')
+
+  // Action catalog (REST/GraphQL connectors)
+  const [connActions, setConnActions] = useState<ActionDefinition[]>([])
+  const [actionsLoading, setActionsLoading] = useState(false)
+  const [actionsError, setActionsError] = useState('')
+  const [editingAction, setEditingAction] = useState<ActionDefinition | null>(null)
+  const [showActionForm, setShowActionForm] = useState(false)
 
   // Reset state when connector changes and auto-load columns for managed connectors
   useEffect(() => {
@@ -488,10 +567,21 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
     setQueryResult(null)
     setQueryError('')
     setActiveTab('details')
+    setConnActions([])
+    setActionsError('')
+    setShowActionForm(false)
+    setEditingAction(null)
     if (connector.type === 'managed') {
       getManagedTableColumns(workspaceId, connector.id)
         .then(res => { setManagedCols(res.columns ?? []); setManagedColsLoaded(true) })
         .catch(() => setManagedColsLoaded(true))
+    }
+    if (connector.type === 'rest' || connector.type === 'graphql') {
+      setActionsLoading(true)
+      listConnectorActions(workspaceId, connector.id)
+        .then(res => setConnActions(res.actions ?? []))
+        .catch(() => setActionsError('Failed to load actions'))
+        .finally(() => setActionsLoading(false))
     }
   }, [connector.id, connector.type, workspaceId])
 
@@ -632,11 +722,50 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
             Permissions
           </button>
         )}
+        {(c.type === 'rest' || c.type === 'graphql') && (
+          <button
+            onClick={() => setActiveTab('actions')}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              padding: '6px 14px', fontSize: '0.8rem', fontWeight: 500,
+              color: activeTab === 'actions' ? '#e5e5e5' : '#555',
+              borderBottom: activeTab === 'actions' ? '2px solid #2563eb' : '2px solid transparent',
+            }}
+          >
+            Actions
+          </button>
+        )}
       </div>
 
       {/* Permissions tab */}
       {activeTab === 'permissions' && isAdmin && (
         <ConnectorGrantsTab workspaceId={workspaceId} connectorId={c.id} />
+      )}
+
+      {/* Actions tab */}
+      {activeTab === 'actions' && (
+        <ActionCatalogPanel
+          workspaceId={workspaceId}
+          connectorId={c.id}
+          isAdmin={isAdmin}
+          actions={connActions}
+          loading={actionsLoading}
+          error={actionsError}
+          editingAction={editingAction}
+          showActionForm={showActionForm}
+          onShowForm={(act) => { setEditingAction(act ?? null); setShowActionForm(true) }}
+          onHideForm={() => { setShowActionForm(false); setEditingAction(null) }}
+          onSaved={saved => {
+            setConnActions(prev => {
+              const idx = prev.findIndex(a => a.id === saved.id)
+              if (idx >= 0) return prev.map(a => a.id === saved.id ? saved : a)
+              return [...prev, saved]
+            })
+            setShowActionForm(false)
+            setEditingAction(null)
+          }}
+          onDeleted={id => setConnActions(prev => prev.filter(a => a.id !== id))}
+        />
       )}
 
       {/* Details tab */}
@@ -897,6 +1026,256 @@ function QueryResultTable({ result }: { result: DashboardQueryResponse }) {
   )
 }
 
+
+// ---------------------------------------------------------------------------
+// Action Catalog panel (REST / GraphQL connectors)
+// ---------------------------------------------------------------------------
+
+const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
+const FIELD_TYPES = ['text', 'email', 'number', 'boolean', 'date', 'enum', 'textarea']
+
+function ActionCatalogPanel({
+  workspaceId, connectorId, isAdmin, actions, loading, error,
+  editingAction, showActionForm, onShowForm, onHideForm, onSaved, onDeleted,
+}: {
+  workspaceId: string
+  connectorId: string
+  isAdmin: boolean
+  actions: ActionDefinition[]
+  loading: boolean
+  error: string
+  editingAction: ActionDefinition | null
+  showActionForm: boolean
+  onShowForm: (act?: ActionDefinition) => void
+  onHideForm: () => void
+  onSaved: (a: ActionDefinition) => void
+  onDeleted: (id: string) => void
+}) {
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  async function handleDelete(id: string) {
+    setDeletingId(id)
+    try {
+      await deleteConnectorAction(workspaceId, connectorId, id)
+      onDeleted(id)
+    } catch { /* ignore */ } finally {
+      setDeletingId(null)
+    }
+  }
+
+  // Group by resource_name
+  const groups: Record<string, ActionDefinition[]> = {}
+  actions.forEach(a => {
+    const g = a.resource_name || 'General'
+    ;(groups[g] = groups[g] ?? []).push(a)
+  })
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ color: '#888', fontSize: '0.8rem', flex: 1 }}>
+          {actions.length} action{actions.length !== 1 ? 's' : ''} defined
+        </span>
+        {isAdmin && !showActionForm && (
+          <button onClick={() => onShowForm()} style={ghostBtn}>+ Add action</button>
+        )}
+      </div>
+
+      {error && <p style={{ color: '#f87171', fontSize: '0.75rem', margin: '0 0 8px' }}>{error}</p>}
+      {loading && <p style={{ color: '#555', fontSize: '0.75rem' }}>Loading actions…</p>}
+
+      {!loading && !showActionForm && Object.entries(groups).map(([grp, acts]) => (
+        <div key={grp} style={{ marginBottom: 12 }}>
+          <div style={{ color: '#555', fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
+            {grp}
+          </div>
+          {acts.map(act => (
+            <div key={act.id} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '6px 10px', borderRadius: 6, background: '#111',
+              border: '1px solid #1e1e1e', marginBottom: 4,
+            }}>
+              <span style={{
+                fontSize: '0.62rem', padding: '1px 6px', borderRadius: 99,
+                background: '#1e3a5f', color: '#60a5fa', fontFamily: 'monospace',
+              }}>{act.http_method}</span>
+              <span style={{ color: '#e5e5e5', fontSize: '0.78rem', flex: 1 }}>
+                {act.action_label || act.action_key}
+              </span>
+              <span style={{ color: '#555', fontSize: '0.68rem' }}>{act.path_template}</span>
+              {isAdmin && (
+                <>
+                  <button onClick={() => onShowForm(act)} style={ghostBtn}>Edit</button>
+                  <button
+                    onClick={() => handleDelete(act.id)}
+                    disabled={deletingId === act.id}
+                    style={dangerBtn}>
+                    {deletingId === act.id ? '…' : 'Delete'}
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+
+      {!loading && showActionForm && (
+        <ActionForm
+          workspaceId={workspaceId}
+          connectorId={connectorId}
+          editing={editingAction}
+          onSaved={onSaved}
+          onCancel={onHideForm}
+        />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Action form (create / edit)
+// ---------------------------------------------------------------------------
+
+type ActionFieldDraft = {
+  key: string; label: string; field_type: string
+  required: boolean; enum_values: string; description: string
+}
+
+function emptyField(): ActionFieldDraft {
+  return { key: '', label: '', field_type: 'text', required: false, enum_values: '', description: '' }
+}
+
+function ActionForm({
+  workspaceId, connectorId, editing, onSaved, onCancel,
+}: {
+  workspaceId: string
+  connectorId: string
+  editing: ActionDefinition | null
+  onSaved: (a: ActionDefinition) => void
+  onCancel: () => void
+}) {
+  const [resource, setResource] = useState(editing?.resource_name ?? '')
+  const [actionKey, setActionKey] = useState(editing?.action_key ?? '')
+  const [label, setLabel] = useState(editing?.action_label ?? '')
+  const [description, setDescription] = useState(editing?.description ?? '')
+  const [method, setMethod] = useState(editing?.http_method ?? 'POST')
+  const [path, setPath] = useState(editing?.path_template ?? '')
+  const [fields, setFields] = useState<ActionFieldDraft[]>(
+    editing?.input_fields?.map(f => ({
+      key: f.key, label: f.label, field_type: f.field_type,
+      required: f.required, enum_values: f.enum_values?.join(', ') ?? '', description: f.description ?? '',
+    })) ?? [emptyField()]
+  )
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  function updateField(i: number, patch: Partial<ActionFieldDraft>) {
+    setFields(prev => prev.map((f, idx) => idx === i ? { ...f, ...patch } : f))
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setSaving(true)
+    setSaveError('')
+    const input: ActionDefinitionInput = {
+      resource_name: resource.trim(),
+      action_key: actionKey.trim(),
+      action_label: label.trim(),
+      description: description.trim(),
+      http_method: method,
+      path_template: path.trim(),
+      input_fields: fields.filter(f => f.key.trim()).map(f => ({
+        key: f.key.trim(),
+        label: f.label.trim(),
+        field_type: f.field_type,
+        required: f.required,
+        enum_values: f.enum_values ? f.enum_values.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+        description: f.description.trim() || undefined,
+      })),
+    }
+    try {
+      const saved = await upsertConnectorAction(workspaceId, connectorId, input)
+      onSaved(saved)
+    } catch (err: unknown) {
+      setSaveError(err instanceof Error ? err.message : 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const is = inputStyle
+
+  return (
+    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <h4 style={{ margin: '0 0 4px', color: '#ccc', fontSize: '0.85rem' }}>
+        {editing ? 'Edit action' : 'New action'}
+      </h4>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          Resource / group
+          <input style={is} value={resource} onChange={e => setResource(e.target.value)} placeholder="Contacts" />
+        </label>
+        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          Action key <span style={{ color: '#555' }}>(unique, no spaces)</span>
+          <input style={is} value={actionKey} onChange={e => setActionKey(e.target.value)} placeholder="create_contact" required />
+        </label>
+        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          Label
+          <input style={is} value={label} onChange={e => setLabel(e.target.value)} placeholder="Create contact" />
+        </label>
+        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          Description
+          <input style={is} value={description} onChange={e => setDescription(e.target.value)} placeholder="Creates a new contact" />
+        </label>
+        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          HTTP method
+          <select style={is} value={method} onChange={e => setMethod(e.target.value)}>
+            {HTTP_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </label>
+        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          Path template
+          <input style={is} value={path} onChange={e => setPath(e.target.value)} placeholder="/contacts/people" required />
+        </label>
+      </div>
+
+      {/* Input fields */}
+      <div style={{ borderTop: '1px solid #1e1e1e', paddingTop: 8, marginTop: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <span style={{ color: '#888', fontSize: '0.75rem', flex: 1 }}>Input fields</span>
+          <button type='button' onClick={() => setFields(prev => [...prev, emptyField()])} style={ghostBtn}>
+            + Add field
+          </button>
+        </div>
+        {fields.map((f, i) => (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+            <input style={is} placeholder="key" value={f.key} onChange={e => updateField(i, { key: e.target.value })} />
+            <input style={is} placeholder="label" value={f.label} onChange={e => updateField(i, { label: e.target.value })} />
+            <select style={is} value={f.field_type} onChange={e => updateField(i, { field_type: e.target.value })}>
+              {FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <label style={{ color: '#777', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
+              <input type='checkbox' checked={f.required} onChange={e => updateField(i, { required: e.target.checked })} />
+              required
+            </label>
+            <button type='button'
+              onClick={() => setFields(prev => prev.filter((_, j) => j !== i))}
+              style={{ ...dangerBtn, padding: '3px 8px', fontSize: '0.7rem' }}>✕</button>
+          </div>
+        ))}
+      </div>
+
+      {saveError && <p style={{ color: '#f87171', fontSize: '0.75rem', margin: 0 }}>{saveError}</p>}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button type='submit' disabled={saving} style={primaryBtn}>{saving ? 'Saving…' : 'Save'}</button>
+        <button type='button' onClick={onCancel} style={ghostBtn}>Cancel</button>
+      </div>
+    </form>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Shared styles
 // ---------------------------------------------------------------------------
@@ -920,4 +1299,10 @@ const inputStyle: React.CSSProperties = {
   padding: '0.5rem 0.75rem', background: '#1e1e1e', border: '1px solid #333',
   borderRadius: 8, color: '#fff', fontSize: '0.85rem', outline: 'none',
   boxSizing: 'border-box',
+}
+
+const helperTextStyle: React.CSSProperties = {
+  color: '#666',
+  fontSize: '0.72rem',
+  lineHeight: 1.4,
 }

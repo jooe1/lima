@@ -14,6 +14,7 @@ export interface FloatingWorkflowPanelProps {
   isAdmin: boolean
   onClose: () => void
   onSnapBack: () => void
+  onBindingWidgetsChange?: (widgetIds: string[]) => void
 }
 
 const DEFAULT_WIDTH  = 560
@@ -49,6 +50,7 @@ export function FloatingWorkflowPanel({
   isAdmin,
   onClose,
   onSnapBack,
+  onBindingWidgetsChange,
 }: FloatingWorkflowPanelProps) {
   // WF-35: load persisted position/size on mount
   const [position, setPosition] = useState<{ top: number; left: number }>({ top: 80, left: 0 })
@@ -292,6 +294,7 @@ export function FloatingWorkflowPanel({
             onClose={handleClose}
             isAdmin={isAdmin}
             pageId={pageId}
+            onBindingWidgetsChange={onBindingWidgetsChange}
           />
         </div>
       )}

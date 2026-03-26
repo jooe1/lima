@@ -759,6 +759,12 @@ export interface ConnectorSchemaResponse {
   refreshing?: boolean
 }
 
+export interface EditableConnectorEnvelope {
+  connector: Connector
+  editable_credentials: Record<string, unknown>
+  stored_secrets: Record<string, boolean>
+}
+
 interface ConnectorEnvelope {
   connector: Connector
 }
@@ -780,6 +786,10 @@ export function createConnector(
 export function getConnector(workspaceId: string, connectorId: string) {
   return request<ConnectorEnvelope>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}`)
     .then(res => res.connector)
+}
+
+export function getEditableConnector(workspaceId: string, connectorId: string) {
+  return request<EditableConnectorEnvelope>(`/v1/workspaces/${workspaceId}/connectors/${connectorId}/edit`)
 }
 
 export function patchConnector(
@@ -1210,4 +1220,76 @@ export interface CompanyTool {
 
 export function listCompanyTools(companyId: string) {
   return request<{ tools: CompanyTool[] }>(`/v1/companies/${companyId}/tools`)
+}
+
+// ---- Connector action catalog ----------------------------------------------
+
+export type ActionFieldType = 'text' | 'email' | 'number' | 'boolean' | 'date' | 'enum' | 'textarea'
+
+export interface ActionField {
+  key: string
+  label: string
+  field_type: ActionFieldType
+  required: boolean
+  enum_values?: string[]
+  description?: string
+}
+
+export interface ActionDefinition {
+  id: string
+  connector_id: string
+  resource_name: string  // e.g. "Contacts"
+  action_key: string     // e.g. "create_contact"
+  action_label: string   // e.g. "Create contact"
+  description?: string
+  http_method: string    // POST | PUT | PATCH | DELETE | GET
+  path_template: string  // e.g. "/contacts/people"
+  input_fields: ActionField[]
+  created_at: string
+  updated_at: string
+}
+
+export interface ActionDefinitionInput {
+  resource_name: string
+  action_key: string
+  action_label: string
+  description?: string
+  http_method: string
+  path_template: string
+  input_fields: ActionField[]
+}
+
+export function listConnectorActions(workspaceId: string, connectorId: string) {
+  return request<{ actions: ActionDefinition[] }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/actions`,
+  )
+}
+
+export function upsertConnectorAction(
+  workspaceId: string,
+  connectorId: string,
+  action: ActionDefinitionInput,
+) {
+  return request<{ action: ActionDefinition }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/actions`,
+    { method: 'PUT', body: JSON.stringify(action) },
+  ).then(res => res.action)
+}
+
+export function bulkReplaceConnectorActions(
+  workspaceId: string,
+  connectorId: string,
+  actions: ActionDefinitionInput[],
+) {
+  return request<{ actions: ActionDefinition[] }>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/actions/bulk`,
+    { method: 'PUT', body: JSON.stringify({ actions }) },
+  )
+}
+
+export function deleteConnectorAction(workspaceId: string, connectorId: string, actionId: string) {
+  return request<void>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/actions/${actionId}`,
+    { method: 'DELETE' },
+  )
 }

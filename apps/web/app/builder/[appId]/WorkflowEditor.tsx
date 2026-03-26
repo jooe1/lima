@@ -13,6 +13,7 @@ import {
   type WorkflowStepInput,
   type Connector,
   type ManagedTableColumn,
+  type ActionDefinition,
   listWorkflows,
   getWorkflow,
   createWorkflow,
@@ -26,6 +27,7 @@ import {
   patchWorkflow,
   listConnectors,
   getManagedTableColumns,
+  listConnectorActions,
   ApiError,
 } from '../../../lib/api'
 import { useAuth } from '../../../lib/auth'
@@ -1180,9 +1182,12 @@ function MutationStepEditor({
   onChange: (cfg: string) => void
 }) {
   const { workspace } = useAuth()
-  const [connectors,  setConnectors]  = useState<Connector[]>([])
-  const [columns,     setColumns]     = useState<ManagedTableColumn[]>([])
-  const [loadingCols, setLoadingCols] = useState(false)
+  const [connectors,    setConnectors]    = useState<Connector[]>([])
+  const [columns,       setColumns]       = useState<ManagedTableColumn[]>([])
+  const [loadingCols,   setLoadingCols]   = useState(false)
+  const [actions,       setActions]       = useState<ActionDefinition[]>([])
+  const [loadingActs,   setLoadingActs]   = useState(false)
+  const [showAdvanced,  setShowAdvanced]  = useState(false)
 
   // Parse the current JSON string on every render (cheap, avoids stale state)
   let parsed: Record<string, unknown> = {}
@@ -1223,6 +1228,19 @@ function MutationStepEditor({
     listConnectors(workspace.id).then(res => setConnectors(res.connectors)).catch(() => {})
   }, [workspace])
 
+  // Fetch action catalog whenever a REST/GraphQL connector is selected
+  useEffect(() => {
+    if (!workspace || !connectorId || isManaged) { setActions([]); return }
+    const con = connectors.find(c => c.id === connectorId)
+    if (!con || (con.type !== 'rest' && con.type !== 'graphql')) { setActions([]); return }
+    setLoadingActs(true)
+    listConnectorActions(workspace.id, connectorId)
+      .then(res => setActions(res.actions ?? []))
+      .catch(() => setActions([]))
+      .finally(() => setLoadingActs(false))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspace, connectorId, isManaged, connectors])
+
   // Fetch columns whenever a managed connector is selected
   useEffect(() => {
     if (!workspace || !connectorId || !isManaged) { setColumns([]); return }
@@ -1262,6 +1280,7 @@ function MutationStepEditor({
       onChange(JSON.stringify({ connector_id: newId }, null, 2))
     }
     setColumns([])
+    setActions([])
   }
 
   const handleOperationChange = (newOp: string) => {
@@ -1478,25 +1497,122 @@ function MutationStepEditor({
         </>
       )}
 
-      {/* ── Non-managed connector — raw JSON fallback with hint ───────────── */}
-      {connectorId && !isManaged && (
-        <>
-          <div style={{ color: C.muted, fontSize: '0.7rem', lineHeight: 1.6,
-            padding: '6px 8px', background: '#1a1a1a', borderRadius: 3, border: `1px solid ${C.border}` }}>
-            SQL/REST connectors use a raw JSON config. Enter it below.
-          </div>
-          <textarea
-            style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3,
-              color: C.text, fontSize: '0.72rem', padding: '3px 7px',
-              width: '100%', boxSizing: 'border-box', minHeight: 60,
-              fontFamily: 'monospace', resize: 'vertical', whiteSpace: 'pre' }}
-            placeholder="{}"
-            value={configStr}
-            onChange={e => onChange(e.target.value)}
-            spellCheck={false}
-          />
-        </>
-      )}
+      {/* ── Non-managed connector — action picker + field mapping ─────────── */}
+      {connectorId && !isManaged && (() => {
+        const selectedActionKey = typeof parsed.action_key === 'string' ? parsed.action_key : ''
+        const bodyMap: Record<string, string> = (() => {
+          const b = parsed.body
+          if (typeof b === 'object' && b !== null && !Array.isArray(b))
+            return Object.fromEntries(
+              Object.entries(b as Record<string, unknown>).map(([k, v]) => [k, String(v ?? '')])
+            )
+          return {}
+        })()
+
+        const selectedAction = actions.find(a => a.action_key === selectedActionKey)
+
+        const handleActionSelect = (key: string) => {
+          const act = actions.find(a => a.action_key === key)
+          if (!act) { emit({ action_key: undefined, method: undefined, path: undefined, body: undefined }); return }
+          const emptyBody: Record<string, string> = {}
+          act.input_fields?.forEach(f => { emptyBody[f.key] = '' })
+          onChange(JSON.stringify({
+            connector_id: connectorId,
+            action_key: act.action_key,
+            method: act.http_method,
+            path: act.path_template,
+            body: emptyBody,
+          }, null, 2))
+        }
+
+        const handleBodyField = (fieldKey: string, val: string) => {
+          emit({ body: { ...bodyMap, [fieldKey]: val } })
+        }
+
+        // Group actions by resource name for the dropdown optgroups
+        const groups: Record<string, ActionDefinition[]> = {}
+        actions.forEach(a => {
+          const g = a.resource_name || 'General'
+          ;(groups[g] = groups[g] ?? []).push(a)
+        })
+        const hasActions = actions.length > 0
+
+        return (
+          <>
+            {loadingActs && (
+              <div style={{ color: C.muted, fontSize: '0.7rem' }}>Loading actions…</div>
+            )}
+
+            {!loadingActs && hasActions && (
+              <>
+                {/* Action selector */}
+                <label style={{ color: C.muted, fontSize: '0.7rem' }}>Action</label>
+                <select
+                  style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3,
+                    color: C.text, fontSize: '0.78rem', padding: '3px 7px', width: '100%' }}
+                  value={selectedActionKey}
+                  onChange={e => handleActionSelect(e.target.value)}>
+                  <option value=''>— Select an action —</option>
+                  {Object.entries(groups).map(([grp, acts]) => (
+                    <optgroup key={grp} label={grp}>
+                      {acts.map(a => (
+                        <option key={a.action_key} value={a.action_key}>
+                          {a.action_label || a.action_key}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+
+                {/* Field mapping */}
+                {selectedAction && selectedAction.input_fields && selectedAction.input_fields.length > 0 && (
+                  <>
+                    <label style={{ color: C.muted, fontSize: '0.7rem', marginTop: 4 }}>Field mapping</label>
+                    {selectedAction.input_fields.map(field => (
+                      <div key={field.key} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, alignItems: 'center' }}>
+                        <div style={{ color: C.text, fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {field.label || field.key}
+                          {field.required && <span style={{ color: '#e06c75', marginLeft: 2 }}>*</span>}
+                        </div>
+                        <input
+                          style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3,
+                            color: C.text, fontSize: '0.72rem', padding: '3px 7px', width: '100%', boxSizing: 'border-box' }}
+                          placeholder={`{{input.${field.key}}}`}
+                          value={bodyMap[field.key] ?? ''}
+                          onChange={e => handleBodyField(field.key, e.target.value)}
+                        />
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* Advanced / raw JSON fallback toggle */}
+            <div style={{ marginTop: 6 }}>
+              <button
+                type='button'
+                onClick={() => setShowAdvanced(v => !v)}
+                style={{ background: 'none', border: 'none', color: C.muted, fontSize: '0.68rem',
+                  cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>
+                {showAdvanced ? 'Hide raw config' : (!hasActions ? 'No actions configured — edit raw config' : 'Advanced: raw config')}
+              </button>
+              {showAdvanced && (
+                <textarea
+                  style={{ background: '#1a1a1a', border: `1px solid ${C.border}`, borderRadius: 3,
+                    color: C.text, fontSize: '0.72rem', padding: '3px 7px', marginTop: 4,
+                    width: '100%', boxSizing: 'border-box', minHeight: 60,
+                    fontFamily: 'monospace', resize: 'vertical', whiteSpace: 'pre' }}
+                  placeholder='{}'
+                  value={configStr}
+                  onChange={e => onChange(e.target.value)}
+                  spellCheck={false}
+                />
+              )}
+            </div>
+          </>
+        )
+      })()}
     </div>
   )
 }

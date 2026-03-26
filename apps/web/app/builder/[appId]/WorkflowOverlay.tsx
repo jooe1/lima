@@ -13,6 +13,7 @@ export interface WorkflowOverlayProps {
   onPopOut?: (workflowId: string) => void
   pageDocument: AuraNode[]
   isAdmin: boolean
+  onBindingWidgetsChange?: (widgetIds: string[]) => void
 }
 
 const BORDER = '#1e1e1e'
@@ -26,6 +27,7 @@ export function WorkflowOverlay({
   onClose,
   pageDocument,
   isAdmin,
+  onBindingWidgetsChange,
 }: WorkflowOverlayProps) {
   return (
     <div
@@ -65,6 +67,7 @@ export function WorkflowOverlay({
           isAdmin={isAdmin}
           pageId={pageId}
           pageDocument={pageDocument}
+          onBindingWidgetsChange={onBindingWidgetsChange}
         />
       </div>
     </div>

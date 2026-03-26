@@ -35,6 +35,7 @@ interface Props {
   onChange: (doc: AuraDocument) => void
   onSelect: (id: string | null) => void
   workspaceId: string
+  highlightedWidgetIds?: string[]
 }
 
 export function getGrid(node: AuraNode, fallback = { w: 4, h: 3 }) {
@@ -50,7 +51,7 @@ export function getGrid(node: AuraNode, fallback = { w: 4, h: 3 }) {
   }
 }
 
-export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId }: Props) {
+export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId, highlightedWidgetIds }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
 
@@ -247,6 +248,7 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId 
           {doc.map(node => {
             const g = getGrid(node)
             const isSelected = selectedId === node.id
+            const isHighlighted = highlightedWidgetIds?.includes(node.id) ?? false
 
             return (
               <div
@@ -263,8 +265,14 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId 
                   borderRadius: 4,
                   overflow: 'hidden',
                   cursor: 'grab',
-                  boxShadow: isSelected ? '0 0 0 2px #3b82f620' : 'none',
-                  zIndex: isSelected ? 10 : 1,
+                  boxShadow: isSelected
+                    ? '0 0 0 2px #3b82f620'
+                    : isHighlighted
+                      ? '0 0 0 2px #3b82f6, 0 0 16px 4px #3b82f644'
+                      : 'none',
+                  outline: 'none',
+                  transition: 'box-shadow 0.2s ease',
+                  zIndex: isSelected ? 10 : isHighlighted ? 5 : 1,
                 }}
                 onMouseDown={e => {
                   const target = e.target as HTMLElement

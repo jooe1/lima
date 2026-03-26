@@ -313,7 +313,7 @@ type RestEndpointDef struct {
 // RestCredentials holds connection parameters for REST API connectors.
 type RestCredentials struct {
 	BaseURL      string            `json:"base_url"`
-	AuthType     string            `json:"auth_type"` // none | bearer | basic | api_key
+	AuthType     string            `json:"auth_type"` // none | bearer | token | basic | api_key
 	Token        string            `json:"token,omitempty"`
 	Username     string            `json:"username,omitempty"`
 	Password     string            `json:"password,omitempty"`
@@ -349,6 +349,60 @@ type ConnectorRecord struct {
 type SchemaJobPayload struct {
 	ConnectorID string `json:"connector_id"`
 	WorkspaceID string `json:"workspace_id"`
+}
+
+// ---- Connector action catalog -----------------------------------------------
+
+// ActionFieldType enumerates the types a field in an action definition can have.
+type ActionFieldType string
+
+const (
+	ActionFieldTypeText     ActionFieldType = "text"
+	ActionFieldTypeEmail    ActionFieldType = "email"
+	ActionFieldTypeNumber   ActionFieldType = "number"
+	ActionFieldTypeBoolean  ActionFieldType = "boolean"
+	ActionFieldTypeDate     ActionFieldType = "date"
+	ActionFieldTypeEnum     ActionFieldType = "enum"
+	ActionFieldTypeTextarea ActionFieldType = "textarea"
+)
+
+// ActionFieldDef describes one input field of a connector action.
+type ActionFieldDef struct {
+	Key         string          `json:"key"`
+	Label       string          `json:"label"`
+	FieldType   ActionFieldType `json:"field_type"`
+	Required    bool            `json:"required"`
+	EnumValues  []string        `json:"enum_values,omitempty"`
+	Description string          `json:"description,omitempty"`
+}
+
+// ActionDefinition describes a named business operation that can be performed
+// through a connector (e.g. "Create contact" via the MOCO REST API).
+// The http_method + path_template fields are the underlying transport; the
+// builder UI shows only resource_name + action_label + input_fields.
+type ActionDefinition struct {
+	ID           string           `json:"id"`
+	ConnectorID  string           `json:"connector_id"`
+	ResourceName string           `json:"resource_name"` // e.g. "Contacts"
+	ActionKey    string           `json:"action_key"`    // e.g. "create_contact"
+	ActionLabel  string           `json:"action_label"`  // e.g. "Create contact"
+	Description  string           `json:"description,omitempty"`
+	HTTPMethod   string           `json:"http_method"`   // POST | PUT | PATCH | DELETE | GET
+	PathTemplate string           `json:"path_template"` // e.g. "/contacts/people"
+	InputFields  []ActionFieldDef `json:"input_fields"`
+	CreatedAt    time.Time        `json:"created_at"`
+	UpdatedAt    time.Time        `json:"updated_at"`
+}
+
+// ActionDefinitionInput is the subset used when creating or updating an action.
+type ActionDefinitionInput struct {
+	ResourceName string           `json:"resource_name"`
+	ActionKey    string           `json:"action_key"`
+	ActionLabel  string           `json:"action_label"`
+	Description  string           `json:"description"`
+	HTTPMethod   string           `json:"http_method"`
+	PathTemplate string           `json:"path_template"`
+	InputFields  []ActionFieldDef `json:"input_fields"`
 }
 
 // ManagedTableColumn defines one column in a Lima-managed table connector.

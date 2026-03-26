@@ -378,13 +378,19 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 			results[step.id] = map[string]any{"status": "failed", "error": execErr.Error()}
 			return false, fmt.Errorf("query step %q failed: %w", step.name, execErr)
 		}
-		results[step.id] = map[string]any{"status": "completed", "result": result}
+		stepEntry := map[string]any{"status": "completed", "result": result}
+		if resultMap, ok := result.(map[string]any); ok {
+			if rows, ok := resultMap["rows"].([]map[string]any); ok && len(rows) > 0 {
+				stepEntry["first_row"] = rows[0]
+			}
+		}
+		results[step.id] = stepEntry
 
 	case stepTypeMutation:
 		// When requires_approval is false on the workflow, execute immediately.
 		// Otherwise (or when triggered by an end-user) gate through approval.
 		if !def.requiresApproval {
-			mutResult, execErr := executeMutationStep(stepCtx, cfg, pool, log, step, run.inputData, requestedBy)
+			mutResult, execErr := executeMutationStep(stepCtx, cfg, pool, log, step, run.inputData, requestedBy, results)
 			if execErr != nil {
 				return false, fmt.Errorf("mutation step %q failed: %w", step.name, execErr)
 			}
@@ -436,8 +442,7 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 	case stepTypeCondition:
 		// Evaluate a simple string equality condition from config.
 		// Config shape: { "left": "{{input.status}}", "op": "eq", "right": "active" }
-		// For now we resolve {{input.*}} expressions from run.inputData.
-		result := evaluateCondition(step.config, run.inputData)
+		result := evaluateCondition(step.config, run.inputData, results)
 		results[step.id] = map[string]any{"status": "completed", "result": result}
 
 	case stepTypeNotification:
@@ -463,6 +468,7 @@ var (
 	wfMutationRe            = regexp.MustCompile(`(?i)^\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE|CALL|MERGE|REPLACE|LOCK|BEGIN|COMMIT|ROLLBACK|DO)`)
 	wfCTEMutationRe         = regexp.MustCompile(`(?is)^\s*WITH\b[\s\S]*\b(INSERT\s+INTO|UPDATE\b|DELETE\s+FROM|MERGE\b|REPLACE\b)\b`)
 	workflowInputRefRe      = regexp.MustCompile(`\{\{input\.([a-zA-Z0-9_.-]+)\}\}`)
+	workflowStepRefRe       = regexp.MustCompile(`\{\{step\.([^.}]+)\.([^}]+)\}\}`)
 	workflowGraphQLMutation = regexp.MustCompile(`(?is)^\s*mutation\b`)
 )
 
@@ -777,7 +783,7 @@ func runMSSQLQueryStep(ctx context.Context, creds relationalCreds, query string,
 // evaluateCondition resolves a simple equality/comparison condition.
 // Config supports: { "left": "{{input.field}}", "op": "eq|neq|gt|lt", "right": "value" }
 // Returns true/false as a boolean, or a "skipped" note if config is missing.
-func evaluateCondition(config map[string]any, inputData map[string]any) any {
+func evaluateCondition(config map[string]any, inputData map[string]any, stepResults map[string]any) any {
 	left, _ := config["left"].(string)
 	op, _ := config["op"].(string)
 	right, _ := config["right"].(string)
@@ -786,8 +792,8 @@ func evaluateCondition(config map[string]any, inputData map[string]any) any {
 		return map[string]any{"result": true, "note": "empty condition — defaulting to true"}
 	}
 
-	// Resolve {{input.field}} references.
-	resolved := resolveInputRef(left, inputData)
+	// Resolve {{input.field}} and {{step.ID.FIELDPATH}} references.
+	resolved := resolveInputRef(left, inputData, stepResults)
 
 	switch op {
 	case "eq":
@@ -799,23 +805,39 @@ func evaluateCondition(config map[string]any, inputData map[string]any) any {
 	}
 }
 
-// resolveInputRef replaces {{input.field}} placeholders from inputData.
+// resolveInputRef replaces {{input.FIELD}} and {{step.ID.FIELDPATH}} placeholders.
 // Exact matches preserve the original value type; embedded placeholders are
 // interpolated into the surrounding string.
-func resolveInputRef(expr string, inputData map[string]any) any {
+func resolveInputRef(expr string, inputData map[string]any, stepResults map[string]any) any {
 	expr = strings.TrimSpace(expr)
-	matches := workflowInputRefRe.FindAllStringSubmatchIndex(expr, -1)
-	if len(matches) == 0 {
+
+	// Exact match: single {{step.ID.FIELDPATH}} spanning the entire expression.
+	if sm := workflowStepRefRe.FindStringSubmatchIndex(expr); sm != nil && sm[0] == 0 && sm[1] == len(expr) {
+		if stepResults != nil {
+			if sr, ok := stepResults[expr[sm[2]:sm[3]]]; ok {
+				if srMap, ok := sr.(map[string]any); ok {
+					if value, ok := lookupInputValue(srMap, expr[sm[4]:sm[5]]); ok {
+						return value
+					}
+				}
+			}
+		}
 		return expr
 	}
-	if len(matches) == 1 && matches[0][0] == 0 && matches[0][1] == len(expr) {
-		field := expr[matches[0][2]:matches[0][3]]
-		if value, ok := lookupInputValue(inputData, field); ok {
+
+	// Exact match: single {{input.FIELD}} spanning the entire expression.
+	if im := workflowInputRefRe.FindStringSubmatchIndex(expr); im != nil && im[0] == 0 && im[1] == len(expr) {
+		if value, ok := lookupInputValue(inputData, expr[im[2]:im[3]]); ok {
 			return value
 		}
 		return expr
 	}
-	return workflowInputRefRe.ReplaceAllStringFunc(expr, func(match string) string {
+
+	// Interpolate embedded placeholders (both patterns) into a string result.
+	if !workflowInputRefRe.MatchString(expr) && !workflowStepRefRe.MatchString(expr) {
+		return expr
+	}
+	result := workflowInputRefRe.ReplaceAllStringFunc(expr, func(match string) string {
 		submatches := workflowInputRefRe.FindStringSubmatch(match)
 		if len(submatches) != 2 {
 			return match
@@ -826,6 +848,26 @@ func resolveInputRef(expr string, inputData map[string]any) any {
 		}
 		return fmt.Sprintf("%v", value)
 	})
+	result = workflowStepRefRe.ReplaceAllStringFunc(result, func(match string) string {
+		submatches := workflowStepRefRe.FindStringSubmatch(match)
+		if len(submatches) != 3 || stepResults == nil {
+			return match
+		}
+		sr, ok := stepResults[submatches[1]]
+		if !ok {
+			return match
+		}
+		srMap, ok := sr.(map[string]any)
+		if !ok {
+			return match
+		}
+		value, ok := lookupInputValue(srMap, submatches[2])
+		if !ok {
+			return match
+		}
+		return fmt.Sprintf("%v", value)
+	})
+	return result
 }
 
 func lookupInputValue(inputData map[string]any, fieldPath string) (any, bool) {
@@ -911,7 +953,7 @@ func resolveApprovedStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 		switch step.stepType {
 		case stepTypeMutation:
 			// Execute the actual mutation now that approval is verified.
-			mutResult, execErr := executeMutationStep(ctx, cfg, pool, log, step, run.inputData, triggeredBy)
+			mutResult, execErr := executeMutationStep(ctx, cfg, pool, log, step, run.inputData, triggeredBy, stepResults)
 			if execErr != nil {
 				return fmt.Errorf("execute approved mutation step %q: %w", step.name, execErr)
 			}
@@ -950,9 +992,9 @@ func resolveApprovedStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 // The caller only marks the step completed after this returns success, so each
 // branch must fail closed for malformed config or unsupported connectors.
 func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger,
-	step wfStep, inputData map[string]any, triggeredBy string,
+	step wfStep, inputData map[string]any, triggeredBy string, stepResults map[string]any,
 ) (any, error) {
-	connectorID := resolveWorkflowString(step.config["connector_id"], inputData)
+	connectorID := resolveWorkflowString(step.config["connector_id"], inputData, stepResults)
 	if connectorID == "" {
 		return nil, fmt.Errorf("mutation step %q missing connector_id in config", step.name)
 	}
@@ -969,7 +1011,7 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 
 	switch rec.connectorType {
 	case "postgres":
-		statement, err := mutationSQLForStep(step, inputData)
+		statement, err := mutationSQLForStep(step, inputData, stepResults)
 		if err != nil {
 			return nil, err
 		}
@@ -980,7 +1022,7 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 		return runPostgresMutationStep(ctx, creds, statement, log)
 
 	case "mysql":
-		statement, err := mutationSQLForStep(step, inputData)
+		statement, err := mutationSQLForStep(step, inputData, stepResults)
 		if err != nil {
 			return nil, err
 		}
@@ -991,7 +1033,7 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 		return runMySQLMutationStep(ctx, creds, statement, log)
 
 	case "mssql":
-		statement, err := mutationSQLForStep(step, inputData)
+		statement, err := mutationSQLForStep(step, inputData, stepResults)
 		if err != nil {
 			return nil, err
 		}
@@ -1006,17 +1048,17 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 		if err := json.Unmarshal(plainCreds, &creds); err != nil {
 			return nil, fmt.Errorf("parse rest credentials: %w", err)
 		}
-		return runRESTMutationStep(ctx, creds, step, inputData, log)
+		return runRESTMutationStep(ctx, creds, step, inputData, log, stepResults)
 
 	case "graphql":
 		var creds graphqlMutationCreds
 		if err := json.Unmarshal(plainCreds, &creds); err != nil {
 			return nil, fmt.Errorf("parse graphql credentials: %w", err)
 		}
-		return runGraphQLMutationStep(ctx, creds, step, inputData, log)
+		return runGraphQLMutationStep(ctx, creds, step, inputData, log, stepResults)
 
 	case "managed":
-		return runManagedMutationStep(ctx, pool, connectorID, step, inputData, triggeredBy)
+		return runManagedMutationStep(ctx, pool, connectorID, step, inputData, triggeredBy, stepResults)
 
 	default:
 		return nil, fmt.Errorf("mutation step %q uses unsupported connector type %q", step.name, rec.connectorType)
@@ -1030,7 +1072,7 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 //	data       — map of column → value (for insert/update); supports {{input.x}} placeholders
 //	row_id     — row UUID to update or delete; supports {{input.x}}
 func runManagedMutationStep(ctx context.Context, pool *pgxpool.Pool, connectorID string,
-	step wfStep, inputData map[string]any, triggeredBy string,
+	step wfStep, inputData map[string]any, triggeredBy string, stepResults map[string]any,
 ) (any, error) {
 	operation, _ := step.config["operation"].(string)
 	switch operation {
@@ -1038,7 +1080,7 @@ func runManagedMutationStep(ctx context.Context, pool *pgxpool.Pool, connectorID
 		rawData, _ := step.config["data"].(map[string]any)
 		resolved := make(map[string]any, len(rawData))
 		for k, v := range rawData {
-			resolved[k] = resolveWorkflowValue(v, inputData)
+			resolved[k] = resolveWorkflowValue(v, inputData, stepResults)
 		}
 		dataJSON, err := json.Marshal(resolved)
 		if err != nil {
@@ -1066,14 +1108,14 @@ func runManagedMutationStep(ctx context.Context, pool *pgxpool.Pool, connectorID
 		return map[string]any{"row_id": rowID, "operation": "insert"}, nil
 
 	case "update":
-		rowID := resolveWorkflowString(step.config["row_id"], inputData)
+		rowID := resolveWorkflowString(step.config["row_id"], inputData, stepResults)
 		if rowID == "" {
 			return nil, fmt.Errorf("managed update step %q missing row_id", step.name)
 		}
 		rawData, _ := step.config["data"].(map[string]any)
 		resolved := make(map[string]any, len(rawData))
 		for k, v := range rawData {
-			resolved[k] = resolveWorkflowValue(v, inputData)
+			resolved[k] = resolveWorkflowValue(v, inputData, stepResults)
 		}
 		dataJSON, err := json.Marshal(resolved)
 		if err != nil {
@@ -1091,7 +1133,7 @@ func runManagedMutationStep(ctx context.Context, pool *pgxpool.Pool, connectorID
 		return map[string]any{"rows_affected": tag.RowsAffected(), "operation": "update"}, nil
 
 	case "delete":
-		rowID := resolveWorkflowString(step.config["row_id"], inputData)
+		rowID := resolveWorkflowString(step.config["row_id"], inputData, stepResults)
 		if rowID == "" {
 			return nil, fmt.Errorf("managed delete step %q missing row_id", step.name)
 		}
@@ -1111,8 +1153,8 @@ func runManagedMutationStep(ctx context.Context, pool *pgxpool.Pool, connectorID
 	}
 }
 
-func mutationSQLForStep(step wfStep, inputData map[string]any) (string, error) {
-	resolved := resolveWorkflowValue(step.config["sql"], inputData)
+func mutationSQLForStep(step wfStep, inputData map[string]any, stepResults map[string]any) (string, error) {
+	resolved := resolveWorkflowValue(step.config["sql"], inputData, stepResults)
 	statement, ok := resolved.(string)
 	if !ok {
 		return "", fmt.Errorf("mutation step %q missing sql in config", step.name)
@@ -1262,8 +1304,8 @@ func runMSSQLMutationStep(ctx context.Context, creds relationalCreds, statement 
 	return result, nil
 }
 
-func runRESTMutationStep(ctx context.Context, creds restCreds, step wfStep, inputData map[string]any, log *zap.Logger) (any, error) {
-	method := strings.ToUpper(resolveWorkflowString(step.config["method"], inputData))
+func runRESTMutationStep(ctx context.Context, creds restCreds, step wfStep, inputData map[string]any, log *zap.Logger, stepResults map[string]any) (any, error) {
+	method := strings.ToUpper(resolveWorkflowString(step.config["method"], inputData, stepResults))
 	if method == "" {
 		return nil, fmt.Errorf("mutation step %q missing method in config", step.name)
 	}
@@ -1271,7 +1313,7 @@ func runRESTMutationStep(ctx context.Context, creds restCreds, step wfStep, inpu
 		return nil, fmt.Errorf("mutation step %q method %q is not a mutating HTTP method", step.name, method)
 	}
 
-	path := resolveWorkflowString(step.config["path"], inputData)
+	path := resolveWorkflowString(step.config["path"], inputData, stepResults)
 	if path == "" {
 		return nil, fmt.Errorf("mutation step %q missing path in config", step.name)
 	}
@@ -1279,7 +1321,7 @@ func runRESTMutationStep(ctx context.Context, creds restCreds, step wfStep, inpu
 	bodyValue, hasBody := step.config["body"]
 	var body any
 	if hasBody {
-		body = resolveWorkflowValue(bodyValue, inputData)
+		body = resolveWorkflowValue(bodyValue, inputData, stepResults)
 	}
 	if method != http.MethodDelete && (!hasBody || workflowValueIsEmpty(body)) {
 		return nil, fmt.Errorf("mutation step %q missing body in config", step.name)
@@ -1340,13 +1382,13 @@ func runRESTMutationStep(ctx context.Context, creds restCreds, step wfStep, inpu
 	return result, nil
 }
 
-func runGraphQLMutationStep(ctx context.Context, creds graphqlMutationCreds, step wfStep, inputData map[string]any, log *zap.Logger) (any, error) {
+func runGraphQLMutationStep(ctx context.Context, creds graphqlMutationCreds, step wfStep, inputData map[string]any, log *zap.Logger, stepResults map[string]any) (any, error) {
 	endpoint := strings.TrimSpace(creds.Endpoint)
 	if endpoint == "" {
 		return nil, fmt.Errorf("graphql credentials missing endpoint")
 	}
 	if methodRaw, ok := step.config["method"]; ok {
-		method := strings.ToUpper(resolveWorkflowString(methodRaw, inputData))
+		method := strings.ToUpper(resolveWorkflowString(methodRaw, inputData, stepResults))
 		if method == "" {
 			return nil, fmt.Errorf("mutation step %q missing method in config", step.name)
 		}
@@ -1355,7 +1397,7 @@ func runGraphQLMutationStep(ctx context.Context, creds graphqlMutationCreds, ste
 		}
 	}
 	if pathRaw, ok := step.config["path"]; ok {
-		path := resolveWorkflowString(pathRaw, inputData)
+		path := resolveWorkflowString(pathRaw, inputData, stepResults)
 		if path == "" {
 			return nil, fmt.Errorf("mutation step %q missing path in config", step.name)
 		}
@@ -1366,7 +1408,7 @@ func runGraphQLMutationStep(ctx context.Context, creds graphqlMutationCreds, ste
 		endpoint = joined
 	}
 
-	body := resolveWorkflowValue(step.config["body"], inputData)
+	body := resolveWorkflowValue(step.config["body"], inputData, stepResults)
 	if workflowValueIsEmpty(body) {
 		return nil, fmt.Errorf("mutation step %q missing body in config", step.name)
 	}
@@ -1469,6 +1511,17 @@ func joinConnectorRequestURL(baseURL, requestPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse connector base URL: %w", err)
 	}
+	// Ensure the base path ends with "/" before resolving. Without this,
+	// Go's ResolveReference follows RFC 3986 §5.2 and replaces the entire
+	// base path whenever requestPath begins with "/", silently dropping any
+	// prefix segments (e.g. "/api/v1") that were part of the base URL.
+	if !strings.HasSuffix(base.Path, "/") {
+		base.Path += "/"
+	}
+	// Strip the leading "/" so the path is truly relative and gets appended
+	// rather than replacing the base path.
+	requestPath = strings.TrimPrefix(requestPath, "/")
+	rel, _ = url.Parse(requestPath)
 	return base.ResolveReference(rel).String(), nil
 }
 
@@ -1587,6 +1640,11 @@ func applyWorkflowRESTAuth(req *http.Request, creds restCreds) {
 		if creds.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+creds.Token)
 		}
+	case "token":
+		// Used by APIs such as MOCO that require: Authorization: Token token=<key>
+		if creds.Token != "" {
+			req.Header.Set("Authorization", "Token token="+creds.Token)
+		}
 	case "basic":
 		if creds.Username != "" || creds.Password != "" {
 			req.SetBasicAuth(creds.Username, creds.Password)
@@ -1602,8 +1660,8 @@ func applyWorkflowRESTAuth(req *http.Request, creds restCreds) {
 	}
 }
 
-func resolveWorkflowString(value any, inputData map[string]any) string {
-	resolved := resolveWorkflowValue(value, inputData)
+func resolveWorkflowString(value any, inputData map[string]any, stepResults map[string]any) string {
+	resolved := resolveWorkflowValue(value, inputData, stepResults)
 	switch typed := resolved.(type) {
 	case nil:
 		return ""
@@ -1616,20 +1674,20 @@ func resolveWorkflowString(value any, inputData map[string]any) string {
 	}
 }
 
-func resolveWorkflowValue(value any, inputData map[string]any) any {
+func resolveWorkflowValue(value any, inputData map[string]any, stepResults map[string]any) any {
 	switch typed := value.(type) {
 	case string:
-		return resolveInputRef(typed, inputData)
+		return resolveInputRef(typed, inputData, stepResults)
 	case []any:
 		resolved := make([]any, len(typed))
 		for i, item := range typed {
-			resolved[i] = resolveWorkflowValue(item, inputData)
+			resolved[i] = resolveWorkflowValue(item, inputData, stepResults)
 		}
 		return resolved
 	case map[string]any:
 		resolved := make(map[string]any, len(typed))
 		for key, item := range typed {
-			resolved[key] = resolveWorkflowValue(item, inputData)
+			resolved[key] = resolveWorkflowValue(item, inputData, stepResults)
 		}
 		return resolved
 	default:

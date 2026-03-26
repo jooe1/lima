@@ -71,7 +71,7 @@ func TestMutationSQLForStep(t *testing.T) {
 			t.Parallel()
 
 			step := wfStep{name: "mutate", config: tc.config}
-			got, err := mutationSQLForStep(step, tc.input)
+			got, err := mutationSQLForStep(step, tc.input, nil)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("mutationSQLForStep() error = nil, want error")
@@ -111,13 +111,13 @@ func TestResolveWorkflowHelpersHandleNestedInput(t *testing.T) {
 			"user_id": "{{input.user.id}}",
 			"labels":  []any{"user-{{input.user.id}}", "{{input.user.profile.name}}"},
 		},
-	}, inputData)
+	}, inputData, nil)
 
 	resolved, ok := resolvedAny.(map[string]any)
 	if !ok {
 		t.Fatalf("resolved type = %T, want map[string]any", resolvedAny)
 	}
-	if got := resolveWorkflowString(resolved["connector_id"], inputData); got != "rest-users" {
+	if got := resolveWorkflowString(resolved["connector_id"], inputData, nil); got != "rest-users" {
 		t.Fatalf("connector_id = %q, want rest-users", got)
 	}
 	if got := resolved["path"]; got != "/v1/users/42" {
@@ -150,7 +150,7 @@ func TestResolveWorkflowHelpersHandleNestedInput(t *testing.T) {
 	if got := labels[1]; got != "Ada" {
 		t.Fatalf("body.labels[1] = %#v, want Ada", got)
 	}
-	if got := resolveWorkflowString(map[string]any{"bad": true}, inputData); got != "" {
+	if got := resolveWorkflowString(map[string]any{"bad": true}, inputData, nil); got != "" {
 		t.Fatalf("resolveWorkflowString(map) = %q, want empty string", got)
 	}
 }
@@ -217,7 +217,7 @@ func TestRunRESTMutationStep(t *testing.T) {
 		"user_id": 42,
 		"name":    "Ada",
 		"active":  true,
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 	if err != nil {
 		t.Fatalf("runRESTMutationStep() error = %v", err)
 	}
@@ -248,7 +248,7 @@ func TestRunRESTMutationStepRejectsNonMutatingMethod(t *testing.T) {
 			"path":   "/v1/users",
 		},
 	}
-	if _, err := runRESTMutationStep(context.Background(), restCreds{BaseURL: "https://example.com"}, step, nil, zap.NewNop()); err == nil {
+	if _, err := runRESTMutationStep(context.Background(), restCreds{BaseURL: "https://example.com"}, step, nil, zap.NewNop(), nil); err == nil {
 		t.Fatal("runRESTMutationStep() error = nil, want fail-closed error")
 	}
 }
@@ -316,7 +316,7 @@ func TestRunRESTMutationStepRejectsMalformedConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := runRESTMutationStep(context.Background(), restCreds{BaseURL: "https://api.example.com"}, tc.step, tc.input, zap.NewNop())
+			_, err := runRESTMutationStep(context.Background(), restCreds{BaseURL: "https://api.example.com"}, tc.step, tc.input, zap.NewNop(), nil)
 			if err == nil {
 				t.Fatal("runRESTMutationStep() error = nil, want error")
 			}
@@ -346,7 +346,7 @@ func TestRunRESTMutationStepReturnsNon2xxError(t *testing.T) {
 		},
 	}
 
-	_, err := runRESTMutationStep(context.Background(), restCreds{BaseURL: server.URL}, step, nil, zap.NewNop())
+	_, err := runRESTMutationStep(context.Background(), restCreds{BaseURL: server.URL}, step, nil, zap.NewNop(), nil)
 	if err == nil {
 		t.Fatal("runRESTMutationStep() error = nil, want error")
 	}
@@ -420,7 +420,7 @@ func TestRunGraphQLMutationStep(t *testing.T) {
 		AuthType: "bearer",
 		Token:    "gql-token",
 		Headers:  map[string]string{"X-Trace-ID": "trace-123"},
-	}, step, map[string]any{"name": "Ada"}, zap.NewNop())
+	}, step, map[string]any{"name": "Ada"}, zap.NewNop(), nil)
 	if err != nil {
 		t.Fatalf("runGraphQLMutationStep() error = %v", err)
 	}
@@ -454,7 +454,7 @@ func TestRunGraphQLMutationStepRejectsNonMutationBody(t *testing.T) {
 			"body": "{ users { id } }",
 		},
 	}
-	if _, err := runGraphQLMutationStep(context.Background(), graphqlMutationCreds{Endpoint: "https://example.com/graphql"}, step, nil, zap.NewNop()); err == nil {
+	if _, err := runGraphQLMutationStep(context.Background(), graphqlMutationCreds{Endpoint: "https://example.com/graphql"}, step, nil, zap.NewNop(), nil); err == nil {
 		t.Fatal("runGraphQLMutationStep() error = nil, want fail-closed error")
 	}
 }
@@ -513,7 +513,7 @@ func TestRunGraphQLMutationStepRejectsMalformedConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := runGraphQLMutationStep(context.Background(), tc.creds, tc.step, tc.input, zap.NewNop())
+			_, err := runGraphQLMutationStep(context.Background(), tc.creds, tc.step, tc.input, zap.NewNop(), nil)
 			if err == nil {
 				t.Fatal("runGraphQLMutationStep() error = nil, want error")
 			}
@@ -540,7 +540,7 @@ func TestRunGraphQLMutationStepReturnsHTTPError(t *testing.T) {
 		},
 	}
 
-	_, err := runGraphQLMutationStep(context.Background(), graphqlMutationCreds{Endpoint: server.URL}, step, nil, zap.NewNop())
+	_, err := runGraphQLMutationStep(context.Background(), graphqlMutationCreds{Endpoint: server.URL}, step, nil, zap.NewNop(), nil)
 	if err == nil {
 		t.Fatal("runGraphQLMutationStep() error = nil, want error")
 	}
@@ -568,7 +568,7 @@ func TestRunGraphQLMutationStepReturnsErrorsPayload(t *testing.T) {
 		},
 	}
 
-	_, err := runGraphQLMutationStep(context.Background(), graphqlMutationCreds{Endpoint: server.URL}, step, nil, zap.NewNop())
+	_, err := runGraphQLMutationStep(context.Background(), graphqlMutationCreds{Endpoint: server.URL}, step, nil, zap.NewNop(), nil)
 	if err == nil {
 		t.Fatal("runGraphQLMutationStep() error = nil, want error")
 	}

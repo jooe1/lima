@@ -43,18 +43,21 @@ docker compose run --rm migrate
 
 # 3. Start the API service
 cd services/api
-cp .env.example .env
 go run ./cmd/api
+
+cp .env.example .env
 
 # 4. Start the worker
 cd services/worker
-cp .env.example .env
 go run ./cmd/worker
+
+cp .env.example .env
 
 # 5. Start the web app
 cd apps/web
-cp .env.example .env
 pnpm dev
+
+cp .env.example .env
 ```
 
 Local dev note: the Docker Compose stack exposes Postgres on `localhost:5444` and Redis on `localhost:6380`. If you already copied the `.env.example` files before this change, update the existing `.env` files to use those host ports.

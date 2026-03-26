@@ -24,11 +24,13 @@ import {
   listThreads,
   postMessage,
   listConnectors,
+  listConnectorActions,
   type WorkflowWithSteps,
   type WorkflowStep,
   type WorkflowStepInput,
   type WorkflowStepType,
   type Connector,
+  type ActionDefinition,
 } from '../../../lib/api'
 import { type AuraNode } from '@lima/aura-dsl'
 import {
@@ -334,18 +336,27 @@ function buildInsertSQL(table: string, mapping: { column: string; value: string 
 // ---- Config panel for a selected node ---------------------------------------
 
 function NodeConfigPanel({
-  node, onSave, onReview, canReview, connectors, pageDocument,
+  node, onSave, onReview, canReview, connectors, workspaceId, pageDocument, precedingSteps,
 }: {
   node: WFNode
   onSave: (nodeId: string, updatedData: Partial<WFNodeData>) => void
   onReview: (stepId: string) => void
   canReview: boolean
   connectors: Connector[]
+  workspaceId: string
   pageDocument?: AuraNode[]
+  precedingSteps?: Array<{
+    stepId: string
+    name: string
+    stepType: WorkflowStepType
+    columns: string[]
+  }>
 }) {
   const [config, setConfig] = useState<Record<string, unknown>>(node.data.config ?? {})
   const [name, setName] = useState(String(node.data.label))
   const [advancedSql, setAdvancedSql] = useState(false)
+  const [restActions, setRestActions] = useState<ActionDefinition[]>([])
+  const [restActsLoading, setRestActsLoading] = useState(false)
 
   // Compute available widget ports for source picker dropdowns
   const availablePorts: Array<{ label: string; value: string }> = []
@@ -360,13 +371,46 @@ function NodeConfigPanel({
       }
     }
   }
+  const widgetPortCount = availablePorts.length
+  if (precedingSteps && precedingSteps.length > 0) {
+    for (const step of precedingSteps) {
+      if (step.columns.length > 0) {
+        for (const col of step.columns) {
+          availablePorts.push({
+            label: `⬆ ${step.name} → ${col}`,
+            value: `{{step.${step.stepId}.first_row.${col}}}`,
+          })
+        }
+      } else {
+        availablePorts.push({
+          label: `⬆ ${step.name} → result`,
+          value: `{{step.${step.stepId}.first_row}}`,
+        })
+      }
+    }
+  }
 
   // Reset when selected node changes
   useEffect(() => {
     setConfig(node.data.config ?? {})
     setName(String(node.data.label))
     setAdvancedSql(false)
+    setRestActions([])
   }, [node.id])
+
+  // Load action catalog when a REST/GraphQL connector is selected
+  const connectorIdForActions = String(config.connector_id ?? '')
+  useEffect(() => {
+    if (!workspaceId) return
+    const con = connectors.find(c => c.id === connectorIdForActions)
+    if (!con || (con.type !== 'rest' && con.type !== 'graphql')) { setRestActions([]); return }
+    setRestActsLoading(true)
+    listConnectorActions(workspaceId, connectorIdForActions)
+      .then(res => setRestActions(res.actions ?? []))
+      .catch(() => setRestActions([]))
+      .finally(() => setRestActsLoading(false))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, connectorIdForActions, connectors])
 
   const inputStyle: React.CSSProperties = {
     width: '100%', boxSizing: 'border-box',
@@ -537,10 +581,113 @@ function NodeConfigPanel({
 
       // ── Save to Database ───────────────────────────────────────────────────
       case 'mutation': {
+        const isRest = selectedConnector?.type === 'rest' || selectedConnector?.type === 'graphql'
         const operation = String(config.operation ?? 'insert')
         const showMapper = (isSql && tableName && operation === 'insert' && !advancedSql) || (isManaged && operation === 'insert')
         const showSqlHint = isSql && tableName && operation !== 'insert' && !advancedSql
         const showManagedUpdateDelete = isManaged && operation !== 'insert'
+
+        // ── REST/GraphQL: action picker + visual field mapping ─────────────
+        if (isRest) {
+          const selectedActionKey = String(config.action_key ?? '')
+          const bodyMap: Record<string, string> = (() => {
+            const b = config.body
+            if (typeof b === 'object' && b !== null && !Array.isArray(b))
+              return Object.fromEntries(Object.entries(b as Record<string, unknown>).map(([k, v]) => [k, String(v ?? '')]))
+            return {}
+          })()
+          const selectedAction = restActions.find(a => a.action_key === selectedActionKey)
+          const groups: Record<string, ActionDefinition[]> = {}
+          restActions.forEach(a => { const g = a.resource_name || 'General'; (groups[g] = groups[g] ?? []).push(a) })
+
+          const handleActionSelect = (key: string) => {
+            const act = restActions.find(a => a.action_key === key)
+            if (!act) { setConfig(prev => ({ connector_id: prev.connector_id })); return }
+            const emptyBody: Record<string, string> = {}
+            act.input_fields?.forEach(f => { emptyBody[f.key] = '' })
+            setConfig({
+              connector_id: String(config.connector_id ?? ''),
+              action_key: act.action_key,
+              method: act.http_method,
+              path: act.path_template,
+              body: emptyBody,
+            })
+          }
+
+          return (
+            <>
+              {connectorPicker}
+              {restActsLoading && <span style={hintStyle}>Loading actions…</span>}
+              {!restActsLoading && restActions.length === 0 && selectedConnector && (
+                <span style={{ ...hintStyle, color: '#fbbf24' }}>
+                  No actions defined for this connector yet.{' '}
+                  <a href="/builder/connectors" target="_blank" style={{ color: '#fbbf24', textDecoration: 'underline' }}>
+                    Open Connectors → Actions tab
+                  </a>{' '}to add them.
+                </span>
+              )}
+              {!restActsLoading && restActions.length > 0 && (
+                <>
+                  <label style={fieldLabel}>Action</label>
+                  <select style={inputStyle} value={selectedActionKey} onChange={e => handleActionSelect(e.target.value)}>
+                    <option value=''>— Select an action —</option>
+                    {Object.entries(groups).map(([grp, acts]) => (
+                      <optgroup key={grp} label={grp}>
+                        {acts.map(a => (
+                          <option key={a.action_key} value={a.action_key}>{a.action_label || a.action_key}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                  {selectedAction && selectedAction.input_fields && selectedAction.input_fields.length > 0 && (
+                    <>
+                      <label style={{ ...fieldLabel, marginTop: 10 }}>Field values</label>
+                      <span style={hintStyle}>Use ⬜ to pick a form field or type {`{{input.fieldname}}`} directly.</span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginTop: 4 }}>
+                        {selectedAction.input_fields.map(field => (
+                          <div key={field.key} style={{ display: 'grid', gridTemplateColumns: '1fr 14px 1fr', gap: 4, alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.65rem', color: '#93c5fd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {field.label || field.key}{field.required && <span style={{ color: '#f87171' }}> *</span>}
+                            </span>
+                            <span style={{ fontSize: '0.6rem', color: C.muted, textAlign: 'center' }}>=</span>
+                            <div style={{ display: 'flex', gap: 3 }}>
+                              <input
+                                style={{ ...inputStyle, padding: '3px 6px', flex: 1, minWidth: 0 }}
+                                value={bodyMap[field.key] ?? ''}
+                                placeholder={`{{input.${field.key}}}`}
+                                onChange={e => {
+                                  const key = field.key
+                                  const val = e.target.value
+                                  setConfig(prev => ({ ...prev, body: { ...(typeof prev.body === 'object' && prev.body !== null ? prev.body as Record<string, string> : {}), [key]: val } }))
+                                }}
+                              />
+                              {availablePorts.length > 0 && (
+                                <select
+                                  style={{ background: '#111', border: `1px solid ${C.border}`, borderRadius: 3, padding: '2px 2px', color: '#60a5fa', fontSize: '0.6rem', cursor: 'pointer', flexShrink: 0, width: 22 }}
+                                  value='' title='Pick a field'
+                                  onChange={e => {
+                                    const key = field.key
+                                    const val = e.target.value
+                                    if (val) setConfig(prev => ({ ...prev, body: { ...(typeof prev.body === 'object' && prev.body !== null ? prev.body as Record<string, string> : {}), [key]: val } }))
+                                  }}
+                                >
+                                  <option value=''>⬜</option>
+                                  {availablePorts.slice(0, widgetPortCount).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                                  {widgetPortCount < availablePorts.length && <option disabled value=''>── previous steps ──</option>}
+                                  {availablePorts.slice(widgetPortCount).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                                </select>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </>
+          )
+        }
 
         return (
           <>
@@ -575,7 +722,9 @@ function NodeConfigPanel({
                       onChange={e => { if (e.target.value) setField('record_id', e.target.value) }}
                     >
                       <option value="">⬜</option>
-                      {availablePorts.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                      {availablePorts.slice(0, widgetPortCount).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                      {widgetPortCount < availablePorts.length && <option disabled value="">── previous steps ──</option>}
+                      {availablePorts.slice(widgetPortCount).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
                     </select>
                   )}
                 </div>
@@ -605,7 +754,9 @@ function NodeConfigPanel({
                                   onChange={e => { if (e.target.value) handleMappingChange(col, e.target.value) }}
                                 >
                                   <option value="">⬜</option>
-                                  {availablePorts.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                                  {availablePorts.slice(0, widgetPortCount).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                                  {widgetPortCount < availablePorts.length && <option disabled value="">── previous steps ──</option>}
+                                  {availablePorts.slice(widgetPortCount).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
                                 </select>
                               )}
                             </div>
@@ -662,7 +813,11 @@ function NodeConfigPanel({
                             onChange={e => { if (e.target.value) handleMappingChange(m.column, e.target.value) }}
                           >
                             <option value="">⬜</option>
-                            {availablePorts.map(p => (
+                            {availablePorts.slice(0, widgetPortCount).map(p => (
+                              <option key={p.value} value={p.value}>{p.label}</option>
+                            ))}
+                            {widgetPortCount < availablePorts.length && <option disabled value="">── previous steps ──</option>}
+                            {availablePorts.slice(widgetPortCount).map(p => (
                               <option key={p.value} value={p.value}>{p.label}</option>
                             ))}
                           </select>
@@ -763,7 +918,9 @@ function NodeConfigPanel({
                   onChange={e => { if (e.target.value) setField('left', e.target.value) }}
                 >
                   <option value="">⬜</option>
-                  {availablePorts.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                  {availablePorts.slice(0, widgetPortCount).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                  {widgetPortCount < availablePorts.length && <option disabled value="">── previous steps ──</option>}
+                  {availablePorts.slice(widgetPortCount).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
                 </select>
               )}
             </div>
@@ -886,9 +1043,10 @@ export interface WorkflowCanvasProps {
   threadId?: string       // optional; if provided, AI messages go to this thread
   pageId?: string         // source page for widget binding page_id
   pageDocument?: AuraNode[]  // widgets to show as source nodes in the graph
+  onBindingWidgetsChange?: (widgetIds: string[]) => void
 }
 
-export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 'Trigger', onClose, isAdmin, threadId: threadIdProp, pageId = '', pageDocument = [] }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 'Trigger', onClose, isAdmin, threadId: threadIdProp, pageId = '', pageDocument = [], onBindingWidgetsChange }: WorkflowCanvasProps) {
   const [wf, setWf] = useState<WorkflowWithSteps | null>(null)
   const [nodes, setNodes, onNodesChange] = useNodesState<WFNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<WFEdge>([])
@@ -920,7 +1078,7 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
           },
         }
         const prevIb = (n.data.config?.input_bindings ?? {}) as Record<string, unknown>
-        const newConfig = {
+        const newConfig: typeof n.data.config = {
           ...n.data.config,
           input_bindings: {
             ...prevIb,
@@ -931,6 +1089,19 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
               widget_label: portDrag.widgetLabel,
             },
           },
+        }
+        // Sync to field_mapping for mutation/insert steps
+        if (
+          n.type === 'mutation' &&
+          n.data.config?.operation === 'insert' &&
+          Array.isArray(n.data.config?.field_mapping)
+        ) {
+          const fieldMapping = (n.data.config.field_mapping as { column: string; value: string }[]).map(m =>
+            m.column === portDrag.portName
+              ? { ...m, value: `{{input.${portDrag.portName}}}` }
+              : m,
+          )
+          ;(newConfig as Record<string, unknown>).field_mapping = fieldMapping
         }
         return { ...n, data: { ...n.data, inputBindings, config: newConfig } }
       }))
@@ -946,12 +1117,24 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
         delete inputBindings[key]
         const prevIb = { ...((n.data.config?.input_bindings ?? {}) as Record<string, unknown>) }
         delete prevIb[key]
+        const removedConfig: typeof n.data.config = { ...n.data.config, input_bindings: prevIb }
+        // Sync to field_mapping for mutation/insert steps
+        if (
+          n.type === 'mutation' &&
+          n.data.config?.operation === 'insert' &&
+          Array.isArray(n.data.config?.field_mapping)
+        ) {
+          const fieldMapping = (n.data.config.field_mapping as { column: string; value: string }[]).map(m =>
+            m.column === key ? { ...m, value: '' } : m,
+          )
+          ;(removedConfig as Record<string, unknown>).field_mapping = fieldMapping
+        }
         return {
           ...n,
           data: {
             ...n.data,
             inputBindings: Object.keys(inputBindings).length > 0 ? inputBindings : undefined,
-            config: { ...n.data.config, input_bindings: prevIb },
+            config: removedConfig,
           },
         }
       }))
@@ -1039,6 +1222,15 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
   }, [])
 
   const onPaneClick = useCallback(() => setSelectedNode(null), [])
+
+  // Notify parent of which canvas widgets are bound to the currently selected step
+  useEffect(() => {
+    if (!onBindingWidgetsChange) return
+    if (!selectedNode) { onBindingWidgetsChange([]); return }
+    const bindings = selectedNode.data.inputBindings as Record<string, { widgetId: string }> | undefined
+    const widgetIds = bindings ? Object.values(bindings).map(b => b.widgetId).filter(Boolean) : []
+    onBindingWidgetsChange(widgetIds)
+  }, [selectedNode, onBindingWidgetsChange])
 
   // Add a new step node from the palette
   const addNode = useCallback((type: WorkflowStepType) => {
@@ -1198,6 +1390,28 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
 
   const statusColor = wf?.status === 'active' ? '#4ade80' : wf?.status === 'archived' ? '#555' : '#fbbf24'
   const hasUnreviewed = nodes.some(n => n.data.aiGenerated && !n.data.reviewed)
+
+  const precedingSteps = useMemo(() => {
+    if (!selectedNode) return []
+    const parentEdges = edges.filter(e => e.target === selectedNode.id)
+    const result: Array<{ stepId: string; name: string; stepType: WorkflowStepType; columns: string[] }> = []
+    for (const edge of parentEdges) {
+      const parentNode = nodes.find(n => n.id === edge.source)
+      if (!parentNode || parentNode.type === 'start' || parentNode.type === 'widget_source') continue
+      if (parentNode.data.stepType === 'query') {
+        const connectorId = String(parentNode.data.config?.connector_id ?? '')
+        const conn = connectors.find(c => c.id === connectorId)
+        const tableName = String(parentNode.data.config?.table ?? '')
+        result.push({
+          stepId: parentNode.id,
+          name: String(parentNode.data.label),
+          stepType: parentNode.data.stepType,
+          columns: getConnectorColumns(conn, tableName),
+        })
+      }
+    }
+    return result
+  }, [selectedNode, nodes, edges, connectors])
 
   return (
     <div style={{
@@ -1434,7 +1648,9 @@ export function WorkflowCanvas({ workspaceId, appId, workflowId, triggerLabel = 
                 onReview={handleReview}
                 canReview={isAdmin || true}
                 connectors={connectors}
+                workspaceId={workspaceId}
                 pageDocument={pageDocument}
+                precedingSteps={precedingSteps}
               />
             )}
           </div>

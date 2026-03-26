@@ -52,6 +52,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [canvasWorkflowId, setCanvasWorkflowId] = useState<string | null>(null)
   const [splitViewWorkflowId, setSplitViewWorkflowId] = useState<string | null>(null)
   const [floatingPanelWorkflowId, setFloatingPanelWorkflowId] = useState<string | null>(null)
+  const [highlightedWidgetIds, setHighlightedWidgetIds] = useState<string[]>([])
   // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
   const [nodeMetadata, setNodeMetadata] = useState<Record<string, { manuallyEdited: boolean }>>({})
   const [showAppSettings, setShowAppSettings] = useState(false)
@@ -605,6 +606,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           onChange={handleCanvasChange}
           onSelect={setSelectedId}
           workspaceId={workspace?.id ?? ''}
+          highlightedWidgetIds={highlightedWidgetIds}
         />
         {/* Right panel: Inspector, AI Chat, or Workflows */}
         {rightPanel === 'inspector' ? (
@@ -820,6 +822,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           onPopOut={(wfId) => { setSplitViewWorkflowId(null); setFloatingPanelWorkflowId(wfId) }}
           pageDocument={history.doc}
           isAdmin={user?.role === 'workspace_admin'}
+          onBindingWidgetsChange={setHighlightedWidgetIds}
         />
       )}
 
@@ -834,6 +837,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           isAdmin={user?.role === 'workspace_admin'}
           onClose={() => setFloatingPanelWorkflowId(null)}
           onSnapBack={() => { setSplitViewWorkflowId(floatingPanelWorkflowId); setFloatingPanelWorkflowId(null) }}
+          onBindingWidgetsChange={setHighlightedWidgetIds}
         />
       )}
     </div>

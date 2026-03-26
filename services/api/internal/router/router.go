@@ -205,6 +205,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 					r.Route("/{connectorID}", func(r chi.Router) {
 						r.Get("/", handler.GetConnector(s, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
+							Get("/edit", handler.GetEditableConnector(cfg, s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Patch("/", handler.PatchConnector(cfg, s, enq, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Delete("/", handler.DeleteConnector(s, log))
@@ -236,6 +238,14 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 							Post("/grants", handler.CreateConnectorGrant(s, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 							Delete("/grants/{grantID}", handler.DeleteConnectorGrant(s, log))
+						// Action catalog — builder can read; admin can write
+						r.Get("/actions", handler.ListConnectorActions(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+							Put("/actions", handler.UpsertConnectorAction(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+							Put("/actions/bulk", handler.BulkReplaceConnectorActions(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+							Delete("/actions/{actionID}", handler.DeleteConnectorAction(s, log))
 					})
 				})
 

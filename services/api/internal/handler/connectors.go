@@ -77,6 +77,135 @@ type createConnectorBody struct {
 	Credentials json.RawMessage     `json:"credentials"`
 }
 
+func secretKeysForConnector(connType model.ConnectorType, creds map[string]any) []string {
+	switch connType {
+	case model.ConnectorTypePostgres, model.ConnectorTypeMySQL, model.ConnectorTypeMSSQL:
+		return []string{"password"}
+	case model.ConnectorTypeREST:
+		authType, _ := creds["auth_type"].(string)
+		switch authType {
+		case "bearer":
+			return []string{"token"}
+		case "basic":
+			return []string{"password"}
+		case "api_key":
+			return []string{"api_key"}
+		}
+	case model.ConnectorTypeGraphQL:
+		authType, _ := creds["auth_type"].(string)
+		if authType == "bearer" {
+			return []string{"token"}
+		}
+	}
+	return nil
+}
+
+func hasStoredSecret(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case nil:
+		return false
+	default:
+		return true
+	}
+}
+
+func redactEditableConnectorCredentials(connType model.ConnectorType, plainCreds []byte) (map[string]any, map[string]bool, error) {
+	if len(plainCreds) == 0 {
+		return map[string]any{}, map[string]bool{}, nil
+	}
+
+	var creds map[string]any
+	if err := json.Unmarshal(plainCreds, &creds); err != nil {
+		return nil, nil, err
+	}
+	if creds == nil {
+		creds = map[string]any{}
+	}
+
+	storedSecrets := map[string]bool{}
+	for _, key := range secretKeysForConnector(connType, creds) {
+		storedSecrets[key] = hasStoredSecret(creds[key])
+		delete(creds, key)
+	}
+
+	return creds, storedSecrets, nil
+}
+
+func pruneConnectorCredentialFields(connType model.ConnectorType, merged map[string]any, patch map[string]any) {
+	switch connType {
+	case model.ConnectorTypeREST:
+		authTypeValue, ok := patch["auth_type"]
+		if !ok {
+			return
+		}
+		authType, _ := authTypeValue.(string)
+		switch authType {
+		case "none":
+			delete(merged, "token")
+			delete(merged, "username")
+			delete(merged, "password")
+			delete(merged, "api_key")
+			delete(merged, "api_key_header")
+		case "bearer":
+			delete(merged, "username")
+			delete(merged, "password")
+			delete(merged, "api_key")
+			delete(merged, "api_key_header")
+		case "basic":
+			delete(merged, "token")
+			delete(merged, "api_key")
+			delete(merged, "api_key_header")
+		case "api_key":
+			delete(merged, "token")
+			delete(merged, "username")
+			delete(merged, "password")
+		}
+	case model.ConnectorTypeGraphQL:
+		authTypeValue, ok := patch["auth_type"]
+		if !ok {
+			return
+		}
+		authType, _ := authTypeValue.(string)
+		if authType != "bearer" {
+			delete(merged, "token")
+		}
+	}
+}
+
+func mergeConnectorCredentials(connType model.ConnectorType, currentPlainCreds, patchPlainCreds []byte) ([]byte, error) {
+	merged := map[string]any{}
+	if len(currentPlainCreds) > 0 {
+		if err := json.Unmarshal(currentPlainCreds, &merged); err != nil {
+			return nil, err
+		}
+	}
+	if merged == nil {
+		merged = map[string]any{}
+	}
+
+	patch := map[string]any{}
+	if len(patchPlainCreds) > 0 {
+		if err := json.Unmarshal(patchPlainCreds, &patch); err != nil {
+			return nil, err
+		}
+	}
+	if patch == nil {
+		patch = map[string]any{}
+	}
+
+	for key, value := range patch {
+		merged[key] = value
+	}
+	pruneConnectorCredentialFields(connType, merged, patch)
+
+	if len(merged) == 0 {
+		return []byte(`{}`), nil
+	}
+	return json.Marshal(merged)
+}
+
 // CreateConnector validates, encrypts credentials, persists the connector,
 // and enqueues an asynchronous schema-discovery job.
 func CreateConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
@@ -155,6 +284,41 @@ func GetConnector(s *store.Store, log *zap.Logger) http.HandlerFunc {
 	}
 }
 
+// GetEditableConnector returns the safe public connector plus redacted
+// credentials needed to hydrate the admin edit form.
+func GetEditableConnector(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID := chi.URLParam(r, "workspaceID")
+		connectorID := chi.URLParam(r, "connectorID")
+
+		rec, err := s.GetConnectorRecord(r.Context(), workspaceID, connectorID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+
+		plainCreds, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, rec.EncryptedCredentials)
+		if err != nil {
+			log.Error("decrypt connector credentials for edit", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "internal_error", "credential decryption failed")
+			return
+		}
+
+		editableCreds, storedSecrets, err := redactEditableConnectorCredentials(rec.Type, plainCreds)
+		if err != nil {
+			log.Error("redact connector credentials for edit", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "internal_error", "failed to load connector credentials")
+			return
+		}
+
+		respond(w, http.StatusOK, map[string]any{
+			"connector":            rec.Connector,
+			"editable_credentials": editableCreds,
+			"stored_secrets":       storedSecrets,
+		})
+	}
+}
+
 // patchConnectorBody is the request payload for connector updates.
 type patchConnectorBody struct {
 	Name        *string         `json:"name"`
@@ -174,9 +338,28 @@ func PatchConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, log
 		}
 
 		var encCreds []byte
+		var mergedCreds []byte
 		if len(body.Credentials) > 0 {
-			var err error
-			encCreds, err = cryptoutil.Encrypt(cfg.CredentialsEncryptionKey, body.Credentials)
+			rec, err := s.GetConnectorRecord(r.Context(), workspaceID, connectorID)
+			if err != nil {
+				handleStoreErr(w, err)
+				return
+			}
+
+			currentPlainCreds, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, rec.EncryptedCredentials)
+			if err != nil {
+				log.Error("decrypt connector credentials", zap.Error(err))
+				respondErr(w, http.StatusInternalServerError, "internal_error", "credential decryption failed")
+				return
+			}
+
+			mergedCreds, err = mergeConnectorCredentials(rec.Type, currentPlainCreds, body.Credentials)
+			if err != nil {
+				respondErr(w, http.StatusBadRequest, "bad_request", "invalid credentials payload")
+				return
+			}
+
+			encCreds, err = cryptoutil.Encrypt(cfg.CredentialsEncryptionKey, mergedCreds)
 			if err != nil {
 				log.Error("encrypt connector credentials", zap.Error(err))
 				respondErr(w, http.StatusInternalServerError, "internal_error", "credential encryption failed")
@@ -202,8 +385,8 @@ func PatchConnector(cfg *config.Config, s *store.Store, enq *queue.Enqueuer, log
 		}
 
 		// For REST connectors, re-sync named endpoints whenever credentials change.
-		if conn.Type == model.ConnectorTypeREST && len(body.Credentials) > 0 {
-			syncRESTEndpoints(r.Context(), s, log, connectorID, body.Credentials)
+		if conn.Type == model.ConnectorTypeREST && len(mergedCreds) > 0 {
+			syncRESTEndpoints(r.Context(), s, log, connectorID, mergedCreds)
 		}
 
 		respond(w, http.StatusOK, map[string]any{"connector": conn})
@@ -492,6 +675,11 @@ func applyRestAuth(req *http.Request, creds model.RestCredentials) {
 	case "bearer":
 		if creds.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+creds.Token)
+		}
+	case "token":
+		// Used by APIs such as MOCO that require: Authorization: Token token=<key>
+		if creds.Token != "" {
+			req.Header.Set("Authorization", "Token token="+creds.Token)
 		}
 	case "basic":
 		if creds.Username != "" || creds.Password != "" {
