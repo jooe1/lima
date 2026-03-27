@@ -11,7 +11,7 @@ import {
   listConnectorActions, upsertConnectorAction, deleteConnectorAction,
   type Connector, type ConnectorType, type TestConnectorResponse,
   type ConnectorSchemaResponse, type ManagedTableColumn, type ManagedTableRow,
-  type DashboardQueryResponse, type ActionDefinition, type ActionDefinitionInput,
+  type DashboardQueryResponse, type ActionDefinition, type ActionDefinitionInput, type ActionFieldType,
 } from '../../../lib/api'
 import { ConnectorGrantsTab } from './ConnectorGrantsTab'
 
@@ -1032,7 +1032,7 @@ function QueryResultTable({ result }: { result: DashboardQueryResponse }) {
 // ---------------------------------------------------------------------------
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
-const FIELD_TYPES = ['text', 'email', 'number', 'boolean', 'date', 'enum', 'textarea']
+const FIELD_TYPES: ActionFieldType[] = ['text', 'email', 'number', 'boolean', 'date', 'enum', 'textarea']
 
 function ActionCatalogPanel({
   workspaceId, connectorId, isAdmin, actions, loading, error,
@@ -1137,7 +1137,7 @@ function ActionCatalogPanel({
 // ---------------------------------------------------------------------------
 
 type ActionFieldDraft = {
-  key: string; label: string; field_type: string
+  key: string; label: string; field_type: ActionFieldType
   required: boolean; enum_values: string; description: string
 }
 
@@ -1252,7 +1252,7 @@ function ActionForm({
           <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
             <input style={is} placeholder="key" value={f.key} onChange={e => updateField(i, { key: e.target.value })} />
             <input style={is} placeholder="label" value={f.label} onChange={e => updateField(i, { label: e.target.value })} />
-            <select style={is} value={f.field_type} onChange={e => updateField(i, { field_type: e.target.value })}>
+            <select style={is} value={f.field_type} onChange={e => updateField(i, { field_type: e.target.value as ActionFieldType })}>
               {FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
             <label style={{ color: '#777', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
