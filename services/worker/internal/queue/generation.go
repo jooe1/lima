@@ -351,14 +351,23 @@ Add these ` + "`with`" + ` keys to the table or chart to make it react to a filt
 When the user selects a value in the filter widget, the table/chart will only
 show rows where ` + "`columnName`" + ` equals that value.  An empty selection shows all rows.
 
-### Populating filter dropdown options from a CSV connector
+### Populating filter dropdown options from a connector
 
 Add these ` + "`with`" + ` keys to the filter widget to auto-populate its dropdown from a
-connector column (currently only CSV connectors are supported for live options):
+connector column. Supported connector types: csv, managed (Lima Table), rest.
+
+For CSV and managed connectors:
 
     with optionsConnector="<connector-id>"
          optionsColumn="<column-name>"
-         optionsConnectorType="csv"
+         optionsConnectorType="csv"         ← or "managed"
+
+For REST connectors, also specify which endpoint to call:
+
+    with optionsConnector="<connector-id>"
+         optionsEndpoint="<endpoint-path>"  ← e.g. "/categories"
+         optionsColumn="<field-name>"
+         optionsConnectorType="rest"
 
 ## Worked example: table with filter
 

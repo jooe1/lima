@@ -1264,6 +1264,14 @@ function FilterDataSourceEditor({
   const selectedConnector = connectors.find(c => c.id === connectorId)
   const schemaColumns = getConnectorSchemaColumns(selectedConnector)
   const optionsColumn = node.with?.optionsColumn ?? ''
+  const optionsEndpoint = node.with?.optionsEndpoint ?? ''
+  const isREST = selectedConnector?.type === 'rest'
+  const restEndpoints = (() => {
+    if (!isREST) return []
+    const eps = selectedConnector?.schema_cache?.endpoints
+    if (!Array.isArray(eps)) return []
+    return eps as { label: string; path: string }[]
+  })()
 
   // Sync optionsConnectorType whenever the selected connector changes — mirrors
   // the same pattern DataBindingEditor uses for connectorType to avoid the
@@ -1277,21 +1285,46 @@ function FilterDataSourceEditor({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
-        Connect this filter to a CSV connector to auto-populate its dropdown from a data column. Overrides manual options in Props.
+        Connect this filter to a CSV, managed, or REST connector to auto-populate its dropdown from a data column. Overrides manual options in Props.
       </div>
       <div>
-        <label style={labelStyle}>Connector (CSV only)</label>
+        <label style={labelStyle}>Connector (CSV, Lima Table, or REST)</label>
         <select
           value={connectorId}
           onChange={e => onWithChange('optionsConnector', e.target.value)}
           style={{ ...inputStyle, appearance: 'auto' }}
         >
           <option value="">— select connector —</option>
-          {connectors.filter(c => c.type === 'csv').map(c => (
+          {connectors.filter(c => c.type === 'csv' || c.type === 'managed' || c.type === 'rest').map(c => (
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
       </div>
+      {connectorId && isREST && (
+        <div>
+          <label style={labelStyle}>Endpoint</label>
+          {restEndpoints.length > 0 ? (
+            <select
+              value={optionsEndpoint}
+              onChange={e => onWithChange('optionsEndpoint', e.target.value)}
+              style={{ ...inputStyle, appearance: 'auto' }}
+            >
+              <option value="">— select endpoint —</option>
+              {restEndpoints.map(ep => (
+                <option key={ep.path} value={ep.path}>{ep.label || ep.path}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={optionsEndpoint}
+              onChange={e => onWithChange('optionsEndpoint', e.target.value)}
+              placeholder="e.g. /users"
+              style={inputStyle}
+            />
+          )}
+        </div>
+      )}
       {connectorId && (
         <div>
           <label style={labelStyle}>Options column</label>

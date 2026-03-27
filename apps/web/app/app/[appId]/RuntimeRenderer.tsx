@@ -682,18 +682,24 @@ function RuntimeFilter({ node, workspaceId }: { node: AuraNode; workspaceId: str
   const optionsConnectorType = node.with?.optionsConnectorType ?? ''
   const [dynamicOptions, setDynamicOptions] = useState<string[]>([])
 
+  const optionsEndpoint = node.with?.optionsEndpoint ?? ''
+
   useEffect(() => {
     if (!optionsConnectorId || !optionsColumn || !workspaceId) {
       setDynamicOptions([])
       return
     }
-    const isCSV = optionsConnectorType === 'csv'
-    if (!isCSV) {
+    const querySql =
+      optionsConnectorType === 'csv'     ? 'SELECT * FROM csv' :
+      optionsConnectorType === 'managed' ? 'SELECT * FROM managed' :
+      optionsConnectorType === 'rest'    ? (optionsEndpoint || '/') :
+      null
+    if (!querySql) {
       setDynamicOptions([])
       return
     }
     let cancelled = false
-    runConnectorQuery(workspaceId, optionsConnectorId, { sql: 'SELECT * FROM csv', limit: 200 })
+    runConnectorQuery(workspaceId, optionsConnectorId, { sql: querySql, limit: 200 })
       .then(res => {
         if (cancelled || res.error) return
         const vals = Array.from(
@@ -703,7 +709,7 @@ function RuntimeFilter({ node, workspaceId }: { node: AuraNode; workspaceId: str
       })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [workspaceId, optionsConnectorId, optionsColumn, optionsConnectorType])
+  }, [workspaceId, optionsConnectorId, optionsColumn, optionsConnectorType, optionsEndpoint])
 
   const resolvedOptions = dynamicOptions.length > 0 ? dynamicOptions : options
 
