@@ -9,7 +9,9 @@
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
-    "test:e2e:ci": "playwright test --reporter=list"
+    "test:e2e:ci": "playwright test --reporter=list",
+    "test:e2e:self-serve": "playwright test tests/e2e/self-serve-smoke.spec.ts tests/e2e/publish-blockers.spec.ts",
+    "release:smoke": "playwright test tests/e2e/self-serve-smoke.spec.ts tests/e2e/publish-blockers.spec.ts --reporter=list"
   },
   "dependencies": {
     "@lima/aura-dsl": "workspace:*",
