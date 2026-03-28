@@ -71,8 +71,8 @@ export default function ToolsPage() {
   }, [router, selectWorkspace, workspace, workspaces])
 
   return (
-    <div style={{ padding: '2rem', maxWidth: 1000 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+    <main style={{ padding: '2rem', maxWidth: 1000 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
         <h1 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: 'var(--color-text, #e5e5e5)' }}>Your Tools</h1>
         <label htmlFor="tool-search" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
@@ -95,9 +95,13 @@ export default function ToolsPage() {
           />
         </label>
       </div>
-      {error && <p style={{ color: '#f87171', fontSize: '0.8rem' }}>{error}</p>}
-      {launchError && (
-        <p style={{ color: 'var(--color-error, #f87171)', fontSize: '0.8rem', background: 'var(--color-surface, #141414)', padding: '0.75rem', borderRadius: 6, border: '1px solid #f8717133' }}>{launchError}</p>
+      {(error || launchError) && (
+        <div role="alert" aria-live="polite">
+          {error && <p style={{ color: 'var(--color-error, #f87171)', fontSize: '0.8rem', margin: '0 0 0.5rem' }}>{error}</p>}
+          {launchError && (
+            <p style={{ color: 'var(--color-error, #f87171)', fontSize: '0.8rem', background: 'var(--color-surface, #141414)', padding: '0.75rem', borderRadius: 6, border: '1px solid #f8717133', margin: 0 }}>{launchError}</p>
+          )}
+        </div>
       )}
       {loading ? (
         <p style={{ color: '#555' }}>Loading…</p>
@@ -127,7 +131,7 @@ export default function ToolsPage() {
           ))}
         </div>
       )}
-    </div>
+    </main>
   )
 }
 

@@ -64,3 +64,44 @@ body {
 a {
   color: var(--color-info);
 }
+
+/* Ensure buttons and interactive elements get visible focus */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Prevent horizontal overflow on narrow widths */
+body {
+  overflow-x: hidden;
+}
+
+/* Safe min-width for the app shell — prevents layout collapse */
+#__next,
+[data-nextjs-scroll-focus-boundary] {
+  min-width: 320px;
+}
+
+/* Visually hidden utility for screen-reader-only text */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Responsive spacing for page containers */
+@media (max-width: 768px) {
+  .page-container {
+    padding: var(--space-4, 1rem);
+  }
+}

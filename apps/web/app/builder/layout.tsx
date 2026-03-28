@@ -22,8 +22,30 @@ export default function BuilderLayout({ children }: { children: React.ReactNode 
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: '#0a0a0a', color: '#e5e5e5' }}>
+      <a
+        href="#builder-content"
+        style={{
+          position: 'absolute',
+          left: '-9999px',
+          top: 'auto',
+          width: 1,
+          height: 1,
+          overflow: 'hidden',
+          zIndex: 9999,
+          background: 'var(--color-surface, #141414)',
+          color: 'var(--color-text, #e5e5e5)',
+          padding: '0.5rem 1rem',
+          textDecoration: 'none',
+          borderRadius: 4,
+          fontSize: '0.875rem',
+        }}
+        onFocus={e => { e.currentTarget.style.left = '0.5rem'; e.currentTarget.style.top = '0.5rem'; e.currentTarget.style.width = 'auto'; e.currentTarget.style.height = 'auto' }}
+        onBlur={e => { e.currentTarget.style.left = '-9999px'; e.currentTarget.style.width = '1px'; e.currentTarget.style.height = '1px' }}
+      >
+        Skip to content
+      </a>
       <BuilderSidebar />
-      <main style={{ flex: 1, overflow: 'auto' }}>{children}</main>
+      <main id="builder-content" style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>{children}</main>
     </div>
   )
 }

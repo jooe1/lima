@@ -150,6 +150,15 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <a
+        href="#runtime-content"
+        className="sr-only"
+        style={{ position: 'absolute', left: '-9999px' }}
+        onFocus={e => { e.currentTarget.style.left = '0.5rem'; e.currentTarget.style.top = '0.5rem' }}
+        onBlur={e => { e.currentTarget.style.left = '-9999px' }}
+      >
+        Skip to content
+      </a>
       {/* Runtime header */}
       <header style={{
         height: 48,
@@ -160,6 +169,8 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
         gap: 10,
         flexShrink: 0,
         background: '#0a0a0a',
+        flexWrap: 'wrap',
+        minWidth: 0,
       }}>
         <span style={{ color: 'var(--color-text, #e5e5e5)', fontWeight: 600, fontSize: '0.875rem' }}>
           Tool
@@ -174,7 +185,9 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
       </header>
 
       {/* Canvas */}
-      <RuntimeRenderer doc={doc} workspaceId={activeWorkspaceId} appId={appId} />
+      <main id="runtime-content" style={{ flex: 1, overflow: 'auto', background: '#080808' }}>
+        <RuntimeRenderer doc={doc} workspaceId={activeWorkspaceId} appId={appId} />
+      </main>
     </div>
   )
 }

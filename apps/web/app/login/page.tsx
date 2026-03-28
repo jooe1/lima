@@ -153,6 +153,7 @@ export default function LoginPage() {
                 type="email"
                 required
                 placeholder="you@company.com"
+                autoComplete="email"
                 value={magicEmail}
                 onChange={e => setMagicEmail(e.target.value)}
                 style={inputStyle}
@@ -167,6 +168,7 @@ export default function LoginPage() {
                   id="magic-slug"
                   type="text"
                   placeholder="e.g. acme"
+                  autoComplete="organization"
                   value={magicSlug}
                   onChange={e => setMagicSlug(e.target.value)}
                   style={inputStyle}
@@ -216,6 +218,7 @@ export default function LoginPage() {
                   type="email"
                   required
                   placeholder="Email"
+                  autoComplete="email"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
                   style={inputStyleMuted}
@@ -242,6 +245,7 @@ export default function LoginPage() {
                   id="dev-company"
                   type="text"
                   placeholder="Company slug"
+                  autoComplete="organization"
                   value={company}
                   onChange={e => setCompany(e.target.value)}
                   style={inputStyleMuted}
