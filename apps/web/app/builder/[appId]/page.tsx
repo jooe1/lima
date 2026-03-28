@@ -25,9 +25,14 @@ import { WorkflowEditor } from './WorkflowEditor'
 import { SplitViewOverlay } from './SplitViewOverlay'
 import { WorkflowOverlay } from './WorkflowOverlay'
 import { FloatingWorkflowPanel } from './FloatingWorkflowPanel'
-import { formatProductionIssues, getAppProductionIssues } from '../../../lib/appValidation'
+import { formatProductionIssues, getAppProductionIssues, getUserFacingProductionIssues } from '../../../lib/appValidation'
+import { RouteGateShell } from '../../_components/RouteGateShell'
 
 type PublicationAudienceSelection = PublicationCapability | ''
+
+export type PrimaryEditorAction = 'add-widget' | 'preview' | 'publish'
+export type PublishAudienceSelection = 'group' | 'company' | 'discover-only'
+export type ToolShareTarget = { type: 'group' | 'company'; id?: string; capability: 'discover' | 'use' }
 
 export default function AppEditorPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
@@ -55,6 +60,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [highlightedWidgetIds, setHighlightedWidgetIds] = useState<string[]>([])
   // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
   const [nodeMetadata, setNodeMetadata] = useState<Record<string, { manuallyEdited: boolean }>>({})
+  const [showAdvancedBuilderControls, setShowAdvancedBuilderControls] = useState(false)
   const [showAppSettings, setShowAppSettings] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
@@ -296,6 +302,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const publishIssues = useMemo(() => getAppProductionIssues(history.doc), [history.doc])
   const publishBlocked = publishIssues.length > 0
   const publishBlockerMessage = publishBlocked ? formatProductionIssues(publishIssues) : ''
+  const userFacingBlockers = useMemo(() => getUserFacingProductionIssues(history.doc), [history.doc])
   const workflowTriggerTargets = history.doc
     .filter(node => node.id !== 'root')
     .map(node => {
@@ -313,7 +320,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
       }
     })
 
-  if (loading) return null
+  if (loading) return <RouteGateShell title="Editor" message="Loading your tool…" />
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#0a0a0a' }}>
@@ -437,12 +444,10 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         {loadError && (
           <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{loadError}</span>
         )}
-        {publishBlockerMessage && (
-          <span
-            style={{ fontSize: '0.65rem', color: '#fbbf24', maxWidth: 320 }}
-            title={publishIssues.map(issue => issue.message).join('\n')}
-          >
-            {publishBlockerMessage}
+        {publishBlocked && userFacingBlockers.length > 0 && (
+          <span style={{ fontSize: '0.7rem', color: '#f87171', maxWidth: 280 }}>
+            {userFacingBlockers[0].message}
+            {userFacingBlockers.length > 1 && ` (+${userFacingBlockers.length - 1} more)`}
           </span>
         )}
 
@@ -541,9 +546,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           ⚙
         </button>
         <button
-          onClick={() => setRightPanel('chat')}
-          title="AI Chat"
-          style={{ ...iconBtn(true), background: rightPanel === 'chat' ? '#161616' : 'transparent', borderColor: rightPanel === 'chat' ? '#333' : '#1e1e1e' }}
+          onClick={() => { setShowAdvancedBuilderControls(true); setRightPanel('chat') }}
+          title="AI Chat (preview)"
+          style={{ ...iconBtn(true), background: rightPanel === 'chat' ? '#161616' : 'transparent', borderColor: rightPanel === 'chat' ? '#333' : '#1e1e1e', opacity: 0.5 }}
         >
           💬
         </button>
@@ -688,7 +693,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               Publish &ldquo;{app?.name}&rdquo;
             </h2>
             <p style={{ margin: '0 0 0.5rem', fontSize: '0.75rem', color: '#888' }}>
-              Assign a publication capability to each audience group.
+              Choose who should be able to find and use this tool.
             </p>
             <p style={{ margin: '0 0 0.75rem', fontSize: '0.7rem', color: '#555', lineHeight: 1.5 }}>
               Discover lists the app for that group. Use grants launch access.
@@ -745,8 +750,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
                       }}
                     >
                       <option value="">Not included</option>
-                      <option value="discover">Discover</option>
-                      <option value="use">Use</option>
+                      <option value="discover">Can find this tool</option>
+                      <option value="use">Can use this tool</option>
                     </select>
                   </div>
                 ))}

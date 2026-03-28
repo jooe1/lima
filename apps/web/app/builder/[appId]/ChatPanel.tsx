@@ -241,6 +241,9 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
       background: '#0d0d0d',
       borderLeft: '1px solid #1a1a1a',
     }}>
+      <div style={{ padding: '0.5rem 0.75rem', background: '#0f0f0f', borderBottom: '1px solid #1a1a1a', fontSize: '0.65rem', color: '#555', textAlign: 'center' }}>
+        AI-assisted building · preview feature
+      </div>
       {/* Header */}
       <div style={{
         padding: '10px 14px',

@@ -227,7 +227,7 @@ export function SplitViewOverlay({
         )}
 
         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto', alignItems: 'center' }}>
-          <button style={btnStyle()} onClick={() => { /* TODO: Generate with AI */ }}>
+          <button style={{ ...btnStyle(), display: 'none' }} onClick={() => { /* Generate with AI — hidden until feature is ready */ }}>
             ✦ Generate with AI
           </button>
 

@@ -141,3 +141,39 @@ export function formatProductionIssues(issues: ProductionIssue[], maxVisible = 1
 
   return `${visible.join(' ')} (+${remaining} more blocker${remaining === 1 ? '' : 's'})`
 }
+
+/**
+ * Returns publish blockers as plain-language user guidance.
+ * Unlike getAppProductionIssues, messages do not include internal node IDs.
+ */
+export function getUserFacingProductionIssues(doc: AuraDocument): Array<{ code: string; message: string }> {
+  const raw = getAppProductionIssues(doc)
+  return raw.map(issue => {
+    switch (issue.code) {
+      case 'empty_document':
+        return { code: issue.code, message: 'Add at least one widget to your tool before publishing.' }
+      case 'unsupported_widget': {
+        const match = issue.message.match(/: (.+) widgets are not supported/)
+        const widgetName = match ? match[1] : 'A widget'
+        return { code: issue.code, message: `${widgetName} is not supported in the live runtime yet. Remove it or replace it with a supported widget.` }
+      }
+      case 'missing_required_prop': {
+        const match = issue.message.match(/: (.+) requires (.+) before publish/)
+        if (match) {
+          return { code: issue.code, message: `Your ${match[1]} widget needs "${match[2]}" filled in before you can publish.` }
+        }
+        return { code: issue.code, message: 'A widget is missing required settings. Open the Inspector and fill in all required fields.' }
+      }
+      case 'missing_data_binding': {
+        const match = issue.message.match(/: (.+) requires a connector/)
+        const widgetName = match ? match[1] : 'A widget'
+        return { code: issue.code, message: `Your ${widgetName} widget needs a data source connected before you can publish. Open the Inspector to add a connector.` }
+      }
+      case 'unsupported_chart_type': {
+        return { code: issue.code, message: 'Your chart is using a chart type that isn\'t supported yet. Change it to "Bar" in the Inspector.' }
+      }
+      default:
+        return { code: issue.code, message: issue.message }
+    }
+  })
+}

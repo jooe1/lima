@@ -168,20 +168,6 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, p
         )}
       </div>
 
-      {/* Layout section */}
-      <Section title="Layout">
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-          <Field label="X" value={String(g.x)} type="number"
-            onChange={v => handleGridChange('gridX', v)} />
-          <Field label="Y" value={String(g.y)} type="number"
-            onChange={v => handleGridChange('gridY', v)} />
-          <Field label={`W (${g.w * CELL}px)`} value={String(g.w)} type="number"
-            onChange={v => handleGridChange('gridW', v)} />
-          <Field label={`H (${g.h * CELL}px)`} value={String(g.h)} type="number"
-            onChange={v => handleGridChange('gridH', v)} />
-        </div>
-      </Section>
-
       {/* Props section */}
       {meta && (
         <Section title="Props">
@@ -248,6 +234,25 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, p
           </div>
         </Section>
       ) : null}
+
+      {/* Layout & Position */}
+      <details style={{ borderTop: '1px solid #1a1a1a' }}>
+        <summary style={{ padding: '0.5rem 1rem', fontSize: '0.7rem', color: '#444', cursor: 'pointer', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: '0.6rem' }}>▶</span> Layout &amp; Position
+        </summary>
+        <div style={{ padding: '0 1rem 0.75rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <Field label="X" value={String(g.x)} type="number"
+              onChange={v => handleGridChange('gridX', v)} />
+            <Field label="Y" value={String(g.y)} type="number"
+              onChange={v => handleGridChange('gridY', v)} />
+            <Field label={`W (${g.w * CELL}px)`} value={String(g.w)} type="number"
+              onChange={v => handleGridChange('gridW', v)} />
+            <Field label={`H (${g.h * CELL}px)`} value={String(g.h)} type="number"
+              onChange={v => handleGridChange('gridH', v)} />
+          </div>
+        </div>
+      </details>
 
       {/* Danger zone */}
       <div style={{ padding: '0.75rem 1rem', marginTop: 'auto' }}>
