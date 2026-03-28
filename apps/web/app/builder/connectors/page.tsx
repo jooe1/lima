@@ -14,6 +14,7 @@ import {
   type DashboardQueryResponse, type ActionDefinition, type ActionDefinitionInput, type ActionFieldType,
 } from '../../../lib/api'
 import { ConnectorGrantsTab } from './ConnectorGrantsTab'
+import ConnectorSetupHint from './ConnectorSetupHint'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,7 +26,11 @@ type ConnectorFormData = {
   credentials: Record<string, unknown>
 }
 
-const CONNECTOR_TYPES: ConnectorType[] = ['postgres', 'mysql', 'mssql', 'rest', 'graphql', 'managed', 'csv']
+// Basic types — shown immediately in the form
+const BASIC_CONNECTOR_TYPES: ConnectorType[] = ['postgres', 'mysql', 'rest', 'managed', 'csv']
+// Advanced types — hidden behind progressive disclosure
+const ADVANCED_CONNECTOR_TYPES: ConnectorType[] = ['mssql', 'graphql']
+const CONNECTOR_TYPES: ConnectorType[] = [...BASIC_CONNECTOR_TYPES, ...ADVANCED_CONNECTOR_TYPES]
 
 const TYPE_COLORS: Record<ConnectorType, { bg: string; fg: string }> = {
   postgres: { bg: '#336791', fg: '#e5e5e5' },
@@ -132,10 +137,17 @@ export default function ConnectorsPage() {
       {loading ? (
         <p style={{ color: '#555', fontSize: '0.8rem' }}>Loading…</p>
       ) : connectors.length === 0 ? (
-        <div style={{ padding: '3rem', textAlign: 'center', border: '1px solid #1a1a1a', borderRadius: 8 }}>
-          <p style={{ color: '#444', fontSize: '0.875rem', margin: 0 }}>No connectors yet.</p>
-          {isAdmin && (
-            <button onClick={handleNew} style={{ ...primaryBtn, marginTop: 16 }}>Create your first connector</button>
+        <div>
+          <ConnectorSetupHint
+            title="Connect your first data source"
+            body="Connectors let your apps read and write data. Start with a database, REST API, or a Lima-managed table — your choice."
+            actionLabel={isAdmin ? 'Add connector' : undefined}
+            onAction={isAdmin ? handleNew : undefined}
+          />
+          {!isAdmin && (
+            <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)' }}>
+              A workspace admin needs to add connectors before you can build data-connected apps.
+            </p>
           )}
         </div>
       ) : (
@@ -224,6 +236,10 @@ function ConnectorForm({ workspaceId, editing, onSaved, onCancel }: {
 }) {
   const [name, setName] = useState('')
   const [type, setType] = useState<ConnectorType>('postgres')
+  const [showAdvancedTypes, setShowAdvancedTypes] = useState(
+    editing ? ADVANCED_CONNECTOR_TYPES.includes(editing.type as ConnectorType) : false
+  )
+  const visibleTypes = showAdvancedTypes ? CONNECTOR_TYPES : BASIC_CONNECTOR_TYPES
   const [creds, setCreds] = useState<Record<string, unknown>>({})
   const [storedSecrets, setStoredSecrets] = useState<Record<string, boolean>>({})
   const [loadingExisting, setLoadingExisting] = useState(false)
@@ -299,16 +315,19 @@ function ConnectorForm({ workspaceId, editing, onSaved, onCancel }: {
 
   return (
     <form onSubmit={handleSubmit} style={{
-      background: '#141414', border: '1px solid #222', borderRadius: 10,
-      padding: '1.25rem', marginBottom: '1.25rem',
+      background: 'var(--color-surface)',
+      border: '1px solid var(--color-border)',
+      borderRadius: 'var(--radius-lg)',
+      padding: 'var(--space-6)',
+      marginBottom: 'var(--space-6)',
     }}>
-      <h3 style={{ margin: '0 0 1rem', fontSize: '0.9rem', fontWeight: 600, color: '#e5e5e5' }}>
-        {editing ? 'Edit connector' : 'New connector'}
+      <h3 style={{ margin: '0 0 var(--space-4)', fontSize: 'var(--font-size-base)', fontWeight: 600, color: 'var(--color-text)' }}>
+        {editing ? 'Edit connector' : 'Add a connector'}
       </h3>
 
-      {err && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: '0 0 0.75rem' }}>{err}</p>}
+      {err && <p style={{ color: 'var(--color-error)', fontSize: 'var(--font-size-xs)', margin: '0 0 var(--space-3)' }}>{err}</p>}
 
-      <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
         <input
           autoFocus
           type="text"
@@ -317,14 +336,25 @@ function ConnectorForm({ workspaceId, editing, onSaved, onCancel }: {
           onChange={e => setName(e.target.value)}
           style={{ ...inputStyle, flex: 1 }}
         />
-        <select
-          value={type}
-          onChange={e => { setType(e.target.value as ConnectorType); setCreds({}) }}
-          disabled={!!editing}
-          style={{ ...inputStyle, width: 140 }}
-        >
-          {CONNECTOR_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+          <select
+            value={type}
+            onChange={e => { setType(e.target.value as ConnectorType); setCreds({}) }}
+            disabled={!!editing}
+            style={{ ...inputStyle, width: 140 }}
+          >
+            {visibleTypes.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          {!editing && (
+            <button
+              type="button"
+              onClick={() => setShowAdvancedTypes(v => !v)}
+              style={{ background: 'none', border: 'none', color: 'var(--color-text-subtle)', fontSize: 'var(--font-size-xs)', cursor: 'pointer', textAlign: 'left', padding: 0 }}
+            >
+              {showAdvancedTypes ? 'Hide advanced types' : 'Show advanced types'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Dynamic credential fields */}
