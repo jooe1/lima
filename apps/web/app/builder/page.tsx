@@ -4,19 +4,24 @@ import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '../../lib/auth'
 import { listApps, createApp, createWorkspace, type App } from '../../lib/api'
+import { SurfaceCard, InlineAlert, EmptyState } from '../_components/UxPrimitives'
+
+// Internal view state type — consumed by tests and later builder changes.
+export type BuilderHomeView = 'setup' | 'apps'
 
 export default function BuilderHome() {
   const router = useRouter()
-  const { workspace, user } = useAuth()
+  const { workspace, user, selectWorkspace } = useAuth()
   const [apps, setApps] = useState<App[]>([])
   const [loading, setLoading] = useState(true)
-  const { selectWorkspace } = useAuth()
   const [creating, setCreating] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [newName, setNewName] = useState('')
   const [error, setError] = useState('')
   const [wsCreating, setWsCreating] = useState(false)
-  const [wsName, setWsName] = useState('default')
+  const [wsName, setWsName] = useState('My workspace')
+
+  const view: BuilderHomeView = workspace ? 'apps' : 'setup'
 
   const load = useCallback(async () => {
     if (!workspace) return
@@ -37,6 +42,7 @@ export default function BuilderHome() {
     e.preventDefault()
     if (!workspace || !newName.trim()) return
     setCreating(true)
+    setError('')
     try {
       const app = await createApp(workspace.id, newName.trim())
       router.push(`/builder/${app.id}`)
@@ -52,7 +58,11 @@ export default function BuilderHome() {
     setWsCreating(true)
     setError('')
     try {
-      const ws = await createWorkspace(user.companyId, wsName.trim(), wsName.trim().toLowerCase().replace(/\s+/g, '-'))
+      const ws = await createWorkspace(
+        user.companyId,
+        wsName.trim(),
+        wsName.trim().toLowerCase().replace(/\s+/g, '-'),
+      )
       selectWorkspace(ws)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create workspace')
@@ -61,78 +71,97 @@ export default function BuilderHome() {
     }
   }
 
-  if (!workspace) {
+  // ── Setup view (no workspace yet) ─────────────────────────────────────────
+  if (view === 'setup') {
     return (
-      <div style={pageStyle}>
-        <h2 style={{ fontWeight: 700, fontSize: '1.25rem', color: '#fff', marginBottom: '0.5rem' }}>Create your first workspace</h2>
-        <p style={{ color: '#555', marginBottom: '1.5rem', fontSize: '0.875rem' }}>A workspace groups your apps and members.</p>
-        {error && <p style={{ color: '#f87171', marginBottom: 12, fontSize: '0.8rem' }}>{error}</p>}
-        <form onSubmit={handleCreateWorkspace} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <input
-            autoFocus
-            type="text"
-            placeholder="Workspace name"
-            value={wsName}
-            onChange={e => setWsName(e.target.value)}
-            style={{ ...inputStyle, width: 240 }}
-          />
-          <button type="submit" disabled={wsCreating} style={primaryBtn}>
-            {wsCreating ? 'Creating…' : 'Create workspace'}
-          </button>
-        </form>
+      <div style={{ padding: 'var(--space-8)', maxWidth: 480 }}>
+        <h1 style={{ fontSize: 'var(--font-size-xl)', fontWeight: 700, color: 'var(--color-text)', marginBottom: 'var(--space-2)' }}>
+          Welcome to Lima
+        </h1>
+        <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)', marginBottom: 'var(--space-8)' }}>
+          Let&#39;s get you set up. First, create a workspace — it&#39;s where your apps and team will live.
+        </p>
+        <SurfaceCard title="Create a workspace">
+          {error && <div style={{ marginBottom: 'var(--space-4)' }}><InlineAlert tone="error" message={error} /></div>}
+          <form onSubmit={handleCreateWorkspace} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+              <label htmlFor="ws-name" style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', fontWeight: 500 }}>
+                Workspace name
+              </label>
+              <input
+                id="ws-name"
+                autoFocus
+                type="text"
+                placeholder="e.g. My Team"
+                value={wsName}
+                onChange={e => setWsName(e.target.value)}
+                style={inputStyle}
+              />
+            </div>
+            <button type="submit" disabled={wsCreating} style={wsCreating ? btnDisabled : btnPrimary}>
+              {wsCreating ? 'Creating…' : 'Create workspace'}
+            </button>
+          </form>
+        </SurfaceCard>
       </div>
     )
   }
 
+  // ── Apps view (workspace exists) ──────────────────────────────────────────
   return (
-    <div style={pageStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem' }}>
-        <h2 style={{ fontWeight: 700, fontSize: '1.25rem', color: '#fff', margin: 0 }}>Your apps</h2>
-        <button onClick={() => setShowCreate(true)} style={primaryBtn}>New app</button>
+    <div style={{ padding: 'var(--space-8)', maxWidth: 900 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-8)' }}>
+        <div>
+          <h1 style={{ fontSize: 'var(--font-size-xl)', fontWeight: 700, color: 'var(--color-text)', margin: 0 }}>
+            Your apps
+          </h1>
+          <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)', marginTop: 'var(--space-1)', marginBottom: 0 }}>
+            {workspace!.name}
+          </p>
+        </div>
+        <button onClick={() => setShowCreate(v => !v)} style={btnPrimary}>
+          New app
+        </button>
       </div>
 
-      {error && <p style={{ color: '#f87171', marginBottom: 16 }}>{error}</p>}
+      {error && <div style={{ marginBottom: 'var(--space-4)' }}><InlineAlert tone="error" message={error} /></div>}
 
       {showCreate && (
-        <form
-          onSubmit={handleCreate}
-          style={{
-            background: '#141414', border: '1px solid #222', borderRadius: 10,
-            padding: '1.25rem', marginBottom: '1.5rem', display: 'flex', gap: 10, alignItems: 'center',
-          }}
-        >
-          <input
-            autoFocus
-            type="text"
-            placeholder="App name"
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            style={{ ...inputStyle, flex: 1 }}
-          />
-          <button type="submit" disabled={creating} style={primaryBtn}>
-            {creating ? 'Creating…' : 'Create'}
-          </button>
-          <button
-            type="button"
-            onClick={() => { setShowCreate(false); setNewName('') }}
-            style={{ ...primaryBtn, background: 'transparent', border: '1px solid #333', color: '#888' }}
-          >
-            Cancel
-          </button>
-        </form>
+        <div style={{ marginBottom: 'var(--space-6)' }}>
+          <SurfaceCard title="Name your new app">
+            <form onSubmit={handleCreate} style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+              <input
+                autoFocus
+                type="text"
+                placeholder="App name"
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button type="submit" disabled={creating} style={creating ? btnDisabled : btnPrimary}>
+                {creating ? 'Creating…' : 'Create'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowCreate(false); setNewName('') }}
+                style={btnGhost}
+              >
+                Cancel
+              </button>
+            </form>
+          </SurfaceCard>
+        </div>
       )}
 
       {loading ? (
-        <p style={{ color: '#555' }}>Loading…</p>
-      ) : apps.length === 0 ? (
-        <div style={{
-          textAlign: 'center', padding: '4rem 0', color: '#444',
-        }}>
-          <p style={{ marginBottom: '1rem' }}>No apps yet.</p>
-          <button onClick={() => setShowCreate(true)} style={primaryBtn}>Create your first app</button>
-        </div>
+        <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)' }}>Loading apps…</p>
+      ) : apps.filter(a => a.status !== 'archived').length === 0 ? (
+        <EmptyState
+          title="No apps yet"
+          body="Create your first app to start building an internal tool. It only takes a minute."
+        />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 'var(--space-3)' }}>
           {apps.filter(a => a.status !== 'archived').map(app => (
             <AppCard key={app.id} app={app} onClick={() => router.push(`/builder/${app.id}`)} />
           ))}
@@ -147,20 +176,26 @@ function AppCard({ app, onClick }: { app: App; onClick: () => void }) {
     <button
       onClick={onClick}
       style={{
-        background: '#111', border: '1px solid #1f1f1f', borderRadius: 10,
-        padding: '1.25rem', textAlign: 'left', cursor: 'pointer', transition: 'border-color 0.15s',
+        background: 'var(--color-surface)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-md)',
+        padding: 'var(--space-6)',
+        textAlign: 'left',
+        cursor: 'pointer',
+        transition: 'border-color 0.15s',
+        width: '100%',
       }}
-      onMouseEnter={e => (e.currentTarget.style.borderColor = '#333')}
-      onMouseLeave={e => (e.currentTarget.style.borderColor = '#1f1f1f')}
+      onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
+      onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--color-border)')}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-        <span style={{ fontWeight: 600, color: '#e5e5e5', fontSize: '0.9rem' }}>{app.name}</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-2)' }}>
+        <span style={{ fontWeight: 600, color: 'var(--color-text)', fontSize: 'var(--font-size-sm)' }}>{app.name}</span>
         <StatusBadge status={app.status} />
       </div>
       {app.description && (
-        <p style={{ color: '#555', fontSize: '0.8rem', margin: '0 0 6px' }}>{app.description}</p>
+        <p style={{ color: 'var(--color-text-subtle)', fontSize: 'var(--font-size-xs)', margin: '0 0 var(--space-2)' }}>{app.description}</p>
       )}
-      <p style={{ color: '#444', fontSize: '0.75rem', margin: 0 }}>
+      <p style={{ color: 'var(--color-text-subtle)', fontSize: 'var(--font-size-xs)', margin: 0 }}>
         Updated {new Date(app.updated_at).toLocaleDateString()}
       </p>
     </button>
@@ -168,35 +203,63 @@ function AppCard({ app, onClick }: { app: App; onClick: () => void }) {
 }
 
 function StatusBadge({ status }: { status: App['status'] }) {
-  const colors: Record<App['status'], string> = {
-    draft: '#854d0e',
-    published: '#166534',
-    archived: '#374151',
+  const colorMap: Record<App['status'], string> = {
+    draft: 'var(--color-warning)',
+    published: 'var(--color-success)',
+    archived: 'var(--color-text-subtle)',
   }
   return (
     <span style={{
-      fontSize: '0.7rem', padding: '2px 8px', borderRadius: 99,
-      background: colors[status] + '33',
-      color: status === 'published' ? '#4ade80' : status === 'draft' ? '#fbbf24' : '#9ca3af',
+      fontSize: 'var(--font-size-xs)',
+      padding: '2px 8px',
+      borderRadius: 99,
+      background: 'var(--color-surface-raised)',
+      color: colorMap[status],
     }}>
       {status}
     </span>
   )
 }
 
-const pageStyle: React.CSSProperties = {
-  padding: '2rem',
-  maxWidth: 900,
-}
-
-const primaryBtn: React.CSSProperties = {
-  padding: '0.5rem 1rem', background: '#2563eb', color: '#fff',
-  border: 'none', borderRadius: 8, fontWeight: 600, fontSize: '0.875rem', cursor: 'pointer',
-}
-
 const inputStyle: React.CSSProperties = {
-  padding: '0.5rem 0.75rem', background: '#1e1e1e', border: '1px solid #333',
-  borderRadius: 8, color: '#fff', fontSize: '0.875rem', outline: 'none',
+  padding: 'var(--space-3)',
+  background: 'var(--color-surface-raised)',
+  border: '1px solid var(--color-border-muted)',
+  borderRadius: 'var(--radius-md)',
+  color: 'var(--color-text)',
+  fontSize: 'var(--font-size-sm)',
+  outline: 'none',
   boxSizing: 'border-box',
+}
+
+const btnPrimary: React.CSSProperties = {
+  padding: 'var(--space-2) var(--space-4)',
+  background: 'var(--color-primary)',
+  color: '#fff',
+  border: 'none',
+  borderRadius: 'var(--radius-md)',
+  fontWeight: 600,
+  fontSize: 'var(--font-size-sm)',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+
+const btnDisabled: React.CSSProperties = {
+  ...btnPrimary,
+  background: 'var(--color-surface-raised)',
+  color: 'var(--color-text-muted)',
+  cursor: 'not-allowed',
+}
+
+const btnGhost: React.CSSProperties = {
+  padding: 'var(--space-2) var(--space-4)',
+  background: 'transparent',
+  color: 'var(--color-text-muted)',
+  border: '1px solid var(--color-border-muted)',
+  borderRadius: 'var(--radius-md)',
+  fontWeight: 600,
+  fontSize: 'var(--font-size-sm)',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
 }
 
