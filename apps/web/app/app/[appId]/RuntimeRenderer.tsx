@@ -52,11 +52,7 @@ export function RuntimeRenderer({ doc, workspaceId, appId }: Props) {
   }, [doc])
 
   if (doc.length === 0) {
-    return (
-      <div style={{ padding: '3rem', color: '#555', textAlign: 'center' }}>
-        This app has no widgets yet.
-      </div>
-    )
+    return <RuntimeStateMessage tone="muted" message="This tool has no content yet." />
   }
 
   return (
@@ -113,14 +109,12 @@ interface WidgetProps {
   appId: string
 }
 
-function RuntimeStateMessage({
-  message,
-  tone = 'muted',
-}: {
-  message: string
-  tone?: 'muted' | 'warning' | 'error'
-}) {
-  const color = tone === 'error' ? '#f87171' : tone === 'warning' ? '#fbbf24' : '#666'
+export function RuntimeStateMessage({ tone, message }: { tone: 'muted' | 'warning' | 'error'; message: string }): React.JSX.Element {
+  const colors: Record<string, string> = {
+    muted: 'var(--color-text-subtle, #555)',
+    warning: 'var(--color-warning, #f59e0b)',
+    error: 'var(--color-error, #f87171)',
+  }
   return (
     <div
       style={{
@@ -129,9 +123,9 @@ function RuntimeStateMessage({
         alignItems: 'center',
         justifyContent: 'center',
         textAlign: 'center',
-        padding: '0.75rem',
-        color,
-        fontSize: '0.75rem',
+        padding: '1rem',
+        color: colors[tone] ?? colors.muted,
+        fontSize: '0.8rem',
         lineHeight: 1.5,
       }}
     >
@@ -346,8 +340,8 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
 
   return (
     <div style={{ height: '100%', overflow: 'auto', padding: '0.5rem' }}>
-      {loading && <RuntimeStateMessage message="Loading table data…" />}
-      {!loading && runtimeError && <RuntimeStateMessage message={runtimeError} tone="error" />}
+      {loading && <RuntimeStateMessage tone="muted" message="Loading table data…" />}
+      {!loading && runtimeError && <RuntimeStateMessage tone="error" message="Couldn't load data right now. Try refreshing the page." />}
       {!loading && !runtimeError && cols.length > 0 && (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
           <thead>
@@ -377,10 +371,10 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
         </table>
       )}
       {!loading && !runtimeError && !hasBinding && (
-        <RuntimeStateMessage message="Connect a data source before publishing this table." tone="warning" />
+        <RuntimeStateMessage tone="warning" message="Data not connected yet. Open this tool in the builder to add a data source." />
       )}
       {!loading && !runtimeError && hasBinding && rows.length === 0 && (
-        <RuntimeStateMessage message="No rows match the current data binding." />
+        <RuntimeStateMessage tone="muted" message="No rows match the current data binding." />
       )}
     </div>
   )
@@ -572,17 +566,17 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
       <p style={{ margin: '0 0 0.5rem', color: '#555', fontSize: '0.7rem' }}>{chartType} chart</p>
       {loading ? (
-        <RuntimeStateMessage message="Loading chart data…" />
+        <RuntimeStateMessage tone="muted" message="Loading chart data…" />
       ) : error ? (
-        <RuntimeStateMessage message={error} tone="error" />
+        <RuntimeStateMessage tone="error" message="Couldn't load data right now. Try refreshing the page." />
       ) : !supportedType ? (
         <RuntimeStateMessage message={`Chart type "${chartType}" is not supported in the production runtime.`} tone="error" />
       ) : !hasBinding ? (
-        <RuntimeStateMessage message="Connect a data source before publishing this chart." tone="warning" />
+        <RuntimeStateMessage tone="warning" message="Data not connected yet. Open this tool in the builder to add a data source." />
       ) : series.error ? (
         <RuntimeStateMessage message={series.error} tone="warning" />
       ) : series.points.length === 0 ? (
-        <RuntimeStateMessage message="No rows match the current data binding." />
+        <RuntimeStateMessage tone="muted" message="No rows match the current data binding." />
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: 6, minHeight: 0 }}>
           {series.points.map((bar, i) => {

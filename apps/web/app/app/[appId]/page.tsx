@@ -7,6 +7,16 @@ import { useAuth } from '../../../lib/auth'
 import { getPublishedApp, type AppVersion, ApiError } from '../../../lib/api'
 import { RuntimeRenderer } from './RuntimeRenderer'
 
+function BlockedScreen({ title, body, ctaHref, ctaLabel }: { title: string; body: string; ctaHref: string; ctaLabel: string }) {
+  return (
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--color-bg, #0a0a0a)', gap: '1rem', padding: '2rem', textAlign: 'center', maxWidth: 480, margin: '0 auto' }}>
+      <h1 style={{ color: 'var(--color-text, #e5e5e5)', fontSize: '1.1rem', fontWeight: 600, margin: 0 }}>{title}</h1>
+      <p style={{ color: 'var(--color-text-muted, #888)', fontSize: '0.875rem', margin: 0, lineHeight: 1.6 }}>{body}</p>
+      <a href={ctaHref} style={{ marginTop: '0.5rem', color: 'var(--color-primary, #2563eb)', fontSize: '0.875rem', textDecoration: 'none' }}>{ctaLabel}</a>
+    </div>
+  )
+}
+
 export default function RuntimeAppPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
   const searchParams = useSearchParams()
@@ -81,47 +91,53 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
 
   if (authLoading || loading) {
     return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', color: '#555', fontSize: '0.875rem' }}>
-        Loading…
+      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--color-bg, #0a0a0a)', color: 'var(--color-text-muted, #555)', fontSize: '0.875rem' }}>
+        Loading your tool…
       </div>
     )
   }
 
   if (error === 'workspace_unavailable') {
     return (
-      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', gap: '0.75rem' }}>
-        <p style={{ color: '#555', fontSize: '0.875rem', margin: 0 }}>The workspace for this app is not available in your session.</p>
-        <p style={{ color: '#333', fontSize: '0.75rem', margin: 0 }}>Open the app from Your Tools so Lima can select the correct workspace automatically.</p>
-        <a href="/tools" style={{ marginTop: '0.5rem', color: '#1d4ed8', fontSize: '0.8rem', textDecoration: 'none' }}>← Back to tools</a>
-      </div>
+      <BlockedScreen
+        title="Can't load this tool right now"
+        body="The team workspace this tool belongs to isn't available in your current session. Try opening it from your tools page, which should automatically connect the right workspace."
+        ctaHref="/tools"
+        ctaLabel="Go to Your Tools"
+      />
     )
   }
 
   if (error === 'not_published') {
     return (
-      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', gap: '0.75rem' }}>
-        <p style={{ color: '#555', fontSize: '0.875rem', margin: 0 }}>This app is not published yet.</p>
-        <p style={{ color: '#333', fontSize: '0.75rem', margin: 0 }}>An admin must publish the app before it can be used here.</p>
-        <a href="/builder" style={{ marginTop: '0.5rem', color: '#1d4ed8', fontSize: '0.8rem', textDecoration: 'none' }}>← Back to builder</a>
-      </div>
+      <BlockedScreen
+        title="This tool isn't live yet"
+        body="The tool hasn't been published to a live audience. If you're the builder, publish it first from the editor."
+        ctaHref="/tools"
+        ctaLabel="Back to Tools"
+      />
     )
   }
 
   if (error === 'access_denied') {
     return (
-      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', gap: '0.75rem' }}>
-        <p style={{ color: '#555', fontSize: '0.875rem', margin: 0 }}>This app is listed for discovery only.</p>
-        <p style={{ color: '#333', fontSize: '0.75rem', margin: 0 }}>Your publication access does not include launch permission.</p>
-        <a href="/tools" style={{ marginTop: '0.5rem', color: '#1d4ed8', fontSize: '0.8rem', textDecoration: 'none' }}>← Back to tools</a>
-      </div>
+      <BlockedScreen
+        title="You can see this tool, but can't open it yet"
+        body="Your access to this tool lets you know it exists, but doesn't include permission to open it. Contact your team administrator to request access."
+        ctaHref="/tools"
+        ctaLabel="Back to Your Tools"
+      />
     )
   }
 
   if (error || !version) {
     return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', color: '#f87171', fontSize: '0.875rem' }}>
-        Failed to load app.
-      </div>
+      <BlockedScreen
+        title="Something went wrong loading this tool"
+        body="We couldn't load the tool this time. Try refreshing the page. If the problem persists, contact your team."
+        ctaHref="/tools"
+        ctaLabel="Back to Your Tools"
+      />
     )
   }
 
@@ -145,8 +161,8 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
         flexShrink: 0,
         background: '#0a0a0a',
       }}>
-        <span style={{ color: '#e5e5e5', fontWeight: 600, fontSize: '0.875rem' }}>
-          App
+        <span style={{ color: 'var(--color-text, #e5e5e5)', fontWeight: 600, fontSize: '0.875rem' }}>
+          Tool
         </span>
         <span style={{
           fontSize: '0.65rem', padding: '2px 8px', borderRadius: 99,
@@ -155,12 +171,6 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
           v{version.version_num}
         </span>
         <div style={{ flex: 1 }} />
-        <a
-          href={`/builder/${appId}`}
-          style={{ color: '#555', fontSize: '0.75rem', textDecoration: 'none' }}
-        >
-          Open in builder →
-        </a>
       </header>
 
       {/* Canvas */}

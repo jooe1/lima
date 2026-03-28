@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '../../lib/auth'
 import { listCompanyTools, type CompanyTool } from '../../lib/api'
 
+export type ToolCardState = 'launchable' | 'discover-only' | 'inaccessible'
+
 export default function ToolsPage() {
   const router = useRouter()
   const { company, workspace, workspaces, selectWorkspace } = useAuth()
@@ -71,34 +73,42 @@ export default function ToolsPage() {
   return (
     <div style={{ padding: '2rem', maxWidth: 1000 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: '#e5e5e5' }}>Your Tools</h1>
-        {tools.length > 0 && (
+        <h1 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: 'var(--color-text, #e5e5e5)' }}>Your Tools</h1>
+        <label htmlFor="tool-search" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
-            type="text"
+            id="tool-search"
+            type="search"
             placeholder="Search tools…"
+            aria-label="Search tools"
             value={search}
             onChange={e => setSearch(e.target.value)}
             style={{
-              background: '#111',
-              border: '1px solid #1f1f1f',
+              background: 'var(--color-surface, #111)',
+              border: '1px solid var(--color-border, #1f1f1f)',
               borderRadius: 6,
               padding: '0.4rem 0.75rem',
-              color: '#e5e5e5',
+              color: 'var(--color-text, #e5e5e5)',
               fontSize: '0.8rem',
               outline: 'none',
               width: 220,
             }}
           />
-        )}
+        </label>
       </div>
       {error && <p style={{ color: '#f87171', fontSize: '0.8rem' }}>{error}</p>}
-      {launchError && <p style={{ color: '#f87171', fontSize: '0.8rem' }}>{launchError}</p>}
+      {launchError && (
+        <p style={{ color: 'var(--color-error, #f87171)', fontSize: '0.8rem', background: 'var(--color-surface, #141414)', padding: '0.75rem', borderRadius: 6, border: '1px solid #f8717133' }}>{launchError}</p>
+      )}
       {loading ? (
         <p style={{ color: '#555' }}>Loading…</p>
       ) : tools.length === 0 ? (
-        <div style={{ padding: '3rem', textAlign: 'center', border: '1px solid #1f1f1f', borderRadius: 8 }}>
-          <p style={{ color: '#555', fontSize: '0.875rem', margin: 0 }}>
-            No published tools available. Tools will appear here once an admin publishes them.
+        <div style={{ padding: '3rem', textAlign: 'center', border: '1px solid var(--color-border, #1f1f1f)', borderRadius: 8 }}>
+          <p style={{ color: 'var(--color-text-muted, #555)', fontSize: '0.875rem', margin: 0, lineHeight: 1.6 }}>
+            No tools are available to you yet.
+          </p>
+          <p style={{ color: 'var(--color-text-subtle, #444)', fontSize: '0.8rem', margin: '0.5rem 0 0 0' }}>
+            Tools appear here once they have been published. You can create and publish tools in the{' '}
+            <a href="/builder" style={{ color: 'var(--color-primary, #2563eb)', textDecoration: 'none' }}>builder</a>.
           </p>
         </div>
       ) : filtered.length === 0 ? (
@@ -153,7 +163,7 @@ function ToolCard({
           {tool.app_name}
         </div>
         <span style={capabilityPill(tool.capability)}>
-          {tool.capability === 'use' ? 'Can launch' : 'Listed only'}
+          {tool.capability === 'use' ? 'Ready to use' : 'Discover only'}
         </span>
       </div>
       {tool.app_description && (
@@ -169,9 +179,15 @@ function ToolCard({
       <div style={{ color: '#555', fontSize: '0.75rem' }}>
         Published {new Date(tool.published_at).toLocaleDateString()}
       </div>
-      <div style={{ color: canLaunch ? '#93c5fd' : '#555', fontSize: '0.72rem', marginTop: 10 }}>
-        {canLaunch ? 'Open tool' : 'Listed for discovery only'}
-      </div>
+      {canLaunch ? (
+        <div style={{ color: 'var(--color-primary, #2563eb)', fontSize: '0.8rem', marginTop: 10, fontWeight: 500 }}>
+          Open →
+        </div>
+      ) : (
+        <div style={{ color: '#555', fontSize: '0.72rem', marginTop: 10 }}>
+          Available to discover — ask your admin for access
+        </div>
+      )}
     </>
   )
 
