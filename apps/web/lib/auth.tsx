@@ -26,7 +26,13 @@ interface AuthActions {
   selectWorkspace: (ws: Workspace) => void
 }
 
-const AuthContext = createContext<(AuthState & AuthActions) | null>(null)
+interface AuthDerivedFlags {
+  canAccessBuilder: boolean
+  canAccessTools: boolean
+  canCreateTools: boolean
+}
+
+const AuthContext = createContext<(AuthState & AuthActions & AuthDerivedFlags) | null>(null)
 
 function parseJWT(token: string): AuthUser | null {
   try {
@@ -135,8 +141,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState(s => ({ ...s, workspace: ws }))
   }, [])
 
+  const canAccessBuilder = !state.isLoading && state.token !== null && state.user !== null
+  const canAccessTools = canAccessBuilder
+  const canCreateTools = canAccessBuilder
+
   return (
-    <AuthContext.Provider value={{ ...state, signIn, signOut, selectWorkspace }}>
+    <AuthContext.Provider value={{ ...state, signIn, signOut, selectWorkspace, canAccessBuilder, canAccessTools, canCreateTools }}>
       {children}
     </AuthContext.Provider>
   )

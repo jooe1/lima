@@ -3,6 +3,7 @@
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '../../lib/auth'
+import RouteGateShell from '../_components/RouteGateShell'
 
 export default function ToolsLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
@@ -12,7 +13,7 @@ export default function ToolsLayout({ children }: { children: React.ReactNode })
     if (!isLoading && !token) router.replace('/login')
   }, [token, isLoading, router])
 
-  if (isLoading) return null
+  if (isLoading) return <RouteGateShell title="Tools" message="Checking access…" />
 
   return (
     <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#e5e5e5' }}>
