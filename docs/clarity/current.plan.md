@@ -3,14 +3,14 @@ _Last updated: 2026-03-28_
 _Feature slug: ux-first-release-readiness_
 
 ## Goal
-Prepare Lima for a near-term internal release aimed at non-technical users by fixing the highest-impact UX, clarity, trust, and completion gaps in the current product. The order prioritizes two release-critical journeys that must both work end to end: builders must be able to connect data, create a tool, and publish it, and end users must then be able to find and use that tool confidently. Advanced builder and admin depth remains secondary to making those two journeys dependable.
+Prepare Lima for a near-term internal release aimed at non-technical users by fixing the highest-impact UX, clarity, trust, and completion gaps in the current product. The order prioritizes the self-serve path from setup to live use first, then broader builder simplification, then quality and release gates, because the current product requires a user to connect data, build a tool, publish it, and then use it before any real value is delivered.
 
-## Phase 1 — Core Release Paths and End-User Readiness
+## Phase 1 — Self-Serve User Readiness
 
-### 1. Define the release path around end-user success
-Constrain the first release to the two user journeys that already exist in code and can be made dependable: builders connect data, create a tool, and publish it; end users then sign in, discover that tool, launch it, complete the task, and recover from common errors.
+### 1. Define the release path around self-serve success
+Constrain the first release to the full self-serve journey that already exists in code and can be made dependable: sign in, create or select a workspace, add a connector, create an app, configure a usable tool, publish it, launch it, complete the task, and recover from common errors.
 _Depends on: none_
-Resolved decisions: optimize for a desktop-first internal release; treat the builder create-connect-publish path and the end-user launch-use path as the two release gates; if tradeoffs are required, simplify advanced builder/admin depth rather than weakening either primary journey.
+Resolved decisions: optimize for a desktop-first internal release; treat many users as both builders and end users; judge readiness by whether a non-technical user can go from zero to a live usable tool without developer help; keep advanced admin depth secondary if it improves first-use clarity.
 
 ### 2. Replace technical and builder-centric runtime language with plain-language UX
 Rewrite runtime headers, empty states, access-denied states, and unpublished states so non-technical users see task-oriented copy, next steps, and clear recovery actions instead of platform jargon.
@@ -25,7 +25,7 @@ Resolved decisions: add route-level handling for login, tools, builder, and runt
 ### 4. Make tool discovery and launch feel guided instead of raw
 Improve the tools surface with clearer hierarchy, friendlier search and empty states, launch affordances, and better handling when the user has lost access or needs a different workspace selected.
 _Depends on: Areas 1, 2_
-Resolved decisions: the tools page should act like a simple home screen for non-technical users, not a catalog of internal objects; discovery-only listings should explain why they are visible but not launchable.
+Resolved decisions: the tools page should act like a simple home screen for non-technical users after a tool has been created and published, not a catalog of internal objects; discovery-only listings should explain why they are visible but not launchable.
 
 ## Phase 2 — Builder UX Simplification
 
@@ -72,25 +72,25 @@ Resolved decisions: release should be blocked by user-facing trust failures even
 Lima already contains meaningful product surface area, but the current implementation is still shaped like a tool for technically confident internal builders rather than a dependable product for non-technical users. The main risk is not missing raw capability; it is that users will encounter jargon, ambiguous flows, weak recovery states, and inconsistent UI at exactly the moments they need reassurance.
 
 ### Current Context
-The web app currently has working route groups for login, tools, builder, runtime, connectors, approvals, and admin. The root route performs role-based redirects. The tools page lists published tools and supports search. The runtime can render multiple widget types and handles several permission and publication states. The builder supports app creation, editing, autosave, publication, workflow editing, and multiple admin surfaces. The UI is heavily implemented with inline styles and a dark palette. There are no visible route-level error, not-found, or loading handlers in the main app tree. The repo shows backend Go tests, package-level tests for the Aura DSL, and no visible web UI or end-to-end test harness.
+The web app currently has working route groups for login, tools, builder, runtime, connectors, approvals, and admin. The root route performs role-based redirects and currently hard-separates end_user from builder access. The tools page lists published tools and supports search. The runtime can render multiple widget types and handles several permission and publication states. The builder supports app creation, connector setup, editing, autosave, publication, workflow editing, and multiple admin surfaces. The UI is heavily implemented with inline styles and a dark palette. There are no visible route-level error, not-found, or loading handlers in the main app tree. The repo shows backend Go tests, package-level tests for the Aura DSL, and no visible web UI or end-to-end test harness.
 
 ### Desired Outcome
-A first-release builder should be able to add a connector, create a simple tool, and publish it without learning the full platform model up front. A first-release end user should then be able to sign in, understand where they are, find the right tool, launch it, complete a basic task, and recover from problems without needing technical vocabulary or support intervention.
+A first-release user should be able to sign in, connect data, create and publish a simple tool, launch it, complete a basic task, and recover from problems without needing technical vocabulary or support intervention. The product should support the reality that many first-release users are both builders and users of the tools they create.
 
 ### Scope
-Included: builder first-run setup, connector setup, app creation, preview and publish, login and first-run messaging, tools home, runtime states and copy, editor simplification, shared UI system, contextual guidance, accessibility fixes, responsive cleanup, and minimum automated test coverage for both core release journeys.
+Included: login and first-run messaging, tools home, runtime states and copy, builder first-run setup, editor simplification, shared UI system, contextual guidance, accessibility fixes, responsive cleanup, and minimum automated test coverage for core release journeys.
 
 ### Non-goals
 Not included: redesigning the full platform architecture, shipping every advanced builder/admin capability at parity, relying on external documentation as the primary guidance layer, or broadening scope to mobile-native quality for this release.
 
 ### Constraints
-The current codebase already exposes builder, admin, workflow, and connector concepts deeply in the UI. Styling is fragmented across many inline implementations. The runtime and builder are coupled to domain terms such as workspace, publication, approvals, and connector actions. There is little visible protection against route-level failures. The release must work for users who do not understand those concepts.
+The current codebase already exposes builder, admin, workflow, and connector concepts deeply in the UI. Styling is fragmented across many inline implementations. The runtime and builder are coupled to domain terms such as workspace, publication, approvals, and connector actions. The current routing model also separates end_user from builder access, even though the release may need self-serve users to do both. There is little visible protection against route-level failures. The release must work for users who do not understand those concepts.
 
 ### Decisions
-Chosen assumptions for this brief: the near-term target is an internal desktop-first release; builder success and end-user task completion are both release-critical, with the builder path logically preceding the end-user path; advanced capabilities can be visually reduced or deferred if they compromise clarity in either journey. Keep the current product direction, but simplify language, navigation, and first-run exposure. Add in-product guidance instead of asking users to learn platform vocabulary elsewhere.
+Chosen assumptions for this brief: the near-term target is an internal desktop-first release; the primary bar is self-serve success across connector setup, app creation, publication, and tool use; many users should be treated as both builders and end users; advanced capabilities can be visually reduced or deferred if they compromise clarity. Keep the current product direction, but simplify language, navigation, first-run exposure, and role friction. Add in-product guidance instead of asking users to learn platform vocabulary elsewhere.
 
 ### Acceptance Criteria
-A non-technical builder can add a connector, create a basic tool, and publish it without seeing unexplained platform jargon. A non-technical end user can then sign in and launch that tool without seeing unexplained platform jargon. Every main user flow has humane loading, empty, error, access-denied, and missing-resource states. The builder has a guided first-run path for workspace, connector, and app creation. Publish blockers explain what must be fixed in plain language. Core flows are keyboard-usable, visually legible, and stable on common desktop and narrow-width layouts. Core released journeys are covered by automated UI smoke tests.
+A non-technical user can sign in, connect a data source, create a simple app, publish it, and launch it without seeing unexplained platform jargon. Every main self-serve flow has humane loading, empty, error, access-denied, and missing-resource states. The builder has a guided first-run path for workspace, connector, app creation, and publication. Publish blockers explain what must be fixed in plain language. Core flows are keyboard-usable, visually legible, and stable on common desktop and narrow-width layouts. Core released journeys are covered by automated UI smoke tests.
 
 ### Risks
 The largest risk is breadth: the product already exposes many advanced surfaces, which makes it easy to ship complexity instead of confidence. Another risk is false readiness from backend completeness while the UX remains brittle. A third risk is lack of UI test coverage, which can turn small copy or navigation changes into regressions.
@@ -122,10 +122,12 @@ The minimum context a planning or implementation agent needs next:
 ## Prioritized Release Checklist
 
 ### Must-have before release
-- Make the builder create-connect-publish journey dependable so there is a real tool lifecycle behind the end-user experience.
-	Files: apps/web/app/builder/page.tsx, apps/web/app/builder/connectors/page.tsx, apps/web/app/builder/[appId]/page.tsx
+- Clarify or relax the current role split so self-serve users can move between building and launching tools without an artificial product boundary.
+	Files: apps/web/app/page.tsx, apps/web/lib/auth.tsx, apps/web/app/builder/layout.tsx, apps/web/app/tools/layout.tsx
 - Rewrite end-user copy across login, tools, and runtime so users are guided by outcomes instead of platform terms.
 	Files: apps/web/app/login/page.tsx, apps/web/app/tools/page.tsx, apps/web/app/app/[appId]/page.tsx, apps/web/app/tools/layout.tsx
+- Simplify connector setup and publication because they are part of the release-critical path to creating anything launchable.
+	Files: apps/web/app/builder/connectors/page.tsx, apps/web/app/builder/[appId]/page.tsx, apps/web/lib/appValidation.ts
 - Add route-level loading, error, and missing-route handling for the main app shells.
 	Files: apps/web/app/layout.tsx, apps/web/app/builder/layout.tsx, apps/web/app/tools/layout.tsx, apps/web/app/app/layout.tsx
 - Turn the tools experience into a simple launcher home with better empty states, launch failures, and access explanations.
