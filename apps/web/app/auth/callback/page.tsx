@@ -42,19 +42,25 @@ function CallbackInner() {
   if (error) {
     return (
       <div style={{ textAlign: 'center' }}>
-        <p style={{ color: '#f87171' }}>{error}</p>
-        <a href="/login" style={{ color: '#60a5fa', marginTop: 8, display: 'inline-block' }}>Back to login</a>
+        <p role="alert" style={{ color: 'var(--color-error)', marginBottom: 'var(--space-2)' }}>{error}</p>
+        <a href="/login" style={{ color: 'var(--color-info)', fontSize: 'var(--font-size-sm)' }}>Back to login</a>
       </div>
     )
   }
 
-  return <p style={{ color: '#666' }}>Completing sign in…</p>
+  return <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)' }}>Completing sign in…</p>
 }
 
 export default function AuthCallbackPage() {
   return (
-    <main style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}>
-      <Suspense fallback={<p style={{ color: '#666' }}>Loading…</p>}>
+    <main style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: '100vh',
+      background: 'var(--color-bg)',
+    }}>
+      <Suspense fallback={<p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)' }}>Loading…</p>}>
         <CallbackInner />
       </Suspense>
     </main>

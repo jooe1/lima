@@ -56,19 +56,50 @@ export default function LoginPage() {
   }
 
   return (
-    <main style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0a' }}>
-      <div style={{ width: 360, padding: '2.5rem', background: '#141414', borderRadius: 12, border: '1px solid #222' }}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#fff', marginBottom: '0.25rem' }}>Lima</h1>
-        <p style={{ color: '#666', marginBottom: '2rem', fontSize: '0.875rem' }}>AI-first internal tools platform</p>
+    <main style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: '100vh',
+      background: 'var(--color-bg)',
+      padding: 'var(--space-4)',
+    }}>
+      <div style={{
+        width: '100%',
+        maxWidth: 380,
+        padding: 'var(--space-10)',
+        background: 'var(--color-surface)',
+        borderRadius: 'var(--radius-lg)',
+        border: '1px solid var(--color-border)',
+      }}>
+        <h1 style={{
+          fontSize: 'var(--font-size-xl)',
+          fontWeight: 700,
+          color: 'var(--color-text)',
+          marginBottom: 'var(--space-1)',
+        }}>Lima</h1>
+        <p style={{
+          color: 'var(--color-text-muted)',
+          marginBottom: 'var(--space-8)',
+          fontSize: 'var(--font-size-sm)',
+        }}>
+          Sign in to build and launch internal tools.
+        </p>
 
-        {/* SSO login */}
+        {/* Primary: SSO */}
         <a
           href={getSSOLoginURL()}
           style={{
-            display: 'block', textAlign: 'center', padding: '0.75rem',
-            background: '#fff', color: '#000', borderRadius: 8,
-            textDecoration: 'none', fontWeight: 600, fontSize: '0.875rem',
-            marginBottom: '1.5rem',
+            display: 'block',
+            textAlign: 'center',
+            padding: 'var(--space-3)',
+            background: '#fff',
+            color: '#000',
+            borderRadius: 'var(--radius-md)',
+            textDecoration: 'none',
+            fontWeight: 600,
+            fontSize: 'var(--font-size-sm)',
+            marginBottom: isGoogleEnabled ? 'var(--space-2)' : 'var(--space-6)',
           }}
         >
           Continue with SSO
@@ -78,48 +109,88 @@ export default function LoginPage() {
           <a
             href={getGoogleLoginURL()}
             style={{
-              display: 'block', textAlign: 'center', padding: '0.75rem',
-              background: '#1e1e1e', color: '#fff', borderRadius: 8,
-              textDecoration: 'none', fontWeight: 600, fontSize: '0.875rem',
-              border: '1px solid #333', marginBottom: '0.75rem',
+              display: 'block',
+              textAlign: 'center',
+              padding: 'var(--space-3)',
+              background: 'var(--color-surface-raised)',
+              color: 'var(--color-text)',
+              borderRadius: 'var(--radius-md)',
+              textDecoration: 'none',
+              fontWeight: 600,
+              fontSize: 'var(--font-size-sm)',
+              border: '1px solid var(--color-border-muted)',
+              marginBottom: 'var(--space-6)',
             }}
           >
             Continue with Google
           </a>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '1.5rem', marginTop: '0.75rem' }}>
-          <div style={{ flex: 1, height: 1, background: '#333' }} />
-          <span style={{ color: '#555', fontSize: '0.75rem' }}>or continue with email</span>
-          <div style={{ flex: 1, height: 1, background: '#333' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-6)' }}>
+          <div style={{ flex: 1, height: 1, background: 'var(--color-border-muted)' }} />
+          <span style={{ color: 'var(--color-text-subtle)', fontSize: 'var(--font-size-xs)' }}>or continue with email</span>
+          <div style={{ flex: 1, height: 1, background: 'var(--color-border-muted)' }} />
         </div>
 
+        {/* Magic link form */}
         {magicSent ? (
-          <div style={{ textAlign: 'center', padding: '1rem', color: '#a3e635', fontSize: '0.875rem' }}>
+          <div role="status" style={{
+            textAlign: 'center',
+            padding: 'var(--space-4)',
+            color: 'var(--color-success)',
+            fontSize: 'var(--font-size-sm)',
+          }}>
             Check your inbox — we&#39;ve sent a login link to <strong>{magicEmail}</strong>.
           </div>
         ) : (
-          <form onSubmit={handleMagicLink} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <input
-              type="email" required placeholder="Email"
-              value={magicEmail} onChange={e => setMagicEmail(e.target.value)}
-              style={inputStyle}
-            />
-            {!defaultCompanySlug && (
+          <form onSubmit={handleMagicLink} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+              <label htmlFor="magic-email" style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', fontWeight: 500 }}>
+                Email address
+              </label>
               <input
-                type="text" placeholder="Company slug (e.g. acme)"
-                value={magicSlug} onChange={e => setMagicSlug(e.target.value)}
+                id="magic-email"
+                type="email"
+                required
+                placeholder="you@company.com"
+                value={magicEmail}
+                onChange={e => setMagicEmail(e.target.value)}
                 style={inputStyle}
               />
+            </div>
+            {!defaultCompanySlug && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                <label htmlFor="magic-slug" style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', fontWeight: 500 }}>
+                  Company slug
+                </label>
+                <input
+                  id="magic-slug"
+                  type="text"
+                  placeholder="e.g. acme"
+                  value={magicSlug}
+                  onChange={e => setMagicSlug(e.target.value)}
+                  style={inputStyle}
+                />
+              </div>
             )}
-            {magicError && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: 0 }}>{magicError}</p>}
+            {magicError && (
+              <p role="alert" style={{ color: 'var(--color-error)', fontSize: 'var(--font-size-xs)', margin: 0 }}>
+                {magicError}
+              </p>
+            )}
             <button
-              type="submit" disabled={magicLoading}
+              type="submit"
+              disabled={magicLoading}
               style={{
-                padding: '0.75rem', background: '#2563eb', color: '#fff',
-                border: 'none', borderRadius: 8, fontWeight: 600,
-                fontSize: '0.875rem', cursor: magicLoading ? 'not-allowed' : 'pointer',
-                opacity: magicLoading ? 0.7 : 1,
+                padding: 'var(--space-3)',
+                background: magicLoading ? 'var(--color-surface-raised)' : 'var(--color-primary)',
+                color: magicLoading ? 'var(--color-text-muted)' : '#fff',
+                border: 'none',
+                borderRadius: 'var(--radius-md)',
+                fontWeight: 600,
+                fontSize: 'var(--font-size-sm)',
+                cursor: magicLoading ? 'not-allowed' : 'pointer',
+                width: '100%',
               }}
             >
               {magicLoading ? 'Sending…' : 'Send magic link'}
@@ -127,44 +198,79 @@ export default function LoginPage() {
           </form>
         )}
 
-        {/* Dev login — only shown in development */}
+        {/* Dev login — visually isolated, only in development */}
         {isDev && (
-          <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '1.5rem' }}>
-              <div style={{ flex: 1, height: 1, background: '#333' }} />
-              <span style={{ color: '#555', fontSize: '0.75rem' }}>dev login</span>
-              <div style={{ flex: 1, height: 1, background: '#333' }} />
+          <div style={{ marginTop: 'var(--space-8)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
+              <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+              <span style={{ color: 'var(--color-text-subtle)', fontSize: 'var(--font-size-xs)' }}>Developer access</span>
+              <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
             </div>
-            <form onSubmit={handleDevLogin} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <input
-                type="email" required placeholder="Email"
-                value={email} onChange={e => setEmail(e.target.value)}
-                style={inputStyle}
-              />
-              <input
-                type="text" placeholder="Name (optional)"
-                value={name} onChange={e => setName(e.target.value)}
-                style={inputStyle}
-              />
-              <input
-                type="text" placeholder="Company slug"
-                value={company} onChange={e => setCompany(e.target.value)}
-                style={inputStyle}
-              />
-              {error && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: 0 }}>{error}</p>}
+            <form onSubmit={handleDevLogin} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                <label htmlFor="dev-email" style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-subtle)', fontWeight: 500 }}>
+                  Email
+                </label>
+                <input
+                  id="dev-email"
+                  type="email"
+                  required
+                  placeholder="Email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  style={inputStyleMuted}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                <label htmlFor="dev-name" style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-subtle)', fontWeight: 500 }}>
+                  Name (optional)
+                </label>
+                <input
+                  id="dev-name"
+                  type="text"
+                  placeholder="Name (optional)"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  style={inputStyleMuted}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                <label htmlFor="dev-company" style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-subtle)', fontWeight: 500 }}>
+                  Company slug
+                </label>
+                <input
+                  id="dev-company"
+                  type="text"
+                  placeholder="Company slug"
+                  value={company}
+                  onChange={e => setCompany(e.target.value)}
+                  style={inputStyleMuted}
+                />
+              </div>
+              {error && (
+                <p role="alert" style={{ color: 'var(--color-error)', fontSize: 'var(--font-size-xs)', margin: 0 }}>
+                  {error}
+                </p>
+              )}
               <button
-                type="submit" disabled={loading}
+                type="submit"
+                disabled={loading}
                 style={{
-                  padding: '0.75rem', background: '#2563eb', color: '#fff',
-                  border: 'none', borderRadius: 8, fontWeight: 600,
-                  fontSize: '0.875rem', cursor: loading ? 'not-allowed' : 'pointer',
-                  opacity: loading ? 0.7 : 1,
+                  padding: 'var(--space-3)',
+                  background: 'var(--color-surface-raised)',
+                  color: loading ? 'var(--color-text-subtle)' : 'var(--color-text-muted)',
+                  border: '1px solid var(--color-border-muted)',
+                  borderRadius: 'var(--radius-md)',
+                  fontWeight: 600,
+                  fontSize: 'var(--font-size-sm)',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  width: '100%',
                 }}
               >
                 {loading ? 'Signing in…' : 'Dev sign in'}
               </button>
             </form>
-          </>
+          </div>
         )}
       </div>
     </main>
@@ -172,7 +278,18 @@ export default function LoginPage() {
 }
 
 const inputStyle: React.CSSProperties = {
-  padding: '0.625rem 0.75rem', background: '#1e1e1e', border: '1px solid #333',
-  borderRadius: 8, color: '#fff', fontSize: '0.875rem', outline: 'none', width: '100%',
+  padding: 'var(--space-3)',
+  background: 'var(--color-surface-raised)',
+  border: '1px solid var(--color-border-muted)',
+  borderRadius: 'var(--radius-md)',
+  color: 'var(--color-text)',
+  fontSize: 'var(--font-size-sm)',
+  outline: 'none',
+  width: '100%',
   boxSizing: 'border-box',
+}
+
+const inputStyleMuted: React.CSSProperties = {
+  ...inputStyle,
+  border: '1px solid var(--color-border)',
 }
