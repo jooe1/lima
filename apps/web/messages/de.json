@@ -52,6 +52,58 @@
       "mysql": "MySQL",
       "mssql": "SQL Server",
       "drawerTitle": "Neuer Konnektor"
+    },
+    "wizard": {
+      "step1": { "label": "Name", "title": "Konnektor benennen" },
+      "step2": { "label": "Zugangsdaten", "title": "Verbindung konfigurieren" },
+      "step3": {
+        "label": "Zugriff",
+        "title": "Wer kann das verwenden?",
+        "placeholder": "Alle Mitglieder des Arbeitsbereichs haben Zugriff auf diesen Konnektor. Detaillierte Zugriffssteuerung folgt bald."
+      },
+      "back": "Zur\u00fcck",
+      "next": "Weiter",
+      "finish": "Fertigstellen",
+      "saving": "Wird gespeichert\u2026",
+      "nameRequired": "Konnektor-Name ist erforderlich",
+      "saveFailed": "Konnektor konnte nicht gespeichert werden",
+      "fields": {
+        "name": { "label": "Konnektor-Name", "placeholder": "z. B. Produktions-DB" },
+        "description": { "label": "Beschreibung (optional)", "placeholder": "Womit verbindet sich dieser Konnektor?" },
+        "host": { "label": "Host", "tooltip": "Der Hostname oder die IP-Adresse Ihres Datenbankservers." },
+        "port": { "label": "Port", "tooltip": "Standard: 5432 (Postgres), 3306 (MySQL), 1433 (SQL Server)." },
+        "database": { "label": "Datenbank", "tooltip": "Der Name der Datenbank, zu der eine Verbindung hergestellt werden soll." },
+        "username": { "label": "Benutzername" },
+        "password": { "label": "Passwort" },
+        "ssl": { "label": "SSL verwenden" },
+        "baseUrl": { "label": "Basis-URL" },
+        "endpoint": { "label": "GraphQL-Endpunkt" },
+        "bearerToken": { "label": "Bearer-Token" },
+        "apiKey": { "label": "API-Schl\u00fcssel" },
+        "apiKeyHeader": { "label": "Header-Name" },
+        "basicUser": { "label": "Benutzername" },
+        "basicPass": { "label": "Passwort" },
+        "mocoToken": { "label": "Token" }
+      },
+      "auth": {
+        "noAuth": "Keine Authentifizierung",
+        "bearer": "Bearer-Token",
+        "apiKey": "API-Schl\u00fcssel",
+        "basic": "Benutzername & Passwort",
+        "moreOptions": "Weitere Auth-Optionen",
+        "lessOptions": "Auth-Optionen ausblenden",
+        "moco": "Token-Auth (MOCO)"
+      },
+      "csv": {
+        "uploadLabel": "CSV-Datei ausw\u00e4hlen",
+        "preview": "Vorschau (erste 5 Zeilen)",
+        "noPreview": "Datei ausw\u00e4hlen, um Vorschau anzuzeigen"
+      },
+      "managed": {
+        "hint": "Lima Managed Table – keine externen Zugangsdaten erforderlich. Spalten und Zeilen nach dem Erstellen des Konnektors hinzuf\u00fcgen.",
+        "addColumn": "Name der ersten Spalte (optional)",
+        "addColumnPlaceholder": "z. B. E-Mail"
+      }
     }
   }
 }

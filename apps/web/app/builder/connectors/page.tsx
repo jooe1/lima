@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../../../lib/auth'
 import {
-  listConnectors, createConnector, getEditableConnector, patchConnector, deleteConnector,
+  listConnectors, createConnector, deleteConnector,
   testConnector, getConnectorSchema, runConnectorQuery,
   getManagedTableColumns, setManagedTableColumns,
   listManagedTableRows, insertManagedTableRow, updateManagedTableRow, deleteManagedTableRow,
@@ -13,26 +13,15 @@ import {
   type ConnectorSchemaResponse, type ManagedTableColumn, type ManagedTableRow,
   type DashboardQueryResponse, type ActionDefinition, type ActionDefinitionInput, type ActionFieldType,
 } from '../../../lib/api'
+import { ConnectorWizard } from './ConnectorWizard'
 import { ConnectorGrantsTab } from './ConnectorGrantsTab'
 import ConnectorSetupHint from './ConnectorSetupHint'
 import { ConnectorDrawer } from './ConnectorDrawer'
 import { ConnectorTypePicker } from './ConnectorTypePicker'
 
 // ---------------------------------------------------------------------------
-// Types
+// Types / constants
 // ---------------------------------------------------------------------------
-
-type ConnectorFormData = {
-  name: string
-  type: ConnectorType
-  credentials: Record<string, unknown>
-}
-
-// Basic types — shown immediately in the form
-const BASIC_CONNECTOR_TYPES: ConnectorType[] = ['postgres', 'mysql', 'rest', 'managed', 'csv']
-// Advanced types — hidden behind progressive disclosure
-const ADVANCED_CONNECTOR_TYPES: ConnectorType[] = ['mssql', 'graphql']
-const CONNECTOR_TYPES: ConnectorType[] = [...BASIC_CONNECTOR_TYPES, ...ADVANCED_CONNECTOR_TYPES]
 
 const TYPE_COLORS: Record<ConnectorType, { bg: string; fg: string }> = {
   postgres: { bg: '#336791', fg: '#e5e5e5' },
@@ -61,6 +50,8 @@ export default function ConnectorsPage() {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Connector | null>(null)
   const [drawerState, setDrawerState] = useState<'closed' | 'type-picker' | 'wizard' | 'detail'>('closed')
+  const [wizardType, setWizardType] = useState<ConnectorType | null>(null)
+  const [wizardDbBrand, setWizardDbBrand] = useState<'postgres' | 'mysql' | 'mssql' | undefined>(undefined)
 
   const load = useCallback(() => {
     if (!workspace) return
@@ -86,14 +77,23 @@ export default function ConnectorsPage() {
     setDrawerState('type-picker')
   }
 
-  function handleTypeSelected(type: ConnectorType, _dbBrand?: 'postgres' | 'mysql' | 'mssql') {
-    void type
-    // Commit 5 will render the wizard here using type/_dbBrand
+  function handleTypeSelected(type: ConnectorType, dbBrand?: 'postgres' | 'mysql' | 'mssql') {
+    setWizardType(type)
+    setWizardDbBrand(dbBrand)
     setDrawerState('wizard')
   }
 
   function handleDrawerClose() {
     setDrawerState('closed')
+    setWizardType(null)
+    setWizardDbBrand(undefined)
+  }
+
+  function handleWizardComplete(c: Connector) {
+    handleSaved(c)
+    setDrawerState('closed')
+    setWizardType(null)
+    setWizardDbBrand(undefined)
   }
 
   function handleEdit(c: Connector) {
@@ -137,26 +137,25 @@ export default function ConnectorsPage() {
 
       {error && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: '0 0 1rem' }}>{error}</p>}
 
-      {/* Drawer: new connector flow (type picker → Commit 5 wizard) */}
+      {/* Drawer: new connector flow (type picker → wizard) */}
       <ConnectorDrawer
         isOpen={drawerState !== 'closed'}
         onClose={handleDrawerClose}
-        title={drawerState === 'type-picker' ? 'New connector' : undefined}
+        title="New connector"
       >
         {drawerState === 'type-picker' && (
           <ConnectorTypePicker onSelect={handleTypeSelected} />
         )}
+        {drawerState === 'wizard' && wizardType && workspace && (
+          <ConnectorWizard
+            connectorType={wizardType}
+            dbBrand={wizardDbBrand}
+            workspaceId={workspace.id}
+            onComplete={handleWizardComplete}
+            onBack={() => setDrawerState('type-picker')}
+          />
+        )}
       </ConnectorDrawer>
-
-      {/* Edit form (inline — used for editing existing connectors) */}
-      {showForm && workspace && (
-        <ConnectorForm
-          workspaceId={workspace.id}
-          editing={editing}
-          onSaved={handleSaved}
-          onCancel={handleCancel}
-        />
-      )}
 
       {/* Connector grid */}
       {loading ? (
@@ -247,314 +246,6 @@ function ConnectorCard({ connector, isSelected, onClick }: {
       </p>
     </button>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Create / Edit form
-// ---------------------------------------------------------------------------
-
-function ConnectorForm({ workspaceId, editing, onSaved, onCancel }: {
-  workspaceId: string
-  editing: Connector | null
-  onSaved: (c: Connector) => void
-  onCancel: () => void
-}) {
-  const [name, setName] = useState('')
-  const [type, setType] = useState<ConnectorType>('postgres')
-  const [showAdvancedTypes, setShowAdvancedTypes] = useState(
-    editing ? ADVANCED_CONNECTOR_TYPES.includes(editing.type as ConnectorType) : false
-  )
-  const visibleTypes = showAdvancedTypes ? CONNECTOR_TYPES : BASIC_CONNECTOR_TYPES
-  const [creds, setCreds] = useState<Record<string, unknown>>({})
-  const [storedSecrets, setStoredSecrets] = useState<Record<string, boolean>>({})
-  const [loadingExisting, setLoadingExisting] = useState(false)
-  const [readyToSubmit, setReadyToSubmit] = useState(editing == null)
-  const [saving, setSaving] = useState(false)
-  const [err, setErr] = useState('')
-
-  useEffect(() => {
-  let cancelled = false
-
-  if (!editing) {
-    setName('')
-    setType('postgres')
-    setCreds({})
-    setStoredSecrets({})
-    setLoadingExisting(false)
-    setReadyToSubmit(true)
-    setErr('')
-    return () => {
-    cancelled = true
-    }
-  }
-
-  setLoadingExisting(true)
-  setReadyToSubmit(false)
-  setErr('')
-  getEditableConnector(workspaceId, editing.id)
-    .then(result => {
-    if (cancelled) return
-    setName(result.connector.name)
-    setType(result.connector.type)
-    setCreds(result.editable_credentials ?? {})
-    setStoredSecrets(result.stored_secrets ?? {})
-    setReadyToSubmit(true)
-    })
-    .catch((e: unknown) => {
-    if (cancelled) return
-    setErr(e instanceof Error ? e.message : 'Failed to load connector settings')
-    })
-    .finally(() => {
-    if (!cancelled) setLoadingExisting(false)
-    })
-
-  return () => {
-    cancelled = true
-  }
-  }, [editing, workspaceId])
-
-  function updateCred(key: string, value: unknown) {
-    setCreds(prev => ({ ...prev, [key]: value }))
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!readyToSubmit) return
-    if (!name.trim()) { setErr('Name is required'); return }
-    setSaving(true)
-    setErr('')
-    try {
-      let result: Connector
-      if (editing) {
-        result = await patchConnector(workspaceId, editing.id, { name: name.trim(), credentials: creds })
-      } else {
-        result = await createConnector(workspaceId, { name: name.trim(), type, credentials: creds })
-      }
-      onSaved(result)
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : 'Save failed')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} style={{
-      background: 'var(--color-surface)',
-      border: '1px solid var(--color-border)',
-      borderRadius: 'var(--radius-lg)',
-      padding: 'var(--space-6)',
-      marginBottom: 'var(--space-6)',
-    }}>
-      <h3 style={{ margin: '0 0 var(--space-4)', fontSize: 'var(--font-size-base)', fontWeight: 600, color: 'var(--color-text)' }}>
-        {editing ? 'Edit connector' : 'Add a connector'}
-      </h3>
-
-      {err && <p style={{ color: 'var(--color-error)', fontSize: 'var(--font-size-xs)', margin: '0 0 var(--space-3)' }}>{err}</p>}
-
-      <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
-        <input
-          autoFocus
-          type="text"
-          placeholder="Connector name"
-          value={name}
-          onChange={e => setName(e.target.value)}
-          style={{ ...inputStyle, flex: 1 }}
-        />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
-          <select
-            value={type}
-            onChange={e => { setType(e.target.value as ConnectorType); setCreds({}) }}
-            disabled={!!editing}
-            style={{ ...inputStyle, width: 140 }}
-          >
-            {visibleTypes.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-          {!editing && (
-            <button
-              type="button"
-              onClick={() => setShowAdvancedTypes(v => !v)}
-              style={{ background: 'none', border: 'none', color: 'var(--color-text-subtle)', fontSize: 'var(--font-size-xs)', cursor: 'pointer', textAlign: 'left', padding: 0 }}
-            >
-              {showAdvancedTypes ? 'Hide advanced types' : 'Show advanced types'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Dynamic credential fields */}
-      {loadingExisting ? (
-        <p style={{ color: '#555', fontSize: '0.8rem', margin: '0 0 8px' }}>Loading saved connector settings…</p>
-      ) : (
-        <CredentialFields type={type} creds={creds} storedSecrets={storedSecrets} onChange={updateCred} />
-      )}
-
-      <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-        <button type="submit" disabled={saving || !readyToSubmit} style={primaryBtn}>
-          {saving ? 'Saving…' : editing ? 'Update' : 'Create'}
-        </button>
-        <button type="button" onClick={onCancel} style={ghostBtn}>Cancel</button>
-      </div>
-    </form>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Dynamic credential fields
-// ---------------------------------------------------------------------------
-
-function CredentialFields({ type, creds, storedSecrets, onChange }: {
-  type: ConnectorType
-  creds: Record<string, unknown>
-  storedSecrets: Record<string, boolean>
-  onChange: (key: string, value: unknown) => void
-}) {
-  if (type === 'managed') return (
-    <p style={{ color: '#555', fontSize: '0.75rem', margin: '0 0 8px' }}>
-      Lima Table — no credentials needed. Define columns and manage rows after creating the connector.
-    </p>
-  )
-
-  if (type === 'postgres' || type === 'mysql' || type === 'mssql') {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input placeholder="Host" value={(creds.host as string) ?? ''} onChange={e => onChange('host', e.target.value)} style={{ ...inputStyle, flex: 2 }} />
-          <input placeholder="Port" type="number" value={(creds.port as string) ?? ''} onChange={e => onChange('port', parseInt(e.target.value) || '')} style={{ ...inputStyle, flex: 1 }} />
-        </div>
-        <input placeholder="Database" value={(creds.database as string) ?? ''} onChange={e => onChange('database', e.target.value)} style={inputStyle} />
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input placeholder="Username" value={(creds.username as string) ?? ''} onChange={e => onChange('username', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-          <input placeholder={storedSecrets.password ? 'Stored password unchanged' : 'Password'} type="password" value={(creds.password as string) ?? ''} onChange={e => onChange('password', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-        </div>
-        {storedSecrets.password && <span style={helperTextStyle}>Leave the password blank to keep the current stored password.</span>}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#888', fontSize: '0.8rem' }}>
-          <input type="checkbox" checked={!!creds.ssl} onChange={e => onChange('ssl', e.target.checked)} />
-          Use SSL
-        </label>
-      </div>
-    )
-  }
-
-  if (type === 'rest') {
-    const authType = (creds.auth_type as string) ?? 'none'
-    const endpoints = (creds.endpoints as Array<{ label: string; path: string }>) ?? []
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <input placeholder="Base URL  (e.g. https://api.example.com/v1)" value={(creds.base_url as string) ?? ''} onChange={e => onChange('base_url', e.target.value)} style={inputStyle} />
-        <select value={authType} onChange={e => onChange('auth_type', e.target.value)} style={inputStyle}>
-          <option value="none">No auth</option>
-          <option value="bearer">Bearer token</option>
-          <option value="token">Token auth (e.g. MOCO)</option>
-          <option value="basic">Basic auth</option>
-          <option value="api_key">API key</option>
-        </select>
-        {authType === 'bearer' && (
-          <>
-            <input placeholder={storedSecrets.token ? 'Stored token unchanged' : 'Token'} type="password" value={(creds.token as string) ?? ''} onChange={e => onChange('token', e.target.value)} style={inputStyle} />
-            {storedSecrets.token && <span style={helperTextStyle}>Leave the token blank to keep the current stored token.</span>}
-          </>
-        )}
-        {authType === 'token' && (
-          <>
-            <input placeholder={storedSecrets.token ? 'Stored token unchanged' : 'API token'} type="password" value={(creds.token as string) ?? ''} onChange={e => onChange('token', e.target.value)} style={inputStyle} />
-            <span style={helperTextStyle}>Sends: <code>Authorization: Token token=&lt;value&gt;</code> — used by MOCO and similar APIs.</span>
-            {storedSecrets.token && <span style={helperTextStyle}>Leave the token blank to keep the current stored token.</span>}
-          </>
-        )}
-        {authType === 'basic' && (
-          <>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input placeholder="Username" value={(creds.username as string) ?? ''} onChange={e => onChange('username', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-              <input placeholder={storedSecrets.password ? 'Stored password unchanged' : 'Password'} type="password" value={(creds.password as string) ?? ''} onChange={e => onChange('password', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-            </div>
-            {storedSecrets.password && <span style={helperTextStyle}>Leave the password blank to keep the current stored password.</span>}
-          </>
-        )}
-        {authType === 'api_key' && (
-          <>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input placeholder={storedSecrets.api_key ? 'Stored API key unchanged' : 'API key'} type="password" value={(creds.api_key as string) ?? ''} onChange={e => onChange('api_key', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-              <input placeholder="Header name (default: X-API-Key)" value={(creds.api_key_header as string) ?? ''} onChange={e => onChange('api_key_header', e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-            </div>
-            {storedSecrets.api_key && <span style={helperTextStyle}>Leave the API key blank to keep the current stored key.</span>}
-          </>
-        )}
-
-        {/* Named endpoints — let widget users pick from a dropdown instead of typing raw paths */}
-        <div style={{ borderTop: '1px solid #222', paddingTop: 10, marginTop: 2 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-            <span style={{ color: '#888', fontSize: '0.75rem', fontWeight: 500 }}>Named endpoints</span>
-            <button
-              type="button"
-              onClick={() => onChange('endpoints', [...endpoints, { label: '', path: '' }])}
-              style={{ ...ghostBtn, padding: '2px 8px', fontSize: '0.7rem' }}
-            >
-              + Add
-            </button>
-          </div>
-          {endpoints.length === 0 ? (
-            <p style={{ color: '#444', fontSize: '0.7rem', margin: 0, lineHeight: 1.5 }}>
-              Optional: name your API endpoints so widget users can pick them from a dropdown instead of typing paths manually.
-            </p>
-          ) : (
-            endpoints.map((ep, i) => (
-              <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-                <input
-                  placeholder="Label  (e.g. Sales data)"
-                  value={ep.label}
-                  onChange={e => {
-                    const next = [...endpoints]
-                    next[i] = { ...ep, label: e.target.value }
-                    onChange('endpoints', next)
-                  }}
-                  style={{ ...inputStyle, flex: 1 }}
-                />
-                <input
-                  placeholder="Path  (e.g. /api/sales)"
-                  value={ep.path}
-                  onChange={e => {
-                    const next = [...endpoints]
-                    next[i] = { ...ep, path: e.target.value }
-                    onChange('endpoints', next)
-                  }}
-                  style={{ ...inputStyle, flex: 1 }}
-                />
-                <button
-                  type="button"
-                  onClick={() => onChange('endpoints', endpoints.filter((_, j) => j !== i))}
-                  style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', padding: '0 4px', fontSize: '1.1rem', lineHeight: 1 }}
-                >
-                  ×
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  if (type === 'graphql') {
-    const authType = (creds.auth_type as string) ?? 'none'
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <input placeholder="GraphQL endpoint" value={(creds.endpoint as string) ?? ''} onChange={e => onChange('endpoint', e.target.value)} style={inputStyle} />
-        <select value={authType} onChange={e => onChange('auth_type', e.target.value)} style={inputStyle}>
-          <option value="none">No auth</option>
-          <option value="bearer">Bearer token</option>
-        </select>
-        {authType === 'bearer' && (
-          <>
-            <input placeholder={storedSecrets.token ? 'Stored token unchanged' : 'Token'} type="password" value={(creds.token as string) ?? ''} onChange={e => onChange('token', e.target.value)} style={inputStyle} />
-            {storedSecrets.token && <span style={helperTextStyle}>Leave the token blank to keep the current stored token.</span>}
-          </>
-        )}
-      </div>
-    )
-  }
-
-  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -1356,8 +1047,4 @@ const inputStyle: React.CSSProperties = {
   boxSizing: 'border-box',
 }
 
-const helperTextStyle: React.CSSProperties = {
-  color: '#666',
-  fontSize: '0.72rem',
-  lineHeight: 1.4,
-}
+

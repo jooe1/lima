@@ -52,6 +52,58 @@
       "mysql": "MySQL",
       "mssql": "SQL Server",
       "drawerTitle": "New connector"
+    },
+    "wizard": {
+      "step1": { "label": "Name", "title": "Name your connector" },
+      "step2": { "label": "Credentials", "title": "Configure connection" },
+      "step3": {
+        "label": "Access",
+        "title": "Who can use this?",
+        "placeholder": "All workspace members will have access to this connector. Fine-grained access control is coming soon."
+      },
+      "back": "Back",
+      "next": "Next",
+      "finish": "Finish",
+      "saving": "Saving\u2026",
+      "nameRequired": "Connector name is required",
+      "saveFailed": "Failed to save connector",
+      "fields": {
+        "name": { "label": "Connector name", "placeholder": "e.g. Production DB" },
+        "description": { "label": "Description (optional)", "placeholder": "What does this connect to?" },
+        "host": { "label": "Host", "tooltip": "The hostname or IP address of your database server." },
+        "port": { "label": "Port", "tooltip": "Default: 5432 (Postgres), 3306 (MySQL), 1433 (SQL Server)." },
+        "database": { "label": "Database", "tooltip": "The name of the database to connect to." },
+        "username": { "label": "Username" },
+        "password": { "label": "Password" },
+        "ssl": { "label": "Use SSL" },
+        "baseUrl": { "label": "Base URL" },
+        "endpoint": { "label": "GraphQL endpoint" },
+        "bearerToken": { "label": "Bearer token" },
+        "apiKey": { "label": "API key" },
+        "apiKeyHeader": { "label": "Header name" },
+        "basicUser": { "label": "Username" },
+        "basicPass": { "label": "Password" },
+        "mocoToken": { "label": "Token" }
+      },
+      "auth": {
+        "noAuth": "No auth",
+        "bearer": "Bearer token",
+        "apiKey": "API key",
+        "basic": "Username & password",
+        "moreOptions": "More auth options",
+        "lessOptions": "Hide auth options",
+        "moco": "Token auth (MOCO)"
+      },
+      "csv": {
+        "uploadLabel": "Select a CSV file",
+        "preview": "Preview (first 5 rows)",
+        "noPreview": "Select a file to preview"
+      },
+      "managed": {
+        "hint": "Lima Managed Table — no external credentials needed. Add columns and rows after creating the connector.",
+        "addColumn": "First column name (optional)",
+        "addColumnPlaceholder": "e.g. Email"
+      }
     }
   }
 }
