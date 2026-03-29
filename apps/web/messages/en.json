@@ -38,5 +38,20 @@
     "devSignIn": "Dev sign in",
     "signingIn": "Signing in…"
   },
-  "connectors": {}
+  "connectors": {
+    "typePicker": {
+      "spreadsheet": "Upload a spreadsheet",
+      "database": "Connect a database",
+      "webService": "Connect a web service",
+      "graphql": "Call a GraphQL API",
+      "sharedTable": "Create a shared table",
+      "moreOptions": "More options",
+      "dbSubHeading": "Choose a database",
+      "back": "Back",
+      "postgres": "PostgreSQL",
+      "mysql": "MySQL",
+      "mssql": "SQL Server",
+      "drawerTitle": "New connector"
+    }
+  }
 }

@@ -15,6 +15,8 @@ import {
 } from '../../../lib/api'
 import { ConnectorGrantsTab } from './ConnectorGrantsTab'
 import ConnectorSetupHint from './ConnectorSetupHint'
+import { ConnectorDrawer } from './ConnectorDrawer'
+import { ConnectorTypePicker } from './ConnectorTypePicker'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,6 +60,7 @@ export default function ConnectorsPage() {
   const [selected, setSelected] = useState<Connector | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Connector | null>(null)
+  const [drawerState, setDrawerState] = useState<'closed' | 'type-picker' | 'wizard' | 'detail'>('closed')
 
   const load = useCallback(() => {
     if (!workspace) return
@@ -78,8 +81,19 @@ export default function ConnectorsPage() {
 
   function handleNew() {
     setEditing(null)
-    setShowForm(true)
+    setShowForm(false)
     setSelected(null)
+    setDrawerState('type-picker')
+  }
+
+  function handleTypeSelected(type: ConnectorType, _dbBrand?: 'postgres' | 'mysql' | 'mssql') {
+    void type
+    // Commit 5 will render the wizard here using type/_dbBrand
+    setDrawerState('wizard')
+  }
+
+  function handleDrawerClose() {
+    setDrawerState('closed')
   }
 
   function handleEdit(c: Connector) {
@@ -123,7 +137,18 @@ export default function ConnectorsPage() {
 
       {error && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: '0 0 1rem' }}>{error}</p>}
 
-      {/* Create / Edit form */}
+      {/* Drawer: new connector flow (type picker → Commit 5 wizard) */}
+      <ConnectorDrawer
+        isOpen={drawerState !== 'closed'}
+        onClose={handleDrawerClose}
+        title={drawerState === 'type-picker' ? 'New connector' : undefined}
+      >
+        {drawerState === 'type-picker' && (
+          <ConnectorTypePicker onSelect={handleTypeSelected} />
+        )}
+      </ConnectorDrawer>
+
+      {/* Edit form (inline — used for editing existing connectors) */}
       {showForm && workspace && (
         <ConnectorForm
           workspaceId={workspace.id}

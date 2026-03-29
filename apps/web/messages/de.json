@@ -38,5 +38,20 @@
     "devSignIn": "Als Entwickler anmelden",
     "signingIn": "Anmelden…"
   },
-  "connectors": {}
+  "connectors": {
+    "typePicker": {
+      "spreadsheet": "Tabelle hochladen",
+      "database": "Datenbank verbinden",
+      "webService": "Webdienst verbinden",
+      "graphql": "GraphQL-API aufrufen",
+      "sharedTable": "Gemeinsame Tabelle erstellen",
+      "moreOptions": "Mehr Optionen",
+      "dbSubHeading": "Datenbank auswählen",
+      "back": "Zurück",
+      "postgres": "PostgreSQL",
+      "mysql": "MySQL",
+      "mssql": "SQL Server",
+      "drawerTitle": "Neuer Konnektor"
+    }
+  }
 }

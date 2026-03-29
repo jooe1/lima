@@ -11,7 +11,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ci": "playwright test --reporter=list",
     "test:e2e:self-serve": "playwright test tests/e2e/self-serve-smoke.spec.ts tests/e2e/publish-blockers.spec.ts",
-    "release:smoke": "playwright test tests/e2e/self-serve-smoke.spec.ts tests/e2e/publish-blockers.spec.ts --reporter=list"
+    "release:smoke": "playwright test tests/e2e/self-serve-smoke.spec.ts tests/e2e/publish-blockers.spec.ts --reporter=list",
+    "test:unit": "vitest run"
   },
   "dependencies": {
     "@lima/aura-dsl": "workspace:*",
@@ -25,11 +26,15 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.44.0",
+    "@testing-library/react": "^16.3.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "eslint": "^9",
     "eslint-config-next": "16.1.7",
-    "typescript": "^5.6.3"
+    "jsdom": "^26.1.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
   }
 }
