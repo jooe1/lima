@@ -160,6 +160,26 @@
       "columnName": "Spaltenname",
       "columnType": "Typ",
       "saving": "Wird gespeichert\u2026"
+    },
+    "list": {
+      "categories": {
+        "files": "Ihre Dateien",
+        "databases": "Datenbanken",
+        "apis": "APIs & Webdienste",
+        "sharedTables": "Gemeinsame Tabellen"
+      },
+      "status": {
+        "connected": "Verbunden",
+        "notSetUp": "Noch nicht eingerichtet"
+      },
+      "manage": "Verwalten",
+      "add": "\uff0b Hinzuf\u00fcgen",
+      "addFirst": {
+        "files": "\uff0b Erste Datei hinzuf\u00fcgen",
+        "databases": "\uff0b Erste Datenbank hinzuf\u00fcgen",
+        "apis": "\uff0b Erste API hinzuf\u00fcgen",
+        "sharedTables": "\uff0b Erste gemeinsame Tabelle hinzuf\u00fcgen"
+      }
     }
   }
 }

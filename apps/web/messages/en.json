@@ -161,6 +161,26 @@
       "columnName": "Column name",
       "columnType": "Type",
       "saving": "Saving\u2026"
+    },
+    "list": {
+      "categories": {
+        "files": "Your Files",
+        "databases": "Databases",
+        "apis": "APIs & Web Services",
+        "sharedTables": "Shared Tables"
+      },
+      "status": {
+        "connected": "Connected",
+        "notSetUp": "Not set up yet"
+      },
+      "manage": "Manage",
+      "add": "\uff0b Add",
+      "addFirst": {
+        "files": "\uff0b Add your first file",
+        "databases": "\uff0b Add your first database",
+        "apis": "\uff0b Add your first API",
+        "sharedTables": "\uff0b Add your first shared table"
+      }
     }
   }
 }

@@ -20,6 +20,7 @@ import { ConnectorTypePicker } from './ConnectorTypePicker'
 import { ActionForm } from './ActionForm'
 import { ConnectorEducationCard } from './ConnectorEducationCard'
 import { ManagedColumnBuilder } from './ManagedColumnBuilder'
+import { ConnectorList, type ConnectorCategory } from './ConnectorList'
 
 // ---------------------------------------------------------------------------
 // Types / constants
@@ -56,6 +57,7 @@ export default function ConnectorsPage() {
   const [wizardDbBrand, setWizardDbBrand] = useState<'postgres' | 'mysql' | 'mssql' | undefined>(undefined)
   const [actionsTabConnectorId, setActionsTabConnectorId] = useState<string | null>(null)
   const [postCreationConnector, setPostCreationConnector] = useState<Connector | null>(null)
+  const [pickerCategory, setPickerCategory] = useState<ConnectorCategory | undefined>(undefined)
 
   const load = useCallback(() => {
     if (!workspace) return
@@ -75,6 +77,15 @@ export default function ConnectorsPage() {
   }
 
   function handleNew() {
+    setPickerCategory(undefined)
+    setEditing(null)
+    setShowForm(false)
+    setSelected(null)
+    setDrawerState('type-picker')
+  }
+
+  function handleAdd(category: ConnectorCategory) {
+    setPickerCategory(category)
     setEditing(null)
     setShowForm(false)
     setSelected(null)
@@ -91,6 +102,7 @@ export default function ConnectorsPage() {
     setDrawerState('closed')
     setWizardType(null)
     setWizardDbBrand(undefined)
+    setPickerCategory(undefined)
   }
 
   function handleWizardComplete(c: Connector, opts?: { multiAction?: boolean }) {
@@ -139,7 +151,7 @@ export default function ConnectorsPage() {
           Manage data source connections for your workspace.
         </span>
         <div style={{ flex: 1 }} />
-        <button onClick={load} style={ghostBtn}>Refresh</button>
+        <button onClick={load} style={ghostBtn} title="Refresh">↻</button>
         {isAdmin && <button onClick={handleNew} style={primaryBtn}>New connector</button>}
       </div>
 
@@ -152,7 +164,7 @@ export default function ConnectorsPage() {
         title="New connector"
       >
         {drawerState === 'type-picker' && (
-          <ConnectorTypePicker onSelect={handleTypeSelected} />
+          <ConnectorTypePicker onSelect={handleTypeSelected} initialCategory={pickerCategory} />
         )}
         {drawerState === 'wizard' && wizardType && workspace && (
           <ConnectorWizard
@@ -165,47 +177,15 @@ export default function ConnectorsPage() {
         )}
       </ConnectorDrawer>
 
-      {/* Connector grid */}
+      {/* Connector list */}
       {loading ? (
         <p style={{ color: '#555', fontSize: '0.8rem' }}>Loading…</p>
-      ) : connectors.length === 0 ? (
-        <div>
-          <div style={{
-            background: 'var(--color-surface)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: 'var(--space-6)',
-            marginBottom: 'var(--space-6)',
-          }}>
-            <h3 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, color: 'var(--color-text)', marginBottom: 'var(--space-2)', marginTop: 0 }}>
-              Connect your first data source
-            </h3>
-            <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)', marginBottom: isAdmin ? 'var(--space-4)' : 0, marginTop: 0 }}>
-              Connectors let your apps read and write data. Start with a database, REST API, or a Lima-managed table — your choice.
-            </p>
-            {isAdmin && (
-              <button type="button" onClick={handleNew} style={primaryBtn}>
-                Add connector
-              </button>
-            )}
-          </div>
-          {!isAdmin && (
-            <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)' }}>
-              A workspace admin needs to add connectors before you can build data-connected apps.
-            </p>
-          )}
-        </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12, marginBottom: selected ? 16 : 0 }}>
-          {connectors.map(c => (
-            <ConnectorCard
-              key={c.id}
-              connector={c}
-              isSelected={selected?.id === c.id}
-              onClick={() => handleSelect(c)}
-            />
-          ))}
-        </div>
+        <ConnectorList
+          connectors={connectors}
+          onManage={handleSelect}
+          onAdd={handleAdd}
+        />
       )}
 
       {/* Education card — shown after connector creation */}
@@ -232,49 +212,6 @@ export default function ConnectorsPage() {
         />
       )}
     </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Connector card
-// ---------------------------------------------------------------------------
-
-function ConnectorCard({ connector, isSelected, onClick }: {
-  connector: Connector
-  isSelected: boolean
-  onClick: () => void
-}) {
-  const c = connector
-  const tc = TYPE_COLORS[c.type]
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        background: '#111', border: `1px solid ${isSelected ? '#2563eb' : '#1f1f1f'}`,
-        borderRadius: 10, padding: '1.25rem', textAlign: 'left', cursor: 'pointer',
-        transition: 'border-color 0.15s',
-      }}
-      onMouseEnter={e => { if (!isSelected) e.currentTarget.style.borderColor = '#333' }}
-      onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = '#1f1f1f' }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-        <span style={{ fontWeight: 600, color: '#e5e5e5', fontSize: '0.9rem' }}>{c.name}</span>
-        <span style={{
-          fontSize: '0.65rem', padding: '2px 8px', borderRadius: 99,
-          background: tc.bg, color: tc.fg,
-        }}>
-          {c.type}
-        </span>
-      </div>
-      <p style={{ color: '#555', fontSize: '0.75rem', margin: '0 0 4px' }}>
-        Schema: {c.schema_cached_at
-          ? new Date(c.schema_cached_at).toLocaleDateString()
-          : 'No schema'}
-      </p>
-      <p style={{ color: '#444', fontSize: '0.7rem', margin: 0 }}>
-        Created {new Date(c.created_at).toLocaleDateString()}
-      </p>
-    </button>
   )
 }
 
