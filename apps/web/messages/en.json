@@ -1,1 +1,42 @@
-{}
+{
+  "nav": {
+    "brand": "Lima",
+    "apps": "Apps",
+    "connectors": "Connectors",
+    "approvals": "Approvals",
+    "admin": "Admin",
+    "aiSettings": "AI Settings",
+    "workspace": "Workspace",
+    "more": "More",
+    "signOut": "Sign out",
+    "tools": "Tools"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "back": "Back",
+    "next": "Next",
+    "close": "Close",
+    "loading": "Loading...",
+    "error": "Error"
+  },
+  "auth": {
+    "tagline": "Sign in to build and launch internal tools.",
+    "continueWithSSO": "Continue with SSO",
+    "continueWithGoogle": "Continue with Google",
+    "orContinueWithEmail": "or continue with email",
+    "emailAddress": "Email address",
+    "emailPlaceholder": "you@company.com",
+    "companySlug": "Company slug",
+    "companySlugPlaceholder": "e.g. acme",
+    "sendMagicLink": "Send magic link",
+    "sending": "Sending…",
+    "checkInbox": "Check your inbox — we’ve sent a login link to {email}.",
+    "devAccess": "Developer access",
+    "email": "Email",
+    "nameOptional": "Name (optional)",
+    "devSignIn": "Dev sign in",
+    "signingIn": "Signing in…"
+  },
+  "connectors": {}
+}

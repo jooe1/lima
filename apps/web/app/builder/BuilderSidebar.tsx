@@ -2,29 +2,41 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { useAuth } from '../../lib/auth'
+import { patchUserLanguage } from '../../lib/api'
 
 // Navigation contract: primary items kept stable for later builder commits.
-const PRIMARY_NAV: Array<{ href: string; label: string; matchPrefix?: boolean }> = [
-  { href: '/builder', label: 'Apps' },
-  { href: '/builder/connectors', label: 'Connectors' },
+const PRIMARY_NAV: Array<{ href: string; labelKey: string; matchPrefix?: boolean }> = [
+  { href: '/builder', labelKey: 'apps' },
+  { href: '/builder/connectors', labelKey: 'connectors' },
 ]
 
-const SECONDARY_NAV: Array<{ href: string; label: string; matchPrefix?: boolean }> = [
-  { href: '/builder/approvals', label: 'Approvals' },
-  { href: '/builder/admin', label: 'Admin', matchPrefix: true },
-  { href: '/builder/settings', label: 'AI Settings' },
+const SECONDARY_NAV: Array<{ href: string; labelKey: string; matchPrefix?: boolean }> = [
+  { href: '/builder/approvals', labelKey: 'approvals' },
+  { href: '/builder/admin', labelKey: 'admin', matchPrefix: true },
+  { href: '/builder/settings', labelKey: 'aiSettings' },
 ]
 
 export default function BuilderSidebar() {
-  const { user, company, workspace, workspaces, selectWorkspace, signOut } = useAuth()
+  const { user, company, workspace, workspaces, selectWorkspace, signOut, setLanguage } = useAuth()
   const pathname = usePathname()
   const router = useRouter()
+  const t = useTranslations('nav')
 
   function handleSignOut() {
     signOut()
     router.push('/login')
   }
+
+  async function handleLocaleChange(lang: 'en' | 'de') {
+    document.cookie = `NEXT_LOCALE=${lang};path=/;max-age=31536000`
+    setLanguage(lang)
+    await patchUserLanguage(lang)
+    router.refresh()
+  }
+
+  const locale = user?.language ?? 'en'
 
   function isActive(href: string, matchPrefix?: boolean) {
     if (matchPrefix) return pathname.startsWith(href)
@@ -42,7 +54,7 @@ export default function BuilderSidebar() {
     }}>
       {/* Branding */}
       <div style={{ padding: '0 var(--space-4) var(--space-4)', borderBottom: '1px solid var(--color-border)' }}>
-        <span style={{ fontWeight: 700, fontSize: 'var(--font-size-base)', color: 'var(--color-text)' }}>Lima</span>
+        <span style={{ fontWeight: 700, fontSize: 'var(--font-size-base)', color: 'var(--color-text)' }}>{t('brand')}</span>
         {company && (
           <p style={{ color: 'var(--color-text-subtle)', fontSize: 'var(--font-size-xs)', margin: 'var(--space-1) 0 0' }}>
             {company.name || company.slug}
@@ -54,7 +66,7 @@ export default function BuilderSidebar() {
       {workspaces.length > 1 ? (
         <div style={{ padding: 'var(--space-3) var(--space-4)', borderBottom: '1px solid var(--color-border)' }}>
           <label htmlFor="ws-select" style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-subtle)', display: 'block', marginBottom: 'var(--space-1)' }}>
-            Workspace
+            {t('workspace')}
           </label>
           <select
             id="ws-select"
@@ -86,40 +98,62 @@ export default function BuilderSidebar() {
 
       {/* Primary nav */}
       <nav aria-label="Main navigation" style={{ padding: 'var(--space-2) 0' }}>
-        {PRIMARY_NAV.map(({ href, label, matchPrefix }) => (
-          <NavItem key={href} href={href} active={isActive(href, matchPrefix)} label={label} />
+        {PRIMARY_NAV.map(({ href, labelKey, matchPrefix }) => (
+          <NavItem key={href} href={href} active={isActive(href, matchPrefix)} label={t(labelKey)} />
         ))}
       </nav>
 
       {/* Secondary nav */}
       <div style={{ borderTop: '1px solid var(--color-border)', padding: 'var(--space-2) 0', marginTop: 'auto' }}>
         <p style={{ padding: '0 var(--space-4)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-subtle)', marginBottom: 'var(--space-1)' }}>
-          More
+          {t('more')}
         </p>
-        {SECONDARY_NAV.map(({ href, label, matchPrefix }) => (
-          <NavItem key={href} href={href} active={isActive(href, matchPrefix)} label={label} muted />
+        {SECONDARY_NAV.map(({ href, labelKey, matchPrefix }) => (
+          <NavItem key={href} href={href} active={isActive(href, matchPrefix)} label={t(labelKey)} muted />
         ))}
       </div>
 
-      {/* User */}
+      {/* User + language toggle */}
       <div style={{ padding: 'var(--space-3) var(--space-4)', borderTop: '1px solid var(--color-border)' }}>
         <p style={{ color: 'var(--color-text-subtle)', fontSize: 'var(--font-size-xs)', margin: '0 0 var(--space-2)' }}>
-          {user?.email ?? user?.id?.slice(0, 8) + '…'}
+          {user?.email ?? (user?.id?.slice(0, 8) + '…')}
         </p>
-        <button
-          onClick={handleSignOut}
-          style={{
-            background: 'none',
-            border: '1px solid var(--color-border-muted)',
-            color: 'var(--color-text-muted)',
-            borderRadius: 'var(--radius-sm)',
-            padding: 'var(--space-1) var(--space-3)',
-            fontSize: 'var(--font-size-xs)',
-            cursor: 'pointer',
-          }}
-        >
-          Sign out
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <button
+            onClick={handleSignOut}
+            style={{
+              background: 'none',
+              border: '1px solid var(--color-border-muted)',
+              color: 'var(--color-text-muted)',
+              borderRadius: 'var(--radius-sm)',
+              padding: 'var(--space-1) var(--space-3)',
+              fontSize: 'var(--font-size-xs)',
+              cursor: 'pointer',
+            }}
+          >
+            {t('signOut')}
+          </button>
+          <div style={{ display: 'flex', gap: 2 }}>
+            {(['en', 'de'] as const).map(lang => (
+              <button
+                key={lang}
+                onClick={() => { void handleLocaleChange(lang) }}
+                style={{
+                  background: locale === lang ? 'var(--color-surface-raised)' : 'none',
+                  border: `1px solid ${locale === lang ? 'var(--color-border-muted)' : 'transparent'}`,
+                  color: locale === lang ? 'var(--color-text)' : 'var(--color-text-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '2px 6px',
+                  fontSize: 'var(--font-size-xs)',
+                  cursor: 'pointer',
+                  fontWeight: locale === lang ? 600 : 400,
+                }}
+              >
+                {lang.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </aside>
   )

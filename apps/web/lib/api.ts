@@ -255,6 +255,13 @@ export interface UpdateUserAISettingsInput {
   clear_stored_secret?: boolean
 }
 
+export function patchUserLanguage(lang: 'en' | 'de'): Promise<void> {
+  return request<void>('/v1/me/language', {
+    method: 'PATCH',
+    body: JSON.stringify({ language: lang }),
+  })
+}
+
 export function getMyAISettings() {
   return request<UserAISettings>('/v1/me/ai-settings')
 }

@@ -1,1 +1,42 @@
-{}
+{
+  "nav": {
+    "brand": "Lima",
+    "apps": "Apps",
+    "connectors": "Konnektoren",
+    "approvals": "Genehmigungen",
+    "admin": "Admin",
+    "aiSettings": "KI-Einstellungen",
+    "workspace": "Arbeitsbereich",
+    "more": "Mehr",
+    "signOut": "Abmelden",
+    "tools": "Tools"
+  },
+  "common": {
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "back": "Zurück",
+    "next": "Weiter",
+    "close": "Schließen",
+    "loading": "Laden...",
+    "error": "Fehler"
+  },
+  "auth": {
+    "tagline": "Bei der Plattform für interne Tools anmelden.",
+    "continueWithSSO": "Mit SSO fortfahren",
+    "continueWithGoogle": "Mit Google fortfahren",
+    "orContinueWithEmail": "oder mit E-Mail fortfahren",
+    "emailAddress": "E-Mail-Adresse",
+    "emailPlaceholder": "sie@unternehmen.de",
+    "companySlug": "Unternehmens-Slug",
+    "companySlugPlaceholder": "z. B. muster",
+    "sendMagicLink": "Magic Link senden",
+    "sending": "Wird gesendet…",
+    "checkInbox": "Posteingang prüfen — wir haben einen Anmeldelink an {email} gesendet.",
+    "devAccess": "Entwicklerzugang",
+    "email": "E-Mail",
+    "nameOptional": "Name (optional)",
+    "devSignIn": "Als Entwickler anmelden",
+    "signingIn": "Anmelden…"
+  },
+  "connectors": {}
+}

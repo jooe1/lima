@@ -9,6 +9,7 @@ interface AuthUser {
   companyId: string
   email?: string
   role: string
+  language: 'en' | 'de'
 }
 
 interface AuthState {
@@ -24,6 +25,7 @@ interface AuthActions {
   signIn: (token: string, company: Company) => Promise<void>
   signOut: () => void
   selectWorkspace: (ws: Workspace) => void
+  setLanguage: (lang: 'en' | 'de') => void
 }
 
 interface AuthDerivedFlags {
@@ -34,10 +36,17 @@ interface AuthDerivedFlags {
 
 const AuthContext = createContext<(AuthState & AuthActions & AuthDerivedFlags) | null>(null)
 
+function readLocaleCookie(): 'en' | 'de' {
+  if (typeof document === 'undefined') return 'en'
+  const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('NEXT_LOCALE='))
+  return match?.split('=')[1] === 'de' ? 'de' : 'en'
+}
+
 function parseJWT(token: string): AuthUser | null {
   try {
     const payload = JSON.parse(atob(token.split('.')[1]))
-    return { id: payload.sub, companyId: payload.company_id, role: payload.role }
+    const language: 'en' | 'de' = payload.language === 'de' ? 'de' : readLocaleCookie()
+    return { id: payload.sub, companyId: payload.company_id, role: payload.role, language }
   } catch {
     return null
   }
@@ -141,12 +150,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState(s => ({ ...s, workspace: ws }))
   }, [])
 
+  const setLanguage = useCallback((lang: 'en' | 'de') => {
+    setState(s => s.user ? { ...s, user: { ...s.user, language: lang } } : s)
+  }, [])
+
   const canAccessBuilder = !state.isLoading && state.token !== null && state.user !== null
   const canAccessTools = canAccessBuilder
   const canCreateTools = canAccessBuilder
 
   return (
-    <AuthContext.Provider value={{ ...state, signIn, signOut, selectWorkspace, canAccessBuilder, canAccessTools, canCreateTools }}>
+    <AuthContext.Provider value={{ ...state, signIn, signOut, selectWorkspace, setLanguage, canAccessBuilder, canAccessTools, canCreateTools }}>
       {children}
     </AuthContext.Provider>
   )
