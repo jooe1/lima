@@ -2,9 +2,10 @@
 
 import React, { useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { createConnector } from '../../../lib/api'
+import { createConnector, upsertConnectorAction } from '../../../lib/api'
 import type { ConnectorType, Connector } from '../../../lib/api'
 import { DatabaseStep, RestStep, CsvStep, ManagedStep, GraphQLStep } from './CredentialSteps'
+import { ApiEndpointGuide } from './ApiEndpointGuide'
 
 export function ConnectorWizard({
   connectorType,
@@ -16,7 +17,7 @@ export function ConnectorWizard({
 }: {
   connectorType: ConnectorType
   dbBrand?: 'postgres' | 'mysql' | 'mssql'
-  onComplete: (connector: Connector) => void
+  onComplete: (connector: Connector, opts?: { multiAction?: boolean }) => void
   onBack: () => void
   workspaceId: string
   children?: React.ReactNode
@@ -30,6 +31,7 @@ export function ConnectorWizard({
   const [err, setErr] = useState('')
 
   const effectiveType: ConnectorType = dbBrand ?? connectorType
+  const isRestOrGraphql = effectiveType === 'rest' || effectiveType === 'graphql'
 
   function handleCredChange(key: string, value: string) {
     setCredValues(prev => ({ ...prev, [key]: value }))
@@ -52,6 +54,62 @@ export function ConnectorWizard({
         credentials: apiCreds,
       })
       onComplete(connector)
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : t('saveFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleSingleEndpoint(label: string) {
+    if (!name.trim()) {
+      setErr(t('nameRequired'))
+      return
+    }
+    setSaving(true)
+    setErr('')
+    try {
+      const { file_name: _fn, ...apiCreds } = credValues
+      void _fn
+      const connector = await createConnector(workspaceId, {
+        name: name.trim(),
+        type: effectiveType,
+        credentials: apiCreds,
+      })
+      const actionKey = label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+      const resourceName = connector.name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+      await upsertConnectorAction(workspaceId, connector.id, {
+        action_key: actionKey,
+        action_label: label,
+        resource_name: resourceName,
+        http_method: 'GET',
+        path_template: '',
+        input_fields: [],
+      })
+      onComplete(connector)
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : t('saveFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleMultiAction() {
+    if (!name.trim()) {
+      setErr(t('nameRequired'))
+      return
+    }
+    setSaving(true)
+    setErr('')
+    try {
+      const { file_name: _fn, ...apiCreds } = credValues
+      void _fn
+      const connector = await createConnector(workspaceId, {
+        name: name.trim(),
+        type: effectiveType,
+        credentials: apiCreds,
+      })
+      onComplete(connector, { multiAction: true })
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : t('saveFailed'))
     } finally {
@@ -143,11 +201,21 @@ export function ConnectorWizard({
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.95rem', fontWeight: 600, color: '#e5e5e5' }}>
               {t('step3.title')}
             </h3>
-            {/* children prop is the extensibility point; Commit 6 passes <ApiEndpointGuide> here for REST/GraphQL */}
-            {children ?? (
-              <p style={{ color: '#888', fontSize: '0.85rem', lineHeight: 1.7, margin: 0 }}>
-                {t('step3.placeholder')}
-              </p>
+            {isRestOrGraphql ? (
+              saving ? (
+                <p style={{ color: '#888', fontSize: '0.85rem', margin: 0 }}>{t('saving')}</p>
+              ) : (
+                <ApiEndpointGuide
+                  onSingleEndpoint={handleSingleEndpoint}
+                  onMultiAction={handleMultiAction}
+                />
+              )
+            ) : (
+              children ?? (
+                <p style={{ color: '#888', fontSize: '0.85rem', lineHeight: 1.7, margin: 0 }}>
+                  {t('step3.placeholder')}
+                </p>
+              )
             )}
           </div>
         )}
@@ -180,6 +248,8 @@ export function ConnectorWizard({
           >
             {t('next')}
           </button>
+        ) : isRestOrGraphql ? (
+          saving ? <span style={{ color: '#888', fontSize: '0.8rem' }}>{t('saving')}</span> : null
         ) : (
           <button
             type="button"

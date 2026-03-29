@@ -8,16 +8,17 @@ import {
   getManagedTableColumns, setManagedTableColumns,
   listManagedTableRows, insertManagedTableRow, updateManagedTableRow, deleteManagedTableRow,
   seedManagedTableFromCSV, exportManagedTableCSVUrl,
-  listConnectorActions, upsertConnectorAction, deleteConnectorAction,
+  listConnectorActions, deleteConnectorAction,
   type Connector, type ConnectorType, type TestConnectorResponse,
   type ConnectorSchemaResponse, type ManagedTableColumn, type ManagedTableRow,
-  type DashboardQueryResponse, type ActionDefinition, type ActionDefinitionInput, type ActionFieldType,
+  type DashboardQueryResponse, type ActionDefinition,
 } from '../../../lib/api'
 import { ConnectorWizard } from './ConnectorWizard'
 import { ConnectorGrantsTab } from './ConnectorGrantsTab'
 import ConnectorSetupHint from './ConnectorSetupHint'
 import { ConnectorDrawer } from './ConnectorDrawer'
 import { ConnectorTypePicker } from './ConnectorTypePicker'
+import { ActionForm } from './ActionForm'
 
 // ---------------------------------------------------------------------------
 // Types / constants
@@ -52,6 +53,7 @@ export default function ConnectorsPage() {
   const [drawerState, setDrawerState] = useState<'closed' | 'type-picker' | 'wizard' | 'detail'>('closed')
   const [wizardType, setWizardType] = useState<ConnectorType | null>(null)
   const [wizardDbBrand, setWizardDbBrand] = useState<'postgres' | 'mysql' | 'mssql' | undefined>(undefined)
+  const [actionsTabConnectorId, setActionsTabConnectorId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     if (!workspace) return
@@ -89,11 +91,14 @@ export default function ConnectorsPage() {
     setWizardDbBrand(undefined)
   }
 
-  function handleWizardComplete(c: Connector) {
+  function handleWizardComplete(c: Connector, opts?: { multiAction?: boolean }) {
     handleSaved(c)
     setDrawerState('closed')
     setWizardType(null)
     setWizardDbBrand(undefined)
+    if (opts?.multiAction) {
+      setActionsTabConnectorId(c.id)
+    }
   }
 
   function handleEdit(c: Connector) {
@@ -193,6 +198,7 @@ export default function ConnectorsPage() {
           connector={selected}
           workspaceId={workspace.id}
           isAdmin={isAdmin}
+          openActionsOnMount={actionsTabConnectorId === selected.id}
           onEdit={() => handleEdit(selected)}
           onDeleted={handleDeleted}
           onUpdated={(c) => {
@@ -252,10 +258,11 @@ function ConnectorCard({ connector, isSelected, onClick }: {
 // Detail panel
 // ---------------------------------------------------------------------------
 
-function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpdated }: {
+function DetailPanel({ connector, workspaceId, isAdmin, openActionsOnMount = false, onEdit, onDeleted, onUpdated }: {
   connector: Connector
   workspaceId: string
   isAdmin: boolean
+  openActionsOnMount?: boolean
   onEdit: () => void
   onDeleted: (id: string) => void
   onUpdated: (c: Connector) => void
@@ -312,7 +319,7 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
     setSql('')
     setQueryResult(null)
     setQueryError('')
-    setActiveTab('details')
+    setActiveTab(openActionsOnMount ? 'actions' : 'details')
     setConnActions([])
     setActionsError('')
     setShowActionForm(false)
@@ -329,7 +336,7 @@ function DetailPanel({ connector, workspaceId, isAdmin, onEdit, onDeleted, onUpd
         .catch(() => setActionsError('Failed to load actions'))
         .finally(() => setActionsLoading(false))
     }
-  }, [connector.id, connector.type, workspaceId])
+  }, [connector.id, connector.type, workspaceId, openActionsOnMount])
 
   async function handleTest() {
     setTestLoading(true)
@@ -777,9 +784,6 @@ function QueryResultTable({ result }: { result: DashboardQueryResponse }) {
 // Action Catalog panel (REST / GraphQL connectors)
 // ---------------------------------------------------------------------------
 
-const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
-const FIELD_TYPES: ActionFieldType[] = ['text', 'email', 'number', 'boolean', 'date', 'enum', 'textarea']
-
 function ActionCatalogPanel({
   workspaceId, connectorId, isAdmin, actions, loading, error,
   editingAction, showActionForm, onShowForm, onHideForm, onSaved, onDeleted,
@@ -869,156 +873,12 @@ function ActionCatalogPanel({
         <ActionForm
           workspaceId={workspaceId}
           connectorId={connectorId}
-          editing={editingAction}
-          onSaved={onSaved}
+          action={editingAction ?? undefined}
+          onSave={onSaved}
           onCancel={onHideForm}
         />
       )}
     </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Action form (create / edit)
-// ---------------------------------------------------------------------------
-
-type ActionFieldDraft = {
-  key: string; label: string; field_type: ActionFieldType
-  required: boolean; enum_values: string; description: string
-}
-
-function emptyField(): ActionFieldDraft {
-  return { key: '', label: '', field_type: 'text', required: false, enum_values: '', description: '' }
-}
-
-function ActionForm({
-  workspaceId, connectorId, editing, onSaved, onCancel,
-}: {
-  workspaceId: string
-  connectorId: string
-  editing: ActionDefinition | null
-  onSaved: (a: ActionDefinition) => void
-  onCancel: () => void
-}) {
-  const [resource, setResource] = useState(editing?.resource_name ?? '')
-  const [actionKey, setActionKey] = useState(editing?.action_key ?? '')
-  const [label, setLabel] = useState(editing?.action_label ?? '')
-  const [description, setDescription] = useState(editing?.description ?? '')
-  const [method, setMethod] = useState(editing?.http_method ?? 'POST')
-  const [path, setPath] = useState(editing?.path_template ?? '')
-  const [fields, setFields] = useState<ActionFieldDraft[]>(
-    editing?.input_fields?.map(f => ({
-      key: f.key, label: f.label, field_type: f.field_type,
-      required: f.required, enum_values: f.enum_values?.join(', ') ?? '', description: f.description ?? '',
-    })) ?? [emptyField()]
-  )
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState('')
-
-  function updateField(i: number, patch: Partial<ActionFieldDraft>) {
-    setFields(prev => prev.map((f, idx) => idx === i ? { ...f, ...patch } : f))
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setSaving(true)
-    setSaveError('')
-    const input: ActionDefinitionInput = {
-      resource_name: resource.trim(),
-      action_key: actionKey.trim(),
-      action_label: label.trim(),
-      description: description.trim(),
-      http_method: method,
-      path_template: path.trim(),
-      input_fields: fields.filter(f => f.key.trim()).map(f => ({
-        key: f.key.trim(),
-        label: f.label.trim(),
-        field_type: f.field_type,
-        required: f.required,
-        enum_values: f.enum_values ? f.enum_values.split(',').map(s => s.trim()).filter(Boolean) : undefined,
-        description: f.description.trim() || undefined,
-      })),
-    }
-    try {
-      const saved = await upsertConnectorAction(workspaceId, connectorId, input)
-      onSaved(saved)
-    } catch (err: unknown) {
-      setSaveError(err instanceof Error ? err.message : 'Save failed')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const is = inputStyle
-
-  return (
-    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <h4 style={{ margin: '0 0 4px', color: '#ccc', fontSize: '0.85rem' }}>
-        {editing ? 'Edit action' : 'New action'}
-      </h4>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          Resource / group
-          <input style={is} value={resource} onChange={e => setResource(e.target.value)} placeholder="Contacts" />
-        </label>
-        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          Action key <span style={{ color: '#555' }}>(unique, no spaces)</span>
-          <input style={is} value={actionKey} onChange={e => setActionKey(e.target.value)} placeholder="create_contact" required />
-        </label>
-        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          Label
-          <input style={is} value={label} onChange={e => setLabel(e.target.value)} placeholder="Create contact" />
-        </label>
-        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          Description
-          <input style={is} value={description} onChange={e => setDescription(e.target.value)} placeholder="Creates a new contact" />
-        </label>
-        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          HTTP method
-          <select style={is} value={method} onChange={e => setMethod(e.target.value)}>
-            {HTTP_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
-        </label>
-        <label style={{ color: '#888', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          Path template
-          <input style={is} value={path} onChange={e => setPath(e.target.value)} placeholder="/contacts/people" required />
-        </label>
-      </div>
-
-      {/* Input fields */}
-      <div style={{ borderTop: '1px solid #1e1e1e', paddingTop: 8, marginTop: 4 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <span style={{ color: '#888', fontSize: '0.75rem', flex: 1 }}>Input fields</span>
-          <button type='button' onClick={() => setFields(prev => [...prev, emptyField()])} style={ghostBtn}>
-            + Add field
-          </button>
-        </div>
-        {fields.map((f, i) => (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto auto', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-            <input style={is} placeholder="key" value={f.key} onChange={e => updateField(i, { key: e.target.value })} />
-            <input style={is} placeholder="label" value={f.label} onChange={e => updateField(i, { label: e.target.value })} />
-            <select style={is} value={f.field_type} onChange={e => updateField(i, { field_type: e.target.value as ActionFieldType })}>
-              {FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-            <label style={{ color: '#777', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
-              <input type='checkbox' checked={f.required} onChange={e => updateField(i, { required: e.target.checked })} />
-              required
-            </label>
-            <button type='button'
-              onClick={() => setFields(prev => prev.filter((_, j) => j !== i))}
-              style={{ ...dangerBtn, padding: '3px 8px', fontSize: '0.7rem' }}>✕</button>
-          </div>
-        ))}
-      </div>
-
-      {saveError && <p style={{ color: '#f87171', fontSize: '0.75rem', margin: 0 }}>{saveError}</p>}
-
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button type='submit' disabled={saving} style={primaryBtn}>{saving ? 'Saving…' : 'Save'}</button>
-        <button type='button' onClick={onCancel} style={ghostBtn}>Cancel</button>
-      </div>
-    </form>
   )
 }
 
@@ -1046,5 +906,4 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 8, color: '#fff', fontSize: '0.85rem', outline: 'none',
   boxSizing: 'border-box',
 }
-
 

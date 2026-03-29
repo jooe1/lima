@@ -104,6 +104,38 @@
         "addColumn": "First column name (optional)",
         "addColumnPlaceholder": "e.g. Email"
       }
+    },
+    "apiGuide": {
+      "singleEndpoint": "It does one specific thing",
+      "singleEndpointDesc": "Perfect for a single API call like \"Get customer\" or \"Send invoice\".",
+      "multiAction": "It has multiple actions",
+      "multiActionDesc": "Build an action catalog with GET, POST, PUT, and DELETE operations.",
+      "actionLabelPrompt": "What does this action do?",
+      "actionLabelPlaceholder": "e.g. Get customer",
+      "confirm": "Continue",
+      "back": "Back"
+    },
+    "actionForm": {
+      "newTitle": "New action",
+      "editTitle": "Edit action",
+      "actionName": "Action name",
+      "actionNamePlaceholder": "e.g. Get customer",
+      "urlPath": "What URL does it call?",
+      "urlPathPlaceholder": "/customers/{id}",
+      "httpMethod": "What does it do?",
+      "advancedOptions": "Advanced options",
+      "hideAdvanced": "Hide advanced options",
+      "actionKey": "Action key",
+      "actionKeyHint": "unique, no spaces",
+      "resourceName": "Resource / group",
+      "inputFields": "Input fields",
+      "addField": "+ Add field",
+      "fieldKey": "key",
+      "fieldLabel": "label",
+      "save": "Save",
+      "saving": "Saving\u2026",
+      "saveFailed": "Save failed",
+      "cancel": "Cancel"
     }
   }
 }

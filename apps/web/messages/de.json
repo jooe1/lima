@@ -103,7 +103,37 @@
         "hint": "Lima Managed Table – keine externen Zugangsdaten erforderlich. Spalten und Zeilen nach dem Erstellen des Konnektors hinzuf\u00fcgen.",
         "addColumn": "Name der ersten Spalte (optional)",
         "addColumnPlaceholder": "z. B. E-Mail"
-      }
-    }
+      }    },
+    "apiGuide": {
+      "singleEndpoint": "Es macht eine bestimmte Sache",
+      "singleEndpointDesc": "Perfekt für einen einzelnen API-Aufruf wie \"Kunde abrufen\" oder \"Rechnung senden\".",
+      "multiAction": "Es hat mehrere Aktionen",
+      "multiActionDesc": "Erstellen Sie einen Aktionskatalog mit GET-, POST-, PUT- und DELETE-Operationen.",
+      "actionLabelPrompt": "Was macht diese Aktion?",
+      "actionLabelPlaceholder": "z. B. Kunde abrufen",
+      "confirm": "Weiter",
+      "back": "Zurück"
+    },
+    "actionForm": {
+      "newTitle": "Neue Aktion",
+      "editTitle": "Aktion bearbeiten",
+      "actionName": "Aktionsname",
+      "actionNamePlaceholder": "z. B. Kunde abrufen",
+      "urlPath": "Welche URL wird aufgerufen?",
+      "urlPathPlaceholder": "/kunden/{id}",
+      "httpMethod": "Was wird gemacht?",
+      "advancedOptions": "Erweiterte Optionen",
+      "hideAdvanced": "Erweiterte Optionen ausblenden",
+      "actionKey": "Aktionsschlüssel",
+      "actionKeyHint": "eindeutig, keine Leerzeichen",
+      "resourceName": "Ressource / Gruppe",
+      "inputFields": "Eingabefelder",
+      "addField": "+ Feld hinzufügen",
+      "fieldKey": "Schlüssel",
+      "fieldLabel": "Bezeichnung",
+      "save": "Speichern",
+      "saving": "Wird gespeichert…",
+      "saveFailed": "Speichern fehlgeschlagen",
+      "cancel": "Abbrechen"    }
   }
 }
