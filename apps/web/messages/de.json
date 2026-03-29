@@ -132,8 +132,34 @@
       "fieldKey": "Schlüssel",
       "fieldLabel": "Bezeichnung",
       "save": "Speichern",
-      "saving": "Wird gespeichert…",
+      "saving": "Wird gespeichert\u2026",
       "saveFailed": "Speichern fehlgeschlagen",
-      "cancel": "Abbrechen"    }
+      "cancel": "Abbrechen"
+    },
+    "educationCard": {
+      "csv": {
+        "body": "Ihre Datei ist bereit. Verwenden Sie sie in einer App, um Daten anzuzeigen oder zu filtern.",
+        "cta": "In einer App verwenden"
+      },
+      "db": {
+        "body": "Ihre Datenbank ist verbunden. Prüfen Sie, ob alles funktioniert, und durchsuchen Sie dann Ihre Tabellen.",
+        "cta": "Verbindung testen"
+      },
+      "api": {
+        "body": "Ihre API ist verbunden. Fügen Sie Aktionen hinzu, damit Ihre Apps sie aufrufen können.",
+        "cta": "Aktion hinzufügen"
+      },
+      "managed": {
+        "body": "Ihre gemeinsame Tabelle ist bereit. Fügen Sie Spalten hinzu, um die gespeicherten Daten zu definieren.",
+        "cta": "Spalte hinzufügen"
+      },
+      "dismiss": "Schlie\u00dfen"
+    },
+    "columnBuilder": {
+      "addColumn": "Spalte hinzuf\u00fcgen",
+      "columnName": "Spaltenname",
+      "columnType": "Typ",
+      "saving": "Wird gespeichert\u2026"
+    }
   }
 }

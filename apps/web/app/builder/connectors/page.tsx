@@ -15,10 +15,11 @@ import {
 } from '../../../lib/api'
 import { ConnectorWizard } from './ConnectorWizard'
 import { ConnectorGrantsTab } from './ConnectorGrantsTab'
-import ConnectorSetupHint from './ConnectorSetupHint'
 import { ConnectorDrawer } from './ConnectorDrawer'
 import { ConnectorTypePicker } from './ConnectorTypePicker'
 import { ActionForm } from './ActionForm'
+import { ConnectorEducationCard } from './ConnectorEducationCard'
+import { ManagedColumnBuilder } from './ManagedColumnBuilder'
 
 // ---------------------------------------------------------------------------
 // Types / constants
@@ -54,6 +55,7 @@ export default function ConnectorsPage() {
   const [wizardType, setWizardType] = useState<ConnectorType | null>(null)
   const [wizardDbBrand, setWizardDbBrand] = useState<'postgres' | 'mysql' | 'mssql' | undefined>(undefined)
   const [actionsTabConnectorId, setActionsTabConnectorId] = useState<string | null>(null)
+  const [postCreationConnector, setPostCreationConnector] = useState<Connector | null>(null)
 
   const load = useCallback(() => {
     if (!workspace) return
@@ -93,6 +95,7 @@ export default function ConnectorsPage() {
 
   function handleWizardComplete(c: Connector, opts?: { multiAction?: boolean }) {
     handleSaved(c)
+    setPostCreationConnector(c)
     setDrawerState('closed')
     setWizardType(null)
     setWizardDbBrand(undefined)
@@ -167,12 +170,25 @@ export default function ConnectorsPage() {
         <p style={{ color: '#555', fontSize: '0.8rem' }}>Loading…</p>
       ) : connectors.length === 0 ? (
         <div>
-          <ConnectorSetupHint
-            title="Connect your first data source"
-            body="Connectors let your apps read and write data. Start with a database, REST API, or a Lima-managed table — your choice."
-            actionLabel={isAdmin ? 'Add connector' : undefined}
-            onAction={isAdmin ? handleNew : undefined}
-          />
+          <div style={{
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-lg)',
+            padding: 'var(--space-6)',
+            marginBottom: 'var(--space-6)',
+          }}>
+            <h3 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, color: 'var(--color-text)', marginBottom: 'var(--space-2)', marginTop: 0 }}>
+              Connect your first data source
+            </h3>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)', marginBottom: isAdmin ? 'var(--space-4)' : 0, marginTop: 0 }}>
+              Connectors let your apps read and write data. Start with a database, REST API, or a Lima-managed table — your choice.
+            </p>
+            {isAdmin && (
+              <button type="button" onClick={handleNew} style={primaryBtn}>
+                Add connector
+              </button>
+            )}
+          </div>
           {!isAdmin && (
             <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)' }}>
               A workspace admin needs to add connectors before you can build data-connected apps.
@@ -190,6 +206,14 @@ export default function ConnectorsPage() {
             />
           ))}
         </div>
+      )}
+
+      {/* Education card — shown after connector creation */}
+      {postCreationConnector && selected?.id === postCreationConnector.id && (
+        <ConnectorEducationCard
+          connector={postCreationConnector}
+          onDismiss={() => setPostCreationConnector(null)}
+        />
       )}
 
       {/* Detail panel */}
@@ -575,15 +599,12 @@ function DetailPanel({ connector, workspaceId, isAdmin, openActionsOnMount = fal
               <p style={{ color: '#555', fontSize: '0.75rem', margin: 0 }}>Loading columns…</p>
             )}
             {managedColsLoaded && (
-              managedCols.length === 0
-                ? <p style={{ color: '#444', fontSize: '0.75rem', margin: 0 }}>No columns yet. Upload a CSV below — columns are auto-created from the header row.</p>
-                : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {managedCols.map(col => (
-                      <span key={col.id} style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 99, background: '#1e293b', color: '#94a3b8' }}>
-                        {col.name} <span style={{ color: '#475569' }}>({col.col_type})</span>
-                      </span>
-                    ))}
-                  </div>
+              <ManagedColumnBuilder
+                connectorId={c.id}
+                workspaceId={workspaceId}
+                columns={managedCols}
+                onColumnsChange={handleLoadManagedCols}
+              />
             )}
           </div>
 

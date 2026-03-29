@@ -136,6 +136,31 @@
       "saving": "Saving\u2026",
       "saveFailed": "Save failed",
       "cancel": "Cancel"
+    },
+    "educationCard": {
+      "csv": {
+        "body": "Your file is ready. Try using it in an app to display or filter the data.",
+        "cta": "Use in an app"
+      },
+      "db": {
+        "body": "Your database is connected. Check that everything works, then browse your tables.",
+        "cta": "Test the connection"
+      },
+      "api": {
+        "body": "Your API is connected. Add actions to let your apps call it.",
+        "cta": "Add an action"
+      },
+      "managed": {
+        "body": "Your shared table is ready. Add columns to define what data it stores.",
+        "cta": "Add a column"
+      },
+      "dismiss": "Dismiss"
+    },
+    "columnBuilder": {
+      "addColumn": "Add a column",
+      "columnName": "Column name",
+      "columnType": "Type",
+      "saving": "Saving\u2026"
     }
   }
 }
