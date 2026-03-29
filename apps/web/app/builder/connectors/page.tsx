@@ -4,22 +4,15 @@ import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../../../lib/auth'
 import {
   listConnectors, createConnector, deleteConnector,
-  testConnector, getConnectorSchema, runConnectorQuery,
   getManagedTableColumns, setManagedTableColumns,
-  listManagedTableRows, insertManagedTableRow, updateManagedTableRow, deleteManagedTableRow,
-  seedManagedTableFromCSV, exportManagedTableCSVUrl,
-  listConnectorActions, deleteConnectorAction,
-  type Connector, type ConnectorType, type TestConnectorResponse,
-  type ConnectorSchemaResponse, type ManagedTableColumn, type ManagedTableRow,
-  type DashboardQueryResponse, type ActionDefinition,
+  type Connector, type ConnectorType, type ManagedTableColumn, type ActionDefinition,
 } from '../../../lib/api'
 import { ConnectorWizard } from './ConnectorWizard'
-import { ConnectorGrantsTab } from './ConnectorGrantsTab'
 import { ConnectorDrawer } from './ConnectorDrawer'
+import { ConnectorDetailDrawer } from './ConnectorDetailDrawer'
 import { ConnectorTypePicker } from './ConnectorTypePicker'
 import { ActionForm } from './ActionForm'
 import { ConnectorEducationCard } from './ConnectorEducationCard'
-import { ManagedColumnBuilder } from './ManagedColumnBuilder'
 import { ConnectorList, type ConnectorCategory } from './ConnectorList'
 
 // ---------------------------------------------------------------------------
@@ -55,8 +48,7 @@ export default function ConnectorsPage() {
   const [drawerState, setDrawerState] = useState<'closed' | 'type-picker' | 'wizard' | 'detail'>('closed')
   const [wizardType, setWizardType] = useState<ConnectorType | null>(null)
   const [wizardDbBrand, setWizardDbBrand] = useState<'postgres' | 'mysql' | 'mssql' | undefined>(undefined)
-  const [actionsTabConnectorId, setActionsTabConnectorId] = useState<string | null>(null)
-  const [postCreationConnector, setPostCreationConnector] = useState<Connector | null>(null)
+
   const [pickerCategory, setPickerCategory] = useState<ConnectorCategory | undefined>(undefined)
 
   const load = useCallback(() => {
@@ -74,6 +66,11 @@ export default function ConnectorsPage() {
   function handleSelect(c: Connector) {
     setSelected(prev => prev?.id === c.id ? null : c)
     setShowForm(false)
+  }
+
+  function handleManage(c: Connector) {
+    setSelected(c)
+    setDrawerState('detail')
   }
 
   function handleNew() {
@@ -105,15 +102,11 @@ export default function ConnectorsPage() {
     setPickerCategory(undefined)
   }
 
-  function handleWizardComplete(c: Connector, opts?: { multiAction?: boolean }) {
+  function handleWizardComplete(c: Connector) {
     handleSaved(c)
-    setPostCreationConnector(c)
     setDrawerState('closed')
     setWizardType(null)
     setWizardDbBrand(undefined)
-    if (opts?.multiAction) {
-      setActionsTabConnectorId(c.id)
-    }
   }
 
   function handleEdit(c: Connector) {
@@ -159,7 +152,7 @@ export default function ConnectorsPage() {
 
       {/* Drawer: new connector flow (type picker → wizard) */}
       <ConnectorDrawer
-        isOpen={drawerState !== 'closed'}
+        isOpen={drawerState === 'type-picker' || drawerState === 'wizard'}
         onClose={handleDrawerClose}
         title="New connector"
       >
@@ -183,43 +176,27 @@ export default function ConnectorsPage() {
       ) : (
         <ConnectorList
           connectors={connectors}
-          onManage={handleSelect}
+          onManage={handleManage}
           onAdd={handleAdd}
         />
       )}
 
-      {/* Education card — shown after connector creation */}
-      {postCreationConnector && selected?.id === postCreationConnector.id && (
-        <ConnectorEducationCard
-          connector={postCreationConnector}
-          onDismiss={() => setPostCreationConnector(null)}
-        />
-      )}
-
-      {/* Detail panel */}
-      {selected && workspace && (
-        <DetailPanel
-          connector={selected}
-          workspaceId={workspace.id}
-          isAdmin={isAdmin}
-          openActionsOnMount={actionsTabConnectorId === selected.id}
-          onEdit={() => handleEdit(selected)}
-          onDeleted={handleDeleted}
-          onUpdated={(c) => {
-            setSelected(c)
-            setConnectors(prev => prev.map(x => x.id === c.id ? c : x))
-          }}
-        />
-      )}
+      <ConnectorDetailDrawer
+        connector={selected}
+        workspaceId={workspace?.id ?? ''}
+        isOpen={drawerState === 'detail'}
+        onClose={() => { setDrawerState('closed'); setSelected(null) }}
+        onConnectorChange={load}
+      />
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Detail panel
+// Shared styles
 // ---------------------------------------------------------------------------
 
-function DetailPanel({ connector, workspaceId, isAdmin, openActionsOnMount = false, onEdit, onDeleted, onUpdated }: {
+const primaryBtn: React.CSSProperties = {
   connector: Connector
   workspaceId: string
   isAdmin: boolean
@@ -619,226 +596,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-// ---------------------------------------------------------------------------
-// Schema tree viewer
-// ---------------------------------------------------------------------------
-
-function SchemaTree({ schema }: { schema: Record<string, unknown> }) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-
-  function toggle(key: string) {
-    setExpanded(prev => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  const entries = Object.entries(schema)
-  if (entries.length === 0) {
-    return <p style={{ color: '#444', fontSize: '0.8rem', margin: 0 }}>Empty schema.</p>
-  }
-
-  // Try to render as tables → columns structure
-  const isTableMap = entries.every(
-    ([, v]) => v && typeof v === 'object' && !Array.isArray(v) && 'columns' in (v as Record<string, unknown>)
-  )
-
-  if (isTableMap) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {entries.map(([tableName, tableData]) => {
-          const cols = (tableData as { columns: unknown[] }).columns
-          const isOpen = !!expanded[tableName]
-          return (
-            <div key={tableName}>
-              <button
-                onClick={() => toggle(tableName)}
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: '#e5e5e5', fontSize: '0.8rem', fontFamily: 'monospace',
-                  padding: '2px 0', display: 'flex', alignItems: 'center', gap: 6,
-                }}
-              >
-                <span style={{ color: '#555', fontSize: '0.7rem' }}>{isOpen ? '▼' : '▶'}</span>
-                {tableName}
-                <span style={{ color: '#444', fontSize: '0.7rem', fontFamily: 'sans-serif' }}>
-                  ({Array.isArray(cols) ? cols.length : '?'} columns)
-                </span>
-              </button>
-              {isOpen && Array.isArray(cols) && (
-                <div style={{ paddingLeft: 20 }}>
-                  {cols.map((col, i) => (
-                    <div key={i} style={{ color: '#888', fontSize: '0.75rem', fontFamily: 'monospace', padding: '1px 0' }}>
-                      {typeof col === 'string' ? col : typeof col === 'object' && col !== null
-                        ? `${(col as Record<string, string>).name ?? ''}${(col as Record<string, string>).type ? ` (${(col as Record<string, string>).type})` : ''}`
-                        : JSON.stringify(col)}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-    )
-  }
-
-  // Fallback: formatted JSON
-  return (
-    <pre style={{
-      background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 6,
-      padding: '0.75rem', fontSize: '0.75rem', color: '#888',
-      overflow: 'auto', maxHeight: 300, margin: 0,
-    }}>
-      {JSON.stringify(schema, null, 2)}
-    </pre>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Query result table
-// ---------------------------------------------------------------------------
-
-function QueryResultTable({ result }: { result: DashboardQueryResponse }) {
-  if (result.columns.length === 0) {
-    return <p style={{ color: '#444', fontSize: '0.8rem', margin: '8px 0 0' }}>No results.</p>
-  }
-  return (
-    <div style={{ overflowX: 'auto', marginTop: 10 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
-        <thead>
-          <tr>
-            {result.columns.map(col => (
-              <th key={col} style={{
-                textAlign: 'left', padding: '6px 10px', borderBottom: '1px solid #1e1e1e',
-                color: '#888', fontWeight: 600, whiteSpace: 'nowrap',
-              }}>
-                {col}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {result.rows.map((row, i) => (
-            <tr key={i}>
-              {result.columns.map(col => (
-                <td key={col} style={{
-                  padding: '4px 10px', borderBottom: '1px solid #141414',
-                  color: '#ccc', whiteSpace: 'nowrap', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis',
-                }}>
-                  {row[col] == null ? <span style={{ color: '#444' }}>null</span> : String(row[col])}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p style={{ color: '#555', fontSize: '0.7rem', margin: '6px 0 0' }}>
-        {result.row_count} row(s) total · showing up to 10
-      </p>
-    </div>
-  )
-}
-
-
-// ---------------------------------------------------------------------------
-// Action Catalog panel (REST / GraphQL connectors)
-// ---------------------------------------------------------------------------
-
-function ActionCatalogPanel({
-  workspaceId, connectorId, isAdmin, actions, loading, error,
-  editingAction, showActionForm, onShowForm, onHideForm, onSaved, onDeleted,
-}: {
-  workspaceId: string
-  connectorId: string
-  isAdmin: boolean
-  actions: ActionDefinition[]
-  loading: boolean
-  error: string
-  editingAction: ActionDefinition | null
-  showActionForm: boolean
-  onShowForm: (act?: ActionDefinition) => void
-  onHideForm: () => void
-  onSaved: (a: ActionDefinition) => void
-  onDeleted: (id: string) => void
-}) {
-  const [deletingId, setDeletingId] = useState<string | null>(null)
-
-  async function handleDelete(id: string) {
-    setDeletingId(id)
-    try {
-      await deleteConnectorAction(workspaceId, connectorId, id)
-      onDeleted(id)
-    } catch { /* ignore */ } finally {
-      setDeletingId(null)
-    }
-  }
-
-  // Group by resource_name
-  const groups: Record<string, ActionDefinition[]> = {}
-  actions.forEach(a => {
-    const g = a.resource_name || 'General'
-    ;(groups[g] = groups[g] ?? []).push(a)
-  })
-
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <span style={{ color: '#888', fontSize: '0.8rem', flex: 1 }}>
-          {actions.length} action{actions.length !== 1 ? 's' : ''} defined
-        </span>
-        {isAdmin && !showActionForm && (
-          <button onClick={() => onShowForm()} style={ghostBtn}>+ Add action</button>
-        )}
-      </div>
-
-      {error && <p style={{ color: '#f87171', fontSize: '0.75rem', margin: '0 0 8px' }}>{error}</p>}
-      {loading && <p style={{ color: '#555', fontSize: '0.75rem' }}>Loading actions…</p>}
-
-      {!loading && !showActionForm && Object.entries(groups).map(([grp, acts]) => (
-        <div key={grp} style={{ marginBottom: 12 }}>
-          <div style={{ color: '#555', fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
-            {grp}
-          </div>
-          {acts.map(act => (
-            <div key={act.id} style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '6px 10px', borderRadius: 6, background: '#111',
-              border: '1px solid #1e1e1e', marginBottom: 4,
-            }}>
-              <span style={{
-                fontSize: '0.62rem', padding: '1px 6px', borderRadius: 99,
-                background: '#1e3a5f', color: '#60a5fa', fontFamily: 'monospace',
-              }}>{act.http_method}</span>
-              <span style={{ color: '#e5e5e5', fontSize: '0.78rem', flex: 1 }}>
-                {act.action_label || act.action_key}
-              </span>
-              <span style={{ color: '#555', fontSize: '0.68rem' }}>{act.path_template}</span>
-              {isAdmin && (
-                <>
-                  <button onClick={() => onShowForm(act)} style={ghostBtn}>Edit</button>
-                  <button
-                    onClick={() => handleDelete(act.id)}
-                    disabled={deletingId === act.id}
-                    style={dangerBtn}>
-                    {deletingId === act.id ? '…' : 'Delete'}
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      ))}
-
-      {!loading && showActionForm && (
-        <ActionForm
-          workspaceId={workspaceId}
-          connectorId={connectorId}
-          action={editingAction ?? undefined}
-          onSave={onSaved}
-          onCancel={onHideForm}
-        />
-      )}
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Shared styles
