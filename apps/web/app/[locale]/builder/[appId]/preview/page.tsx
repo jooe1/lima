@@ -1,1 +1,1 @@
-export { default } from '../../../../../builder/[appId]/preview/page'
+export { default } from '../../../../builder/[appId]/preview/page'

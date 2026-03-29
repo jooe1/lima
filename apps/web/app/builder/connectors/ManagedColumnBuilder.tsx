@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type DragEvent } from 'react'
+import { useEffect, useState, type DragEvent } from 'react'
 import { setManagedTableColumns, type ManagedTableColumn } from '../../../lib/api'
 
 export const COL_TYPE_LABELS: Record<string, string> = {
@@ -13,60 +13,50 @@ export const COL_TYPE_LABELS: Record<string, string> = {
   'bytea': 'File',
 }
 
-export function ManagedColumnBuilder({
-  connectorId,
-  workspaceId,
-  columns: initialColumns,
-  onColumnsChange,
-}: {
-  connectorId: string
-  workspaceId: string
-  columns: ManagedTableColumn[]
-  onColumnsChange: () => void
-}) {
-  const [cols, setCols] = useState<ManagedTableColumn[]>(initialColumns)
-  const [dragIdx, setDragIdx] = useState<number | null>(null)
-  const [saving, setSaving] = useState(false)
+export interface EditableManagedColumn {
+  id: string
+  name: string
+  col_type: string
+  nullable: boolean
+  col_order?: number
+}
 
-  async function save(colsToSave: ManagedTableColumn[]) {
-    setSaving(true)
-    try {
-      await setManagedTableColumns(
-        workspaceId,
-        connectorId,
-        colsToSave.map(c => ({ name: c.name, col_type: c.col_type, nullable: c.nullable })),
-      )
-      onColumnsChange()
-    } catch {
-      // optimistic — swallow error
-    } finally {
-      setSaving(false)
-    }
-  }
+export function ManagedColumnsEditor({
+  columns,
+  onChange,
+  onCommit,
+  saving = false,
+}: {
+  columns: EditableManagedColumn[]
+  onChange: (columns: EditableManagedColumn[]) => void
+  onCommit?: (columns: EditableManagedColumn[]) => void | Promise<void>
+  saving?: boolean
+}) {
+  const [dragIdx, setDragIdx] = useState<number | null>(null)
 
   function handleAddColumn() {
-    const newCol: ManagedTableColumn = {
+    const newCol: EditableManagedColumn = {
       id: `draft-${Date.now()}`,
       name: '',
       col_type: 'text',
       nullable: true,
-      col_order: cols.length,
+      col_order: columns.length,
     }
-    setCols(prev => [...prev, newCol])
+    onChange([...columns, newCol])
   }
 
   function handleNameChange(id: string, name: string) {
-    setCols(prev => prev.map(c => c.id === id ? { ...c, name } : c))
+    onChange(columns.map(c => c.id === id ? { ...c, name } : c))
   }
 
   function handleTypeChange(id: string, col_type: string) {
-    const updated = cols.map(c => c.id === id ? { ...c, col_type } : c)
-    setCols(updated)
-    save(updated)
+    const updated = columns.map(c => c.id === id ? { ...c, col_type } : c)
+    onChange(updated)
+    void onCommit?.(updated)
   }
 
   function handleNameBlur() {
-    save(cols)
+    void onCommit?.(columns)
   }
 
   function handleDragStart(idx: number) {
@@ -76,23 +66,23 @@ export function ManagedColumnBuilder({
   function handleDragOver(e: DragEvent<HTMLDivElement>, idx: number) {
     e.preventDefault()
     if (dragIdx === null || dragIdx === idx) return
-    const reordered = [...cols]
+    const reordered = [...columns]
     const [moved] = reordered.splice(dragIdx, 1)
     reordered.splice(idx, 0, moved)
     setDragIdx(idx)
-    setCols(reordered)
+    onChange(reordered)
   }
 
   function handleDrop() {
     if (dragIdx === null) return
     setDragIdx(null)
-    save(cols)
+    void onCommit?.(columns)
   }
 
   return (
     <div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
-        {cols.map((col, idx) => (
+        {columns.map((col, idx) => (
           <div
             key={col.id}
             draggable
@@ -147,5 +137,49 @@ export function ManagedColumnBuilder({
         <span style={{ fontSize: '0.7rem', color: '#555', marginLeft: 8 }}>Saving…</span>
       )}
     </div>
+  )
+}
+
+export function ManagedColumnBuilder({
+  connectorId,
+  workspaceId,
+  columns: initialColumns,
+  onColumnsChange,
+}: {
+  connectorId: string
+  workspaceId: string
+  columns: ManagedTableColumn[]
+  onColumnsChange: () => void
+}) {
+  const [cols, setCols] = useState<ManagedTableColumn[]>(initialColumns)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setCols(initialColumns)
+  }, [initialColumns])
+
+  async function save(colsToSave: EditableManagedColumn[]) {
+    setSaving(true)
+    try {
+      await setManagedTableColumns(
+        workspaceId,
+        connectorId,
+        colsToSave.map(c => ({ name: c.name, col_type: c.col_type, nullable: c.nullable })),
+      )
+      onColumnsChange()
+    } catch {
+      // optimistic — swallow error
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <ManagedColumnsEditor
+      columns={cols}
+      onChange={columns => setCols(columns as ManagedTableColumn[])}
+      onCommit={save}
+      saving={saving}
+    />
   )
 }

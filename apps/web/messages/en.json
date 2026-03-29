@@ -100,9 +100,20 @@
         "noPreview": "Select a file to preview"
       },
       "managed": {
-        "hint": "Lima Managed Table — no external credentials needed. Add columns and rows after creating the connector.",
-        "addColumn": "First column name (optional)",
-        "addColumnPlaceholder": "e.g. Email"
+        "hint": "Lima shared tables live inside your workspace. There are no external credentials to set up.",
+        "setupLabel": "First column",
+        "setupTitle": "Choose the first column",
+        "columnsLabel": "Columns",
+        "columnsTitle": "Choose the first columns",
+        "columnsBody": "Start with the columns you know now. You can add, rename, or reorder them later.",
+        "addColumn": "What should the first column be called?",
+        "addColumnPlaceholder": "e.g. Email",
+        "addColumnHelp": "This creates the first field in the table. Typical examples are Email, Company, Status, Owner, or Notes. You can leave it blank and define columns on the next step instead.",
+        "columnName": "Column name",
+        "columnType": "Type",
+        "emptyColumn": "New column",
+        "addAnotherColumn": "Add another column",
+        "finish": "Create shared table"
       }
     },
     "apiGuide": {
@@ -181,6 +192,30 @@
         "apis": "\uff0b Add your first API",
         "sharedTables": "\uff0b Add your first shared table"
       }
+    },
+    "detail": {
+      "title": "Connector details",
+      "section1": "What you can do",
+      "section2": "Your data",
+      "section3": "Connection settings",
+      "section4": "Who has access",
+      "section5": "For developers",
+      "showTips": "Show tips again",
+      "loadingColumns": "Loading columns\u2026",
+      "loadingActions": "Loading actions\u2026",
+      "addAction": "Add action",
+      "noSchema": "No schema cached yet.",
+      "refreshSchema": "Refresh schema",
+      "saveSettings": "Save settings",
+      "testConnection": "Test connection",
+      "testOk": "Connection looks good.",
+      "testFail": "Connection test failed.",
+      "deleteHeading": "Delete connector",
+      "deleteBody": "Remove this connector when your workspace no longer needs it. This also removes access to the shared table or external connection.",
+      "deleteButton": "Delete connector",
+      "deleting": "Deleting…",
+      "deleteConfirm": "Delete {name}? This cannot be undone.",
+      "deleteFailed": "Failed to delete connector."
     },
     "sharing": {
       "heading": "Who has access",

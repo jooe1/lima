@@ -369,6 +369,7 @@ export function ManagedStep({ values, onChange }: CredentialStepProps) {
           style={inputBase}
         />
       </label>
+      <p style={{ color: '#666', fontSize: '0.78rem', margin: 0, lineHeight: 1.6 }}>{t('managed.addColumnHelp')}</p>
     </div>
   )
 }

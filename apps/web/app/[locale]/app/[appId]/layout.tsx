@@ -1,1 +1,1 @@
-export { default } from '../../../../app/[appId]/layout'
+export { default } from '../../../app/[appId]/layout'

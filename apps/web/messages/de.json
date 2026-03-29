@@ -100,10 +100,22 @@
         "noPreview": "Datei ausw\u00e4hlen, um Vorschau anzuzeigen"
       },
       "managed": {
-        "hint": "Lima Managed Table – keine externen Zugangsdaten erforderlich. Spalten und Zeilen nach dem Erstellen des Konnektors hinzuf\u00fcgen.",
-        "addColumn": "Name der ersten Spalte (optional)",
-        "addColumnPlaceholder": "z. B. E-Mail"
-      }    },
+        "hint": "Gemeinsame Lima-Tabellen liegen direkt in Ihrem Arbeitsbereich. Externe Zugangsdaten sind nicht erforderlich.",
+        "setupLabel": "Erste Spalte",
+        "setupTitle": "Erste Spalte festlegen",
+        "columnsLabel": "Spalten",
+        "columnsTitle": "Erste Spalten festlegen",
+        "columnsBody": "Legen Sie die Spalten fest, die Sie jetzt schon kennen. Sie k\u00f6nnen sie sp\u00e4ter weiter erg\u00e4nzen, umbenennen oder neu anordnen.",
+        "addColumn": "Wie soll die erste Spalte hei\u00dfen?",
+        "addColumnPlaceholder": "z. B. E-Mail",
+        "addColumnHelp": "Damit legen Sie das erste Feld der Tabelle an. Typische Beispiele sind E-Mail, Firma, Status, Verantwortlich oder Notizen. Sie k\u00f6nnen das Feld auch leer lassen und die Spalten erst im n\u00e4chsten Schritt festlegen.",
+        "columnName": "Spaltenname",
+        "columnType": "Typ",
+        "emptyColumn": "Neue Spalte",
+        "addAnotherColumn": "Weitere Spalte hinzuf\u00fcgen",
+        "finish": "Gemeinsame Tabelle erstellen"
+      }
+    },
     "apiGuide": {
       "singleEndpoint": "Es macht eine bestimmte Sache",
       "singleEndpointDesc": "Perfekt für einen einzelnen API-Aufruf wie \"Kunde abrufen\" oder \"Rechnung senden\".",
@@ -180,6 +192,30 @@
         "apis": "\uff0b Erste API hinzuf\u00fcgen",
         "sharedTables": "\uff0b Erste gemeinsame Tabelle hinzuf\u00fcgen"
       }
+    },
+    "detail": {
+      "title": "Konnektordetails",
+      "section1": "Was Sie damit tun k\u00f6nnen",
+      "section2": "Ihre Daten",
+      "section3": "Verbindungseinstellungen",
+      "section4": "Wer Zugriff hat",
+      "section5": "F\u00fcr Entwickler",
+      "showTips": "Tipps erneut anzeigen",
+      "loadingColumns": "Spalten werden geladen\u2026",
+      "loadingActions": "Aktionen werden geladen\u2026",
+      "addAction": "Aktion hinzuf\u00fcgen",
+      "noSchema": "Noch kein Schema im Cache.",
+      "refreshSchema": "Schema aktualisieren",
+      "saveSettings": "Einstellungen speichern",
+      "testConnection": "Verbindung testen",
+      "testOk": "Die Verbindung sieht gut aus.",
+      "testFail": "Verbindungstest fehlgeschlagen.",
+      "deleteHeading": "Konnektor löschen",
+      "deleteBody": "Entfernen Sie diesen Konnektor, wenn Ihr Arbeitsbereich ihn nicht mehr benötigt. Dadurch wird auch der Zugriff auf die gemeinsame Tabelle oder die externe Verbindung entfernt.",
+      "deleteButton": "Konnektor löschen",
+      "deleting": "Wird gelöscht…",
+      "deleteConfirm": "{name} löschen? Das kann nicht rückgängig gemacht werden.",
+      "deleteFailed": "Konnektor konnte nicht gelöscht werden."
     },
     "sharing": {
       "heading": "Wer Zugriff hat",

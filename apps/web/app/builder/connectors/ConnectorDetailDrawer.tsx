@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useAuth } from '../../../lib/auth'
 import {
-  testConnector, getConnectorSchema, patchConnector,
+  testConnector, getConnectorSchema, patchConnector, deleteConnector,
   getManagedTableColumns, listConnectorActions, deleteConnectorAction,
   runConnectorQuery,
   type Connector, type ManagedTableColumn, type ActionDefinition, type DashboardQueryResponse,
@@ -265,6 +265,8 @@ export function ConnectorDetailDrawer({
   const [saveLoading, setSaveLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
   // Section 5 — developer query tester
   const [sql, setSql] = useState('')
@@ -293,6 +295,8 @@ export function ConnectorDetailDrawer({
     setSaveLoading(false)
     setTestLoading(false)
     setTestResult(null)
+    setDeleteLoading(false)
+    setDeleteError('')
     setSql('')
     setQueryResult(null)
     setQueryError('')
@@ -366,6 +370,28 @@ export function ConnectorDetailDrawer({
       setQueryError(e instanceof Error ? e.message : 'Query failed')
     } finally {
       setQueryLoading(false)
+    }
+  }
+
+  async function handleDeleteConnector() {
+    if (!connector) return
+
+    const confirmed = typeof window === 'undefined'
+      ? true
+      : window.confirm(t('deleteConfirm', { name: connector.name ?? t('title') }))
+
+    if (!confirmed) return
+
+    setDeleteLoading(true)
+    setDeleteError('')
+    try {
+      await deleteConnector(workspaceId, connector.id)
+      onClose()
+      onConnectorChange()
+    } catch (e: unknown) {
+      setDeleteError(e instanceof Error ? e.message : t('deleteFailed'))
+    } finally {
+      setDeleteLoading(false)
     }
   }
 
@@ -617,6 +643,35 @@ export function ConnectorDetailDrawer({
                 </div>
                 {queryError && <p style={{ color: '#f87171', fontSize: '0.8rem', margin: '8px 0 0' }}>{queryError}</p>}
                 {queryResult && <QueryResultTable result={queryResult} />}
+
+                <div style={{
+                  marginTop: 16,
+                  paddingTop: 12,
+                  borderTop: '1px solid #1e1e1e',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}>
+                  <p style={{ margin: 0, color: '#fca5a5', fontSize: '0.78rem', fontWeight: 600 }}>
+                    {t('deleteHeading')}
+                  </p>
+                  <p style={{ margin: 0, color: '#888', fontSize: '0.78rem', lineHeight: 1.6 }}>
+                    {t('deleteBody')}
+                  </p>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={handleDeleteConnector}
+                      disabled={deleteLoading}
+                      style={dangerBtn}
+                    >
+                      {deleteLoading ? t('deleting') : t('deleteButton')}
+                    </button>
+                  </div>
+                  {deleteError && (
+                    <p style={{ color: '#f87171', fontSize: '0.8rem', margin: 0 }}>{deleteError}</p>
+                  )}
+                </div>
               </div>
             )}
           </div>

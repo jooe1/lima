@@ -30,6 +30,9 @@ export function ConnectorTypePicker({
 }) {
   const t = useTranslations('connectors')
   const [showDbSub, setShowDbSub] = useState(initialCategory === 'databases')
+  const visibleTiles = initialCategory === 'apis'
+    ? MAIN_TILES.filter(tile => tile.id === 'webService' || tile.id === 'graphql')
+    : MAIN_TILES
 
   const labels = {
     spreadsheet: t('typePicker.spreadsheet'),
@@ -85,7 +88,7 @@ export function ConnectorTypePicker({
 
   return (
     <div style={gridStyle}>
-      {MAIN_TILES.map(tile => {
+      {visibleTiles.map(tile => {
         const isPlaceholder = tile.id === 'moreOptions'
         const label = labels[tile.id as keyof typeof labels] ?? tile.id
         return (

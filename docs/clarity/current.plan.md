@@ -1,288 +1,256 @@
-# Implementation Plan: UX-First Release Readiness Audit
-_Last updated: 2026-03-28_
-_Feature slug: ux-first-release-readiness_
+# Implementation Plan: Connectors Tab Redesign + App-Wide i18n
+_Last updated: 2026-03-29_
+_Feature slug: connectors-tab-redesign_
 
 ## Goal
-Prepare Lima for a near-term internal release aimed at non-technical users by fixing the highest-impact UX, clarity, trust, and completion gaps in the current product. The order prioritizes the self-serve path from setup to live use first, then broader builder simplification, then quality and release gates, because the current product requires a user to connect data, build a tool, publish it, and then use it before any real value is delivered.
+Redesign the connectors tab from a developer-oriented form interface into an intuitive, self-serve experience for any office worker — sales, marketing, dev — with zero assumed technical knowledge. The redesign has two non-negotiable requirements: (1) no technical vocabulary appears as the first thing a user sees, and (2) every connector type always shows users what they can *do* with it — during setup, right after creation, and in the management view. The app must also support English and German. Since no i18n infrastructure exists today, Phase 0 lays the foundation that all UI phases depend on.
 
-## Phase 1 — Self-Serve User Readiness
+## User Context
+- **Personas:** Sales (shared tables, CSV uploads), Marketing (API connections), Dev teams (databases, bug trackers) — all assumed zero tech skill
+- **Self-serve creation:** Every user can add their own connector and control who has access; admins can restrict permissions but do not gatekeep creation
+- **Core pain points:** Too many raw input fields at once, too many tabs, technical vocabulary, no sense of "what can I actually do with this thing"
+- **Visual:** Full redesign allowed — no MVP constraints
+- **Languages:** English + German; whole app translated; AI-generated translations; language selected per-user in account settings
 
-### 1. Define the release path around self-serve success
-Constrain the first release to the full self-serve journey that already exists in code and can be made dependable: sign in, create or select a workspace, add a connector, create an app, configure a usable tool, publish it, launch it, complete the task, and recover from common errors.
+## i18n Decisions (resolved)
+- **Scope:** Whole app — every user-facing string in `apps/web/`
+- **Library:** `next-intl` — the standard for Next.js App Router; supports server components, TypeScript, and no-URL locale (locale stored in user preference, not the URL path)
+- **Locale detection:** Per-user account setting; stored in user profile; falls back to browser `Accept-Language` header on first visit
+- **Translation workflow:** AI-generated `en.json` and `de.json` under `apps/web/messages/`; no professional translator pipeline needed
+- **URL strategy:** Non-URL locale (no `/de/` prefix) — locale is injected via context from the user's saved preference, keeping all existing routes unchanged
+
+---
+
+## Phase 0 — i18n Foundation _(prerequisite for all UI phases)_
+
+### 0. i18n infrastructure setup
+Install `next-intl` v4. Add a `language` field (`varchar`, default `'en'`) to the backend Go `User` model and a new `PATCH /users/me/language` API endpoint. Extend the frontend `AuthUser` type and auth context to carry the user's language preference. On first visit, fall back to the browser's `Accept-Language` header; once a user explicitly picks a language it is saved to their profile. Create `apps/web/messages/en.json` and `apps/web/messages/de.json` with AI-generated translations for all existing UI strings. Wire the saved preference into the `next-intl` provider at the app shell root. Add a compact language toggle (EN / DE) to the builder sidebar footer and the tools page header — no separate settings page required. All subsequent areas in this plan must use `useTranslations()` for every user-facing string.
+
+_Resolved decisions: next-intl v4 (App Router native, TypeScript, no-URL locale); language stored per-user on the backend; language picker lives in the sidebar footer and tools header as a compact EN/DE toggle; falls back to browser locale on first visit; no new account/settings page needed._
 _Depends on: none_
-Resolved decisions: optimize for a desktop-first internal release; treat many users as both builders and end users; judge readiness by whether a non-technical user can go from zero to a live usable tool without developer help; keep advanced admin depth secondary if it improves first-use clarity.
 
-### 2. Replace technical and builder-centric runtime language with plain-language UX
-Rewrite runtime headers, empty states, access-denied states, and unpublished states so non-technical users see task-oriented copy, next steps, and clear recovery actions instead of platform jargon.
-_Depends on: Area 1_
-Resolved decisions: remove terms like workspace, publication, builder, and app version from end-user surfaces unless strictly necessary; every blocked state should tell the user what happened, what to do next, and where to go.
+---
 
-### 3. Add complete loading, error, and missing-route coverage across the web app
-Implement explicit loading, error, and not-found experiences for the main route groups so failures never collapse to blank screens, generic text, or broken navigation.
-_Depends on: Area 1_
-Resolved decisions: add route-level handling for login, tools, builder, and runtime flows; include retry paths and safe navigation back to the last meaningful screen.
+## Phase 1 — Discovery & Creation
 
-### 4. Make tool discovery and launch feel guided instead of raw
-Improve the tools surface with clearer hierarchy, friendlier search and empty states, launch affordances, and better handling when the user has lost access or needs a different workspace selected.
-_Depends on: Areas 1, 2_
-Resolved decisions: the tools page should act like a simple home screen for non-technical users after a tool has been created and published, not a catalog of internal objects; discovery-only listings should explain why they are visible but not launchable.
+### 1. Intent-based connector type picker
+Replace the `<select>` type picker and inline form with a visual tile grid rendered inside a right-side drawer. Six tiles, all translated:
 
-## Phase 2 — Builder UX Simplification
+| Tile label | Maps to |
+|---|---|
+| Upload a spreadsheet | `csv` |
+| Connect a database | sub-step: PostgreSQL / MySQL / SQL Server |
+| Connect a web service | `rest` |
+| Call a GraphQL API | `graphql` |
+| Create a shared table | `managed` |
+| More options _(collapsed)_ | `mysql`, `mssql` revealed here too |
 
-### 5. Simplify first-time builder onboarding and creation flows
-Turn the current workspace creation, app creation, and first-open builder experience into a guided setup with plain-language explanations, sensible defaults, and visible next steps.
-_Depends on: Area 1_
-Resolved decisions: keep the first release builder experience focused on creating a basic app and publishing it; avoid exposing every platform concept upfront.
+"Connect a database" opens a second tile row ("What kind of database do you use?" → PostgreSQL / MySQL / SQL Server) before proceeding to the wizard. This is one extra tap but non-tech users can answer it — they know their database brand. All underlying `ConnectorType` values remain internal; users never see `postgres`, `mssql`, etc. The existing `BASIC_CONNECTOR_TYPES` / `ADVANCED_CONNECTOR_TYPES` split is preserved in logic but expressed purely through tile visibility.
 
-### 6. Establish a consistent web UI system for the current app shell
-Replace scattered inline styling patterns with a small shared design layer for spacing, typography, colors, states, buttons, forms, cards, and panels so the product feels deliberate and teachable.
-_Depends on: Area 1_
-Resolved decisions: preserve the existing dark direction only if it becomes more legible and structured; consistency and readability matter more than visual novelty for this release.
+_Resolved decisions: drawer-based tile grid, database brand as a sub-step, no raw type codes ever shown, translated via next-intl._
+_Depends on: Area 0_
 
-### 7. Reduce editor complexity by staging advanced builder controls behind progressive disclosure
-Keep the current editor capabilities, but reorganize them so core actions are obvious and secondary controls appear only when relevant.
-_Depends on: Areas 5, 6_
-Resolved decisions: prioritize add widget, edit content, preview, publish, and fix publish blockers; defer or visually de-emphasize AI-generation placeholders, workflow complexity, and low-frequency admin actions during first-run usage.
+### 2. Contextual setup wizard per connector type
+Each connector type renders a 3-step progress flow inside the same right-side drawer opened by Area 1. Step 1 is common to all types: connector name + a plain-language description of what this connector does and what the user can do with it. Step 2 is type-specific, showing max 3 fields at a time with "What's this?" tooltips on technical fields. Step 3 is access control (Area 8 intro). Field grouping per type:
 
-### 8. Add in-product guidance for non-technical builders
-Introduce contextual help, empty-state guidance, validation hints, publish blockers, and short instructional copy throughout the builder so users can recover without outside support.
-_Depends on: Areas 5, 6, 7_
-Resolved decisions: guidance should be embedded next to the action being taken rather than placed in external docs; publish blockers should explain the user impact of the issue, not just the missing field.
+**Database (postgres/mysql/mssql):**
+1. "Where is your database?" → Host + Port (tooltip: "Ask your IT team if unsure")
+2. Database name + Username + Password
+3. SSL toggle — plain label: "Encrypt the connection (recommended)"
 
-## Phase 3 — Release Quality Gates
+**REST web service:**
+1. "What's the web address?" → Base URL
+2. "Does it need a key or password?" → Auth type (shown as plain tiles: No auth / Bearer token / API key / Username & password) → secret field for the chosen type. MOCO/token auth hidden under "More auth options".
+3. Bridges into Area 3 endpoint guidance
 
-### 9. Add minimum release-grade validation for accessibility and responsiveness
-Audit and fix the most important accessibility and layout issues in the current shell, including focus states, keyboard reachability, contrast, form labeling, button semantics, and narrow-width breakpoints.
-_Depends on: Areas 2, 4, 6_
-Resolved decisions: desktop-first does not mean desktop-only; the release bar should include acceptable tablet and narrow laptop behavior and no obvious keyboard traps.
+**CSV upload:**
+1. File upload — single field; auto-previews first 5 rows on selection
 
-### 10. Add web UI regression coverage for the primary release journeys
-Create a lean but real automated safety net for login, tool discovery, runtime loading states, builder creation, and publish-critical flows.
-_Depends on: Areas 3, 4, 5, 7, 8_
-Resolved decisions: prioritize end-to-end coverage for the shipped paths because the web app currently has no visible UI test harness; keep scope small but user-critical.
+**Managed table:**
+1. Skips to column builder (Area 5) — name is the only Step 1 field needed
 
-### 11. Define and enforce a release checklist tied to actual shipped behavior
-Convert this audit into a go/no-go checklist covering copy, navigation, empty states, blocked states, accessibility, publish readiness, and core smoke tests.
-_Depends on: Areas 3, 8, 9, 10_
-Resolved decisions: release should be blocked by user-facing trust failures even if core APIs work; UX failures are release failures for this audience.
+**GraphQL:**
+1. "What's the API address?" → Endpoint URL
+2. Auth — same plain tile picker as REST (bearer token or no auth)
 
-## Brief: UX-First Release Readiness
+_Resolved decisions: max 3 fields per sub-step; MOCO/token auth hidden behind "More auth options"; plain-language auth type tiles not a raw select; tooltips on host/port/database; CSV auto-preview; translated via next-intl._
+_Depends on: Areas 0, 1_
+
+### 3. API connector endpoint guidance
+At the end of the REST/GraphQL wizard (after URL + auth), show a single choice screen: "Does this service do one thing, or does it have multiple actions?" Two tiles: "It does one specific thing" (single-endpoint) vs. "It has multiple actions" (action catalog). For single-endpoint: auto-create one action with the base URL and prompt for a plain label ("What does this service do?") — done, no action catalog needed. For multi-action: save the connector, then immediately open the action catalog in the detail drawer with an "Add your first action" prompt visible. Action form fields are simplified for non-tech users: plain "Action name" (maps to `action_label`), "What URL does it call?" (maps to `path_template`), HTTP method as plain tiles ("Fetch data" = GET, "Send data" = POST, "Update" = PUT/PATCH, "Delete" = DELETE). The technical `action_key`, `resource_name`, and `input_fields` definition are collapsed under "Advanced options" in the action form.
+
+_Resolved decisions: single vs. multi as a wizard tile choice; single-endpoint auto-creates one action; multi opens action catalog post-save; HTTP method shown as intent tiles; technical action form fields behind advanced toggle; translated via next-intl._
+_Depends on: Area 2_
+
+---
+
+## Phase 2 — Post-Creation Education
+
+### 4. "What you can do now" card shown after every connector is created
+Immediately after a connector is saved, the detail drawer opens with a contextual next-steps card pinned at the top. Card content per type (all copy translated):
+- **Managed table:** "Your shared table is ready. Add your first column to define what kind of information it holds." → CTA: "Add a column" (scrolls to column builder)
+- **Database:** "Your database is connected. Check that everything works, then browse your tables." → CTA: "Test the connection" (triggers test) 
+- **CSV upload:** Shows inline preview of first 5 rows with row count confirmation: "Your file was imported — X rows ready."
+- **REST (single-endpoint):** "Your web service is set up and ready to use in your apps."
+- **REST (multi-action):** "Your web service is connected. Add actions to define what it can do." → CTA: "Add an action"
+- **GraphQL:** "Your API is connected. Add actions to use it in your apps." → CTA: "Add an action"
+
+Dismissed state stored in `localStorage` keyed by connector ID. Does not reappear on subsequent visits once dismissed. Not shown when editing an existing connector.
+
+_Resolved decisions: per-type copy; localStorage dismissal per connector ID; not shown on edit; CTA buttons scroll/trigger the relevant section; translated via next-intl._
+_Depends on: Areas 0, 2_
+
+### 5. Shared table column builder (managed connector)
+Replace the current read-only column chip display (which shows raw `col_type` values in parentheses) with an editable column builder. Each column row shows: drag handle (reorder), plain name input, type picker using plain labels ("Text", "Number", "Yes/No", "Date", "File" — mapping to the existing `col_type` enum), and a delete button. An "Add a column" button appends a new blank row. Changes are saved immediately on blur (optimistic, with inline error recovery). The column builder appears in both the wizard Step 2 (for managed connectors) and the detail drawer "Your data" section. The existing CSV seed/export functionality is preserved but moved to a secondary "Import / Export" subsection below the column builder, with plain labels: "Import from CSV" (replace or append) and "Download as CSV".
+
+_Resolved decisions: editable column builder replaces read-only chips; plain type labels used throughout; immediate-save on blur; CSV import/export preserved but labelled in plain language; same component used in wizard and detail view; translated via next-intl._
+_Depends on: Area 4_
+
+---
+
+## Phase 3 — List View
+
+### 6. Connector list redesign with status-first layout
+Replace the card grid with a vertical list grouped into 4 plain translated categories: **Your Files** (csv), **Databases** (postgres, mysql, mssql), **APIs & Web Services** (rest, graphql), **Shared Tables** (managed). Each row shows: SVG type icon (one per category, not per sub-type), connector name, status badge, owner name, and a "Manage" button. Status badge derives from existing data: if `schema_cached_at` is present and recent → "Connected" (green); if missing → "Not set up yet" (grey); a future test-result error state → "Needs attention" (amber). Each category header has a count badge (e.g. "Databases · 2") and a "＋ Add" button. Empty categories are collapsed by default with a single "＋ Add your first [category]" link shown instead. No raw dates, schema hashes, or connector type codes visible anywhere. The existing "Refresh" button moves to a small icon button in the page header.
+
+_Resolved decisions: 4 category groupings; status derived from schema_cached_at + future test state; empty categories collapsed; SVG icons per category; count badge on category header; translated via next-intl._
+_Depends on: Areas 0, 1_
+
+---
+
+## Phase 4 — Detail & Management
+
+### 7. Detail view redesign — collapsible sections, no tabs
+Replace the current 3-tab panel (Details / Permissions / Actions) with a single right-side drawer that slides in when a connector row is clicked. Sections are collapsible accordions; the first two are open by default. All section labels translated.
+
+1. **What you can do** — Area 4 card (dismissible; after dismissal collapses to a compact one-line summary with a "Show tips" link)
+2. **Your data** — content varies by type: column builder for managed tables (Area 5); first 10 rows preview table for CSV and databases; action list for REST/GraphQL (with "Add action" CTA for admins)
+3. **Connection settings** — edit name and credentials (existing `ConnectorForm` credential fields, simplified); "Test connection" button with plain-language result: "Everything looks good ✓" or "We couldn't connect — [plain reason]. Check your [password / API key / address]."
+4. **Who has access** — Area 8 sharing panel
+5. **Developer options** _(collapsed by default, labelled "For developers")_ — existing schema tree, raw SQL query tester, type badge with raw connector type code. Only visible to admins.
+
+The drawer opens over the list (not below it as the current panel does), with an overlay backdrop on mobile and a slide-in on desktop. Close button in the drawer header.
+
+_Resolved decisions: drawer replaces bottom panel; 5 collapsible sections; first 2 open by default; Developer options admin-only; test result copy in plain language with specific guidance; translated via next-intl._
+_Depends on: Areas 0, 4, 5_
+
+### 8. Access control panel with plain-language sharing
+Replace the existing `ConnectorGrantsTab` (admin-only, hidden in the Permissions tab, uses "grants" terminology) with a sharing panel visible to all users inside the detail drawer (Area 7, section 4). The panel shows: current people with access as name + avatar chips, each with a role label dropdown: "Can view data" (read) or "Can view and edit data" (read/write). An "Add people" search input (by name or email) below the chips. A remove (×) button on each chip. Users can only add people up to their own access level — they cannot grant write access they don't have. Admins see one additional toggle: "Restrict to read-only for everyone" (overrides all individual grants to read). The connector owner is always shown first and cannot be removed. No "grants", "audience", "capability", or "permissions" vocabulary anywhere in the UI — only "access" and "who can use this".
+
+_Resolved decisions: panel replaces admin-only grants tab; visible to all users not just admins; chips with inline role dropdown; add by name/email; owner pinned first; admin-only read-only-override toggle; escalation prevention (can't grant more than own access); translated via next-intl._
+_Depends on: Area 6_
+
+---
+
+## Previously Explored Options (reference only)
+
+Options A–E were presented as alternatives during the pre-plan phase. The plan above is a synthesized hybrid drawing primarily from Option A (intent-based tile picker), Option B (right-side drawer), Option C (no-tabs detail), and Option D (category grouping), plus the user's key requirement of per-type contextual education that was not present in any single option.
+
+---
+
+## Brief: Connectors Tab Redesign + App-Wide i18n
 
 ### Problem
-Lima already contains meaningful product surface area, but the current implementation is still shaped like a tool for technically confident internal builders rather than a dependable product for non-technical users. The main risk is not missing raw capability; it is that users will encounter jargon, ambiguous flows, weak recovery states, and inconsistent UI at exactly the moments they need reassurance.
+The current connectors tab was built for technically confident developers. It presents raw type names (`postgres`, `rest`, `graphql`), all credential fields simultaneously, multiple tabs with no clear purpose hierarchy, and no guidance on what a connector actually enables. The target users — sales, marketing, and non-technical operations teams at English- and German-speaking companies — have no context for any of this. The result is that non-tech users either need hand-holding from an admin or give up. Additionally, there is zero i18n infrastructure in the app today, blocking all German-language companies from using it.
 
 ### Current Context
-The web app currently has working route groups for login, tools, builder, runtime, connectors, approvals, and admin. The root route performs role-based redirects and currently hard-separates end_user from builder access. The tools page lists published tools and supports search. The runtime can render multiple widget types and handles several permission and publication states. The builder supports app creation, connector setup, editing, autosave, publication, workflow editing, and multiple admin surfaces. The UI is heavily implemented with inline styles and a dark palette. There are no visible route-level error, not-found, or loading handlers in the main app tree. The repo shows backend Go tests, package-level tests for the Aura DSL, and no visible web UI or end-to-end test harness.
+- `apps/web/app/builder/connectors/page.tsx` — single ~1300-line file containing `ConnectorsPage`, `ConnectorCard`, `ConnectorForm`, `CredentialFields`, `DetailPanel`, `ActionCatalogPanel`, `ActionForm`, `ConnectorGrantsTab` (imported), `SchemaTree`, `QueryResultTable`
+- Connector types: `postgres`, `mysql`, `mssql`, `rest`, `graphql`, `csv`, `managed`
+- Detail panel has 3 tabs: Details (schema, test, query, managed columns), Permissions (admin-only grants), Actions (REST/GraphQL action catalog)
+- `ConnectorGrantsTab` — separate component, admin-only, uses "grants" terminology
+- `ConnectorSetupHint` — basic empty state component
+- Backend `User` struct has no `language` field; no user settings API endpoint exists
+- No i18n library, no message files, no locale routing anywhere in the codebase
+- Next.js 15 / React 19 — fully compatible with `next-intl` v4
 
 ### Desired Outcome
-A first-release user should be able to sign in, connect data, create and publish a simple tool, launch it, complete a basic task, and recover from problems without needing technical vocabulary or support intervention. The product should support the reality that many first-release users are both builders and users of the tools they create.
+Any user — regardless of technical background or language — can add a connector, understand what it does, configure who can use it, and know what to do next, entirely without help. German-speaking users see the entire app in German. The connectors tab feels like a guided product feature, not a developer configuration panel.
 
 ### Scope
-Included: login and first-run messaging, tools home, runtime states and copy, builder first-run setup, editor simplification, shared UI system, contextual guidance, accessibility fixes, responsive cleanup, and minimum automated test coverage for core release journeys.
+- **Phase 0:** `next-intl` v4 setup; Go `User` model migration (add `language` field); `PATCH /users/me/language` API endpoint; `apps/web/messages/en.json` + `de.json` with AI-generated translations for all existing strings; EN/DE toggle in builder sidebar footer and tools page header; `next-intl` provider wired into app shell
+- **Phase 1:** Intent tile picker (Area 1); 3-step wizard per connector type (Area 2); API single vs. multi-action choice (Area 3)
+- **Phase 2:** Post-creation education card (Area 4); managed table column builder (Area 5)
+- **Phase 3:** Categorised status-first connector list (Area 6)
+- **Phase 4:** Right-side drawer detail view, no tabs (Area 7); plain-language sharing panel (Area 8)
 
 ### Non-goals
-Not included: redesigning the full platform architecture, shipping every advanced builder/admin capability at parity, relying on external documentation as the primary guidance layer, or broadening scope to mobile-native quality for this release.
+- URL-based locale routing (`/de/...`) — not needed; locale is per-user preference
+- Professional translator review pipeline — AI-generated translations are sufficient for now
+- Mobile-native quality — desktop-first
+- Redesign of any other builder pages beyond the connectors tab
+- Adding new connector types not already supported
+- Any backend changes beyond the `language` field migration and one new API endpoint
 
 ### Constraints
-The current codebase already exposes builder, admin, workflow, and connector concepts deeply in the UI. Styling is fragmented across many inline implementations. The runtime and builder are coupled to domain terms such as workspace, publication, approvals, and connector actions. The current routing model also separates end_user from builder access, even though the release may need self-serve users to do both. There is little visible protection against route-level failures. The release must work for users who do not understand those concepts.
+- The entire connectors page is a single large client component — the redesign should refactor it into smaller focused components without changing the existing API contract (`listConnectors`, `createConnector`, `patchConnector`, `deleteConnector`, `testConnector`, etc.)
+- The `ConnectorGrantsTab` component will be replaced by the new sharing panel (Area 8) — the underlying grants API can remain unchanged
+- The backend `ConnectorType` enum is the source of truth; UI labels must map to it without exposing it
+- All new UI components must use `useTranslations()` from `next-intl` — no hardcoded English strings
+- The `col_type` enum for managed table columns must be mapped to plain labels in the UI
+- Access escalation prevention (users cannot grant more access than they have) requires a check against the current user's own access level for that connector
 
 ### Decisions
-Chosen assumptions for this brief: the near-term target is an internal desktop-first release; the primary bar is self-serve success across connector setup, app creation, publication, and tool use; many users should be treated as both builders and end users; advanced capabilities can be visually reduced or deferred if they compromise clarity. Keep the current product direction, but simplify language, navigation, first-run exposure, and role friction. Add in-product guidance instead of asking users to learn platform vocabulary elsewhere.
+| Decision | Choice |
+|---|---|
+| i18n library | `next-intl` v4 |
+| Locale storage | Per-user in DB, fallback to browser `Accept-Language` |
+| Language picker placement | EN/DE toggle in builder sidebar footer + tools header |
+| URL strategy | No `/de/` prefix — locale from user preference only |
+| Translation source | AI-generated `en.json` + `de.json` |
+| Type picker UX | Intent tile grid → database brand sub-step |
+| Setup flow | Right-side drawer, 3-step wizard, max 3 fields per step |
+| MOCO/token auth | Hidden behind "More auth options" |
+| API endpoint choice | Single vs. multi-action tile choice in wizard |
+| HTTP method labels | Intent tiles (Fetch data / Send data / Update / Delete) |
+| Technical action fields | Behind "Advanced options" toggle |
+| Post-creation education | Per-type card, localStorage dismissal keyed by connector ID |
+| Column builder save | Immediate on blur, optimistic |
+| Status derivation | From `schema_cached_at` presence |
+| Empty categories | Collapsed with single "＋ Add" link |
+| Detail view | Right-side slide-in drawer, 5 collapsible sections, no tabs |
+| Developer options | Collapsed by default, admin-only |
+| Sharing panel | Visible to all users (not admin-only); chips + role dropdown |
+| Access escalation | Users cannot grant more than their own access level |
+| Connector owner | Pinned first in sharing panel, cannot be removed |
 
 ### Acceptance Criteria
-A non-technical user can sign in, connect a data source, create a simple app, publish it, and launch it without seeing unexplained platform jargon. Every main self-serve flow has humane loading, empty, error, access-denied, and missing-resource states. The builder has a guided first-run path for workspace, connector, app creation, and publication. Publish blockers explain what must be fixed in plain language. Core flows are keyboard-usable, visually legible, and stable on common desktop and narrow-width layouts. Core released journeys are covered by automated UI smoke tests.
+- A non-technical user can add any connector type without seeing `postgres`, `rest`, `mssql`, `graphql`, or any other type code
+- Every connector type shows a contextual "what you can do now" card immediately after creation
+- Managed table connectors expose a drag-and-reorder column builder with plain column type labels
+- REST/GraphQL connectors guide the user through single-endpoint vs. multi-action setup in the wizard
+- The connector list groups connectors into 4 plain categories with status badges derived from real data
+- The detail view has no tabs — all sections are collapsible in a single scrollable drawer
+- Any user (not just admins) can see and manage who has access to their connector
+- The EN/DE language toggle is visible and functional in both the builder sidebar and tools page header
+- All user-facing strings in the connectors tab and app shell are served from `next-intl` message files
+- German users see every connector UI string in German
 
 ### Risks
-The largest risk is breadth: the product already exposes many advanced surfaces, which makes it easy to ship complexity instead of confidence. Another risk is false readiness from backend completeness while the UX remains brittle. A third risk is lack of UI test coverage, which can turn small copy or navigation changes into regressions.
+- The single-file connector page is large (~1300 lines); refactoring into components without regressions requires care — recommend incremental extraction rather than a full rewrite in one pass
+- The `next-intl` provider requires wrapping the app shell at the root layout level — this must not break existing server component boundaries in Next.js 15
+- AI-generated German translations may produce awkward phrasing for technical concepts ("Gemeinsame Tabelle" vs. "Freigegebene Tabelle" etc.) — a native speaker review of connector-specific strings is advisable before release
+- The access escalation prevention rule requires the client to know the current user's own access level for each connector, which is not currently returned by the API — this may require a small API response change
 
 ### Likely Impacted Areas
-apps/web/app/login/page.tsx
-apps/web/app/page.tsx
-apps/web/app/tools/page.tsx
-apps/web/app/app/[appId]/page.tsx
-apps/web/app/app/[appId]/RuntimeRenderer.tsx
-apps/web/app/builder/page.tsx
-apps/web/app/builder/layout.tsx
-apps/web/app/builder/BuilderSidebar.tsx
-apps/web/app/builder/[appId]/page.tsx
-apps/web/app/builder/[appId]/SplitViewOverlay.tsx
-apps/web/app/globals.css
-apps/web/lib/auth.tsx
-apps/web/lib/appValidation.ts
-package.json
-apps/web/package.json
+| File | Change |
+|---|---|
+| `apps/web/app/builder/connectors/page.tsx` | Full redesign — split into sub-components |
+| `apps/web/app/builder/connectors/ConnectorSetupHint.tsx` | Replaced by Area 4 education card |
+| `apps/web/app/builder/connectors/ConnectorGrantsTab.tsx` | Replaced by Area 8 sharing panel |
+| `apps/web/app/builder/BuilderSidebar.tsx` | Add EN/DE language toggle to footer |
+| `apps/web/app/tools/layout.tsx` | Add EN/DE language toggle to header |
+| `apps/web/app/layout.tsx` | Add `next-intl` provider |
+| `apps/web/messages/en.json` | New — all English strings |
+| `apps/web/messages/de.json` | New — AI-generated German strings |
+| `apps/web/lib/auth.tsx` | Add `language` field to `AuthUser`; update on preference save |
+| `apps/web/lib/api.ts` | Add `patchUserLanguage(lang)` API call |
+| `services/api/internal/model/model.go` | Add `Language` field to `User` struct |
+| `services/api/migrations/` | New migration: `ALTER TABLE users ADD COLUMN language VARCHAR(5) DEFAULT 'en'` |
+| `services/api/` | New handler: `PATCH /users/me/language` |
 
 ### Planning Handoff
-The minimum context a planning or implementation agent needs next:
-- recommended plan title: UX-first release hardening for non-technical users
-- likely workstreams or phases: end-user runtime polish, builder simplification, shared UI system, accessibility and responsive fixes, release test coverage
-- major dependencies: route-state handling, shared UI primitives, copy pass, end-to-end test harness choice, publish-validation messaging
-- blockers or open questions still remaining: whether the release should actively hide some advanced builder/admin surfaces; whether the dark visual direction stays or is adjusted for higher readability; what exact smoke-test environment will back the web UI suite
+- **Recommended implementation order:** Phase 0 first (i18n infra + backend migration) → Phase 1 (creation flow) → Phase 2 (education) → Phase 3 (list) → Phase 4 (detail/management). Phases 1–4 can be reviewed incrementally as the existing page is replaced section by section.
+- **Workstreams:** (1) Backend: Go migration + language endpoint; (2) i18n infra: next-intl setup + message files; (3) Connector creation flow: tile picker + wizard; (4) Connector detail: drawer + collapsible sections; (5) Sharing panel
+- **Major dependencies:** Phase 0 (i18n + backend) must land before any new connector UI ships translated strings. The drawer/detail redesign (Area 7) depends on the education card (Area 4) and column builder (Area 5) being ready to embed.
+- **Key open question for implementer:** The access escalation prevention rule (Area 8) needs the API to return the current user's own grant level per connector — confirm whether `listConnectors` response already includes this or if a small API addition is needed before building the sharing panel.
 
-## Prioritized Release Checklist
-
-### Must-have before release
-- Clarify or relax the current role split so self-serve users can move between building and launching tools without an artificial product boundary.
-	Files: apps/web/app/page.tsx, apps/web/lib/auth.tsx, apps/web/app/builder/layout.tsx, apps/web/app/tools/layout.tsx
-- Rewrite end-user copy across login, tools, and runtime so users are guided by outcomes instead of platform terms.
-	Files: apps/web/app/login/page.tsx, apps/web/app/tools/page.tsx, apps/web/app/app/[appId]/page.tsx, apps/web/app/tools/layout.tsx
-- Simplify connector setup and publication because they are part of the release-critical path to creating anything launchable.
-	Files: apps/web/app/builder/connectors/page.tsx, apps/web/app/builder/[appId]/page.tsx, apps/web/lib/appValidation.ts
-- Add route-level loading, error, and missing-route handling for the main app shells.
-	Files: apps/web/app/layout.tsx, apps/web/app/builder/layout.tsx, apps/web/app/tools/layout.tsx, apps/web/app/app/layout.tsx
-- Turn the tools experience into a simple launcher home with better empty states, launch failures, and access explanations.
-	Files: apps/web/app/tools/page.tsx, apps/web/app/tools/layout.tsx
-- Simplify first-run builder setup so workspace creation, app creation, and first-open actions are self-explanatory.
-	Files: apps/web/app/builder/page.tsx, apps/web/app/builder/BuilderSidebar.tsx
-- Reduce builder complexity on the main editor by emphasizing only the primary actions needed for v1.
-	Files: apps/web/app/builder/[appId]/page.tsx, apps/web/app/builder/[appId]/Inspector.tsx, apps/web/app/builder/[appId]/ChatPanel.tsx, apps/web/app/builder/[appId]/SplitViewOverlay.tsx
-- Establish shared UI primitives and tokens for the app shell instead of continuing to duplicate inline styling.
-	Files: apps/web/app/globals.css, apps/web/app/login/page.tsx, apps/web/app/tools/page.tsx, apps/web/app/builder/page.tsx
-- Fix baseline accessibility and narrow-width behavior for shipped paths.
-	Files: apps/web/app/login/page.tsx, apps/web/app/tools/page.tsx, apps/web/app/app/[appId]/page.tsx, apps/web/app/builder/layout.tsx
-- Add a real web UI smoke-test harness for the release paths.
-	Files: package.json, apps/web/package.json
-
-### Should-have if schedule allows
-- Add better async feedback patterns such as toasts, inline success states, and persistent confirmation after save or submit.
-	Files: apps/web/app/login/page.tsx, apps/web/app/builder/settings/page.tsx, apps/web/app/app/[appId]/RuntimeRenderer.tsx
-- Improve connectors, approvals, and AI settings with more humane help text and clearer empty states.
-	Files: apps/web/app/builder/connectors/page.tsx, apps/web/app/builder/approvals/page.tsx, apps/web/app/builder/settings/page.tsx
-- Add iconography and stronger visual hierarchy to navigation-heavy admin pages.
-	Files: apps/web/app/builder/admin/page.tsx, apps/web/app/builder/BuilderSidebar.tsx
-- Improve redirect transitions so users are not dropped onto blank screens while auth and role checks resolve.
-	Files: apps/web/app/page.tsx, apps/web/app/builder/layout.tsx, apps/web/app/tools/layout.tsx
-
-### Defer from the first release if needed to protect quality
-- Prominent version-history workflows and secondary editing surfaces.
-	Files: apps/web/app/builder/[appId]/VersionHistory.tsx, apps/web/app/builder/[appId]/LayersPanel.tsx
-- Chat-led and split-view creation flows until the main builder path is clear and dependable.
-	Files: apps/web/app/builder/[appId]/ChatPanel.tsx, apps/web/app/builder/[appId]/SplitViewOverlay.tsx
-- Deep admin/resource workflows that are not required to let a first builder create and publish a basic tool.
-	Files: apps/web/app/builder/admin/resources/page.tsx, apps/web/app/builder/admin/groups/page.tsx, apps/web/app/builder/admin/members/page.tsx
-
-## Page-by-Page UI Remediation Brief
-
-### Shell-level gaps
-- Add explicit loading, error, and not-found handling for all route groups. The current layouts return null during auth checks, which creates blank-screen moments.
-	Files: apps/web/app/layout.tsx, apps/web/app/builder/layout.tsx, apps/web/app/tools/layout.tsx, apps/web/app/app/layout.tsx
-- Introduce a shared page-shell system for headers, cards, forms, alerts, buttons, and empty states so the app stops feeling like unrelated screens.
-	Files: apps/web/app/globals.css and all major page files under apps/web/app
-
-### / and redirect behavior
-- Current state: role-based redirect logic exists, but it is invisible to users while auth resolves.
-	File: apps/web/app/page.tsx
-- Remediation: add a short transition screen with clear messaging such as signing you in or taking you to your tools.
-
-### /login
-- Current state: login supports SSO, Google, magic link, and dev login in one dense panel.
-	File: apps/web/app/login/page.tsx
-- Problems: too many choices in one visual block, weak distinction between production and development flows, plain error states, and no reassurance about what happens next.
-- Remediation: separate primary login from secondary options, move dev login into a clearly labeled advanced/dev section, add better error/success styling, and explain the magic-link flow in plain language.
-
-### /tools layout and tools home
-- Current state: the tools page lists tools, supports search, and launches a runtime route; the shell header is minimal.
-	Files: apps/web/app/tools/layout.tsx, apps/web/app/tools/page.tsx
-- Problems: it still feels like a catalog of internal objects, launch failures are plain text, workspace changes are implicit, and empty states are informative but not supportive.
-- Remediation: make this the main end-user home screen, strengthen the header and page intro, clarify why a tool is available or not launchable, make launch/recovery states visually obvious, and explain workspace switching only when it affects the user.
-
-### /app/[appId]
-- Current state: runtime handles workspace-unavailable, unpublished, access-denied, and generic failure cases, then renders the app runtime.
-	File: apps/web/app/app/[appId]/page.tsx
-- Problems: several states still use internal product terms, the runtime header exposes builder-oriented navigation, and generic failures are too terse.
-- Remediation: rewrite all blocked states into plain-language task guidance, remove or role-gate builder-oriented links from the end-user header, and provide a retry path plus a safe route back to tools.
-
-### Runtime widget rendering
-- Current state: runtime supports text, button, table, form, KPI, chart, filter, and markdown widgets with validation and approval-aware button behavior.
-	File: apps/web/app/app/[appId]/RuntimeRenderer.tsx
-- Problems: several runtime messages still read like configuration diagnostics, the canvas layout is functional but austere, and action feedback is transient and easy to miss.
-- Remediation: translate configuration and unsupported-widget states into user-safe messaging, improve button/form success and pending states, and add more visible empty, loading, and recovery patterns inside widgets.
-
-### /builder home
-- Current state: builder home combines workspace creation, app creation, and app listing.
-	File: apps/web/app/builder/page.tsx
-- Problems: first-time setup and ongoing app management are mixed together, and the page assumes users already understand workspaces and apps.
-- Remediation: make first-run builder onboarding distinct from the returning-user dashboard, explain what a workspace is only at the moment it matters, and turn app creation into a guided first task.
-
-### Builder shell and navigation
-- Current state: the builder shell uses a fixed sidebar with workspace selection, navigation, and account actions.
-	Files: apps/web/app/builder/layout.tsx, apps/web/app/builder/BuilderSidebar.tsx
-- Problems: auth loading returns a blank screen, navigation labels are platform-centric, and admin capabilities sit at the same visual level as core builder tasks.
-- Remediation: add a loading shell, simplify or rename labels where possible, and visually separate core creation tasks from advanced administration.
-
-### /builder/[appId] editor
-- Current state: the editor exposes canvas editing, inspector, chat, workflows, publications, app settings, version history, and validation in one large surface.
-	File: apps/web/app/builder/[appId]/page.tsx
-- Problems: too many concepts are present at once for a first-time non-technical builder; core actions compete with advanced controls.
-- Remediation: make add widget, edit content, preview, publish, and fix blockers the dominant path; stage workflows, history, and AI-led creation behind secondary affordances.
-
-### /builder/connectors
-- Current state: connectors management is feature-rich and supports many connector types.
-	File: apps/web/app/builder/connectors/page.tsx
-- Problems: the page is powerful but intimidating, especially for non-technical builders who may not know connection details or grant models.
-- Remediation: keep the main list and creation flow, but convert advanced grants, actions, schema, and data-management controls into progressive-disclosure sections with clearer explanations.
-
-### /builder/approvals
-- Current state: approvals management is already task-focused and filterable.
-	File: apps/web/app/builder/approvals/page.tsx
-- Problems: the language is still operational rather than user-centered, and the UI lacks stronger empty/success patterns.
-- Remediation: keep it visible for admins, but simplify the copy, clarify decision consequences, and improve status readability.
-
-### /builder/settings
-- Current state: AI settings are functional and reasonably constrained.
-	File: apps/web/app/builder/settings/page.tsx
-- Problems: the form still assumes users understand providers, models, and token behavior; save confirmation is minimal.
-- Remediation: keep the page, but rewrite it as setup guidance with field help, example values, and stronger saved-state confirmation.
-
-### /builder/admin and subpages
-- Current state: admin links, audit, members, groups, and resources are present.
-	Files: apps/web/app/builder/admin/page.tsx and subpages under apps/web/app/builder/admin
-- Problems: these are important but not first-release builder tasks, and they add cognitive weight when placed alongside app creation.
-- Remediation: keep them accessible for true admins, but de-emphasize them in the main builder journey and avoid surfacing them during first-run onboarding.
-
-## Builder v1 Scope Controls
-
-### Keep fully visible in v1
-- Builder home with workspace/app creation, but in a guided format.
-	File: apps/web/app/builder/page.tsx
-- Core editor path: canvas, a simplified inspector, preview, publish, and publish blockers.
-	Files: apps/web/app/builder/[appId]/page.tsx, apps/web/app/builder/[appId]/CanvasEditor.tsx, apps/web/app/builder/[appId]/Inspector.tsx
-- Connectors list and basic connector creation because builders need data before they can produce usable tools.
-	File: apps/web/app/builder/connectors/page.tsx
-- Approvals because the release already includes approval-gated writes.
-	File: apps/web/app/builder/approvals/page.tsx
-
-### Simplify for v1
-- Workspace creation language and app creation flow.
-	File: apps/web/app/builder/page.tsx
-- Sidebar labeling and information density.
-	File: apps/web/app/builder/BuilderSidebar.tsx
-- Publish dialog and publication setup so the primary question is who can use this tool, not how the platform models publications.
-	File: apps/web/app/builder/[appId]/page.tsx
-- Inspector surface so only the most common widget properties are immediately visible.
-	File: apps/web/app/builder/[appId]/Inspector.tsx
-- AI settings so the page behaves like a simple personal setup screen rather than a provider configuration sheet.
-	File: apps/web/app/builder/settings/page.tsx
-
-### Hide behind progressive disclosure in v1
-- Chat-driven editing and split-view generation.
-	Files: apps/web/app/builder/[appId]/ChatPanel.tsx, apps/web/app/builder/[appId]/SplitViewOverlay.tsx
-- Advanced workflow editing, raw config, SQL-heavy controls, and specialist node configuration.
-	Files: apps/web/app/builder/[appId]/WorkflowEditor.tsx, apps/web/app/builder/[appId]/WorkflowCanvas.tsx, apps/web/app/builder/[appId]/workflow-nodes/*
-- Connector grants and advanced resource permissions.
-	Files: apps/web/app/builder/connectors/ConnectorGrantsTab.tsx, apps/web/app/builder/admin/resources/page.tsx
-- Secondary organization tools such as layers and floating workflow panels.
-	Files: apps/web/app/builder/[appId]/LayersPanel.tsx, apps/web/app/builder/[appId]/FloatingWorkflowPanel.tsx
-
-### Defer from the first release if quality or scope becomes tight
-- Version history as a prominent user flow.
-	File: apps/web/app/builder/[appId]/VersionHistory.tsx
-- Workflow templates if they distract from the primary create-edit-publish journey.
-	File: apps/web/app/builder/[appId]/workflowTemplates.ts
-- Deep admin maintenance flows that are not required to get a simple internal tool into use.
-	Files: apps/web/app/builder/admin/groups/page.tsx, apps/web/app/builder/admin/members/page.tsx, apps/web/app/builder/admin/resources/page.tsx
-- Any unfinished AI-generation affordance that creates expectation without dependable output.
-	File: apps/web/app/builder/[appId]/SplitViewOverlay.tsx
-
-### Recommended v1 builder posture
-For the first release, the builder should behave like a guided tool creator, not a platform cockpit. Users should see only the actions required to create a simple app, connect data, preview the result, publish it safely, and understand why publication is blocked when it is blocked. Everything else should either move into an advanced section or wait until the primary journey is smooth.

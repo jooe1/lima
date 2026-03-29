@@ -1,318 +1,418 @@
-# Delivery Plan: UX-First Release Hardening for Non-Technical Users
-_Last updated: 2026-03-28_
-_Feature slug: ux-first-release-readiness_
+# Delivery Plan: Connectors Tab Redesign + App-Wide i18n
+_Last updated: 2026-03-29_
+_Feature slug: connectors-tab-redesign_
 _Source: docs/clarity/current.plan.md_
 
 ## Goal
-Deliver a safe, reviewable implementation path for turning Lima into a self-serve internal product where a non-technical user can sign in, connect data, create a basic app, publish it, launch it, and recover from common failures; the commit order starts with test and routing foundations, then establishes shared UX primitives, then simplifies the self-serve builder and runtime flows, and finishes with route-state hardening, accessibility, and release smoke coverage.
+Deliver a fully redesigned, non-technical-friendly connectors experience with full English + German language support; the commit order starts with the Go backend language field and the Next.js i18n infrastructure (which every UI commit depends on), then builds the creation flow, post-creation education, list view, and detail management in that order, with `page.tsx` modified incrementally at each step.
 
 ## Stack Decisions
 | Decision | Value | Reason |
 |----------|-------|--------|
-| Self-serve role model | Treat authenticated users as builder-capable in the web shell, with creation bounded by the resources and actions they already have access to | The clarified requirement is that every user should be able to build tools from the resources they can already use, while admin-only actions remain protected |
-| Primary landing flow | Builder-first for self-serve users, tools as the post-publish launch surface | The current value path requires connector setup, app creation, and publication before tools are usable |
-| Shared UI approach | Small in-repo UI primitive layer plus CSS variables in the Next app | The brief calls for a deliberate, teachable UI system without broad architecture changes |
-| Browser regression tooling | Playwright end-to-end tests in apps/web | No browser test tooling exists today and the brief requires release-critical smoke coverage |
-| Release quality bar | Desktop-first, keyboard-usable, narrow-width safe | Directly required by the clarity brief acceptance criteria |
+| i18n library | `next-intl` v4 | App Router native, TypeScript-first, cookie-based non-URL locale; no route changes needed |
+| Locale storage | Per-user in DB (`users.language`), cookie `NEXT_LOCALE` as fast-path cache, fallback to `Accept-Language` | Clarity plan decision; survives server-side rendering |
+| URL strategy | No `/de/` prefix | All existing routes remain unchanged; locale from cookie only |
+| Translation source | AI-generated `messages/en.json` + `messages/de.json` | No professional translator pipeline needed |
+| Language picker | EN/DE compact toggle in builder sidebar footer + tools header | No new settings page needed |
+| Connector type picker | Intent tile grid in a right-side drawer | Replaces raw `<select>` with plain-language tiles |
+| Setup flow | 3-step wizard inside the drawer, max 3 fields per step | Non-tech UX; technical fields behind tooltips or "More options" |
+| Detail view | Single slide-in drawer, 5 collapsible sections, no tabs | Replaces current 3-tab bottom panel |
+| Column builder save | Optimistic on blur | Clarity plan decision |
+| Status derivation | `schema_cached_at` presence → "Connected" vs "Not set up yet" | No new backend field needed |
+| Sharing panel audience | Visible to all users, not admin-only | Replaces `ConnectorGrantsTab` which was admin-only |
 
 ## Commits
 
-### Commit 1 — chore(web): add playwright smoke harness
-**Why:** Establish a browser-test foundation early so every later UX commit can add or extend release-critical smoke coverage.
-**Parallelizable with:** none
+### Commit 1 — feat(api): add language field to users; PATCH /v1/me/language
+**Why:** All i18n work depends on the backend storing and serving the user's preferred language; this is the only backend change in the plan and must land first.
+**Parallelizable with:** Commit 2
 
 **Files:**
-- `package.json` — MODIFIED: expose monorepo-level browser smoke command through the existing workspace scripts
-- `apps/web/package.json` — MODIFIED: add web-local Playwright scripts and dev dependencies
-- `apps/web/playwright.config.ts` — NEW: configure Playwright for the Next.js app and local base URL handling
-- `apps/web/tests/e2e/helpers.ts` — NEW: shared browser-test helpers for navigation and authenticated setup
-- `apps/web/tests/e2e/auth.spec.ts` — NEW: baseline smoke coverage for login-shell availability and route bootstrapping
+- `services/api/migrations/021_user_language.up.sql` — NEW: `ALTER TABLE users ADD COLUMN language VARCHAR(5) NOT NULL DEFAULT 'en'`
+- `services/api/migrations/021_user_language.down.sql` — NEW: `ALTER TABLE users DROP COLUMN language`
+- `services/api/internal/model/model.go` — MODIFIED: add `Language string` field to `User` struct
+- `services/api/internal/store/users.go` — MODIFIED: add `language` to `userCols` constant, both `Scan` calls, and new `SetUserLanguage(ctx context.Context, userID, lang string) error` method
+- `services/api/internal/handler/users.go` — NEW: `PatchMyLanguage(s *store.Store, log *zap.Logger) http.HandlerFunc`; validates lang is `"en"` or `"de"`, calls `SetUserLanguage`, returns 204 No Content
+- `services/api/internal/router/router.go` — MODIFIED: add `r.Patch("/language", handler.PatchMyLanguage(s, log))` inside the existing `/v1/me` route group
+- `services/api/internal/handler/users_test.go` — NEW: tests for `PatchMyLanguage`
 
 **Interface contracts** (names and shapes other commits depend on):
-- `loginAsDev(page, options?: { email?: string; companySlug?: string }): Promise<void>` — shared authenticated setup helper for later self-serve journey tests
-- `waitForRouteReady(page, pathname: string): Promise<void>` — shared helper that later specs use to stabilize route assertions
-- `pnpm --filter @lima/web test:e2e` — canonical web browser-smoke command used by later commits and release checks
+- `PATCH /v1/me/language` request body: `{"language": "en" | "de"}` → 204 No Content; 400 if unsupported value
+- `model.User.Language string` — `"en"` or `"de"`; DB default `"en"`
+- `store.Store.SetUserLanguage(ctx context.Context, userID, lang string) error`
 
-**Implementation notes** (only non-obvious constraints):
-- The repo currently has no established browser-test tooling, so this commit must keep setup minimal and isolated to `apps/web`.
-- The helper contract should support the existing development login path so later specs can cover the builder flow without inventing backend fixtures.
+**Implementation notes:**
+- Follow the exact pattern of `GetMyAISettings` in `handler/ai_settings.go`: extract claims with `ClaimsFromContext`, validate, call store, return. No new middleware needed.
+- `userCols` in `store/users.go` is a bare string constant (`"id, company_id, email, name, sso_subject, created_at, updated_at"`) — append `, language` and add `&u.Language` to both `scanUser` and `scanUserRows` Scan calls.
+- Reject any lang value not in `{"en", "de"}` with a 400; do not silently ignore unknown values.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/auth.spec.ts` — verify login screen render and basic route bootstrapping using the new Playwright harness
+- `handler/users_test.go` — happy path PATCH returns 204, unknown lang returns 400, unauthenticated returns 401
 
 **Done criteria:**
-- The repo has a single working Playwright entrypoint for the web app.
-- Later commits can extend shared browser-test helpers instead of creating ad hoc setup logic.
+- `PATCH /v1/me/language` with `{"language":"de"}` returns 204; a subsequent user lookup shows `language = "de"`
+- `{"language":"fr"}` returns 400
+- Migration 021 runs cleanly; `\d users` shows `language varchar(5) not null default 'en'`
 
-### Commit 2 — feat(auth): support self-serve builder access with permission-aware route gates
-**Why:** Remove the artificial boundary between “builder” and “user” flows while keeping tool creation constrained to the resources and actions each user is already allowed to access.
-**Parallelizable with:** none
+---
+
+### Commit 2 — feat(web): install next-intl v4 and wire provider, middleware, i18n config
+**Why:** Establish the Next.js i18n infrastructure that all subsequent `useTranslations()` calls require; no user-facing strings change in this commit.
+**Parallelizable with:** Commit 1
 
 **Files:**
-- `apps/web/lib/auth.tsx` — MODIFIED: expose derived access flags needed by the web shell
-- `apps/web/app/page.tsx` — MODIFIED: replace the current hard role split with self-serve landing logic
-- `apps/web/app/builder/layout.tsx` — MODIFIED: show a visible auth/loading gate instead of returning `null`
-- `apps/web/app/tools/layout.tsx` — MODIFIED: show a visible auth/loading gate and align with shared access behavior
-- `apps/web/app/_components/RouteGateShell.tsx` — NEW: reusable loading/redirect shell for authenticated route groups
-- `apps/web/tests/e2e/routing.spec.ts` — NEW: verify route access and visible gate behavior for authenticated navigation
+- `apps/web/package.json` — MODIFIED: add `"next-intl": "^4.0.0"` to dependencies
+- `apps/web/next.config.ts` — MODIFIED: wrap export with `createNextIntlPlugin('./i18n/request.ts')`
+- `apps/web/middleware.ts` — NEW: re-export `createMiddleware` from next-intl configured with `locales: ['en','de']`, `defaultLocale: 'en'`; reads locale from `NEXT_LOCALE` cookie (`localeCookie: 'NEXT_LOCALE'`)
+- `apps/web/i18n/routing.ts` — NEW: `export const routing = defineRouting({ locales: ['en','de'], defaultLocale: 'en', localePrefix: 'never' })`
+- `apps/web/i18n/request.ts` — NEW: `getRequestConfig` async function; reads `NEXT_LOCALE` cookie from headers, falls back to `'en'`; returns `{ locale, messages: (await import(\`../messages/${locale}.json\`)).default }`
+- `apps/web/app/layout.tsx` — MODIFIED: fetch messages server-side via `getMessages()` and wrap children with `<NextIntlClientProvider messages={messages}>`
 
 **Interface contracts** (names and shapes other commits depend on):
-- `AuthContextValue.canAccessBuilder: boolean` — signals whether the current user can enter self-serve builder flows
-- `AuthContextValue.canAccessTools: boolean` — signals whether the current user can enter launch/runtime flows
-- `AuthContextValue.canCreateTools: boolean` — signals whether the current user can create and edit apps in the self-serve builder shell
-- `RouteGateShell(props: { title: string; message: string }): JSX.Element` — shared route-wait UI for auth and redirect transitions
+- `useTranslations(namespace: string)` — available to all client components after this commit
+- `getTranslations(namespace: string)` — available to server components
+- Cookie name: `NEXT_LOCALE` — Commit 3's toggle sets this cookie to `"en"` or `"de"`
+- `routing` export from `i18n/routing.ts` — imported by middleware
 
-**Implementation notes** (only non-obvious constraints):
-- Keep admin-only actions protected at the page/action level; this commit changes shell access and entry routing, not backend authorization rules.
-- Builder access in this plan means users can create tools from resources they already have access to, not that all users gain universal connector or admin powers.
-- Do not reintroduce blank screens while auth state resolves.
+**Implementation notes:**
+- `apps/web/middleware.ts` must live at the web app root (alongside `next.config.ts`), not inside `app/`. This is the standard next-intl App Router location.
+- Do NOT use URL-based locale routing (`localePrefix: 'never'`); locale comes from the cookie only.
+- `messages/en.json` and `messages/de.json` do not exist yet — create them as empty object stubs (`{}`) so the dynamic import in `request.ts` does not throw at startup. Commit 3 seeds them.
+- `app/layout.tsx` is a Server Component — fetch messages server-side with `getMessages()` and pass to the Client Provider.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/routing.spec.ts` — cover builder-first landing for self-serve users and visible auth-gate messaging while route checks resolve
+- No new test file; verify `pnpm --filter @lima/web dev` starts without error with empty message stubs
 
 **Done criteria:**
-- Authenticated self-serve users can reach the builder flow without being trapped on the tools-only path.
-- The delivery plan clearly preserves permission-aware building rather than implying unrestricted access to all resources.
-- Builder and tools layouts show visible waiting states instead of rendering nothing.
+- `pnpm --filter @lima/web dev` starts without runtime errors
+- `useTranslations('common')` can be called in a client component with an empty message file and returns the key as a fallback without crashing
+- No existing routes or Server Component boundaries break
 
-### Commit 3 — feat(ui): add shared UX primitives and redesign login flow
-**Why:** Create the visual and interaction foundation the rest of the self-serve experience can reuse, while fixing the first screen users see.
-**Parallelizable with:** none
+---
+
+### Commit 3 — feat(web): seed message files, extend AuthUser with language, add EN/DE toggle
+**Why:** Complete Phase 0 by seeding translations for all existing UI strings, wiring the stored language preference into the auth layer, and exposing the language toggle in the sidebar and tools header.
+**Parallelizable with:** none (depends on Commits 1 + 2)
 
 **Files:**
-- `apps/web/app/globals.css` — MODIFIED: add CSS variables, shared spacing/type tokens, focus states, and reusable surface styles
-- `apps/web/app/_components/UxPrimitives.tsx` — NEW: small shared primitive set for cards, alerts, buttons, form fields, and empty states
-- `apps/web/app/login/page.tsx` — MODIFIED: rebuild login into a clearer, guided self-serve entry flow
-- `apps/web/app/auth/callback/page.tsx` — MODIFIED: align callback/loading feedback with the new shell language and primitives
-- `apps/web/tests/e2e/login.spec.ts` — NEW: cover the redesigned login flow, async feedback, and visible error/success states
+- `apps/web/messages/en.json` — MODIFIED: seed all existing hardcoded English strings from the app shell, builder nav, tools header, and login page; organized into namespaces `nav`, `common`, `auth`
+- `apps/web/messages/de.json` — MODIFIED: AI-generated German equivalents for all seeded keys
+- `apps/web/lib/auth.tsx` — MODIFIED: add `language: 'en' | 'de'` to `AuthUser` interface; populate from a bootstrap `/v1/me` GET on auth initialization
+- `apps/web/lib/api.ts` — MODIFIED: add `patchUserLanguage(lang: 'en' | 'de'): Promise<void>` calling `PATCH /v1/me/language`; add `getMe(): Promise<{ language: 'en' | 'de' }>` if a `/v1/me` GET endpoint does not already exist
+- `apps/web/app/builder/BuilderSidebar.tsx` — MODIFIED: add compact EN/DE toggle to sidebar footer; on click calls `patchUserLanguage`, sets `NEXT_LOCALE` cookie, calls `router.refresh()`
+- `apps/web/app/tools/layout.tsx` — MODIFIED: add matching EN/DE toggle to header
 
 **Interface contracts** (names and shapes other commits depend on):
-- `SurfaceCard(props: { title?: string; children: React.ReactNode }): JSX.Element` — shared shell surface used by later self-serve pages
-- `InlineAlert(props: { tone: 'info' | 'success' | 'warning' | 'error'; message: string }): JSX.Element` — shared status messaging primitive used in later builder/runtime work
-- CSS custom properties under `:root` for color, spacing, radius, and focus styling — visual contract reused by later page commits
+- `AuthUser.language: 'en' | 'de'` — accessible via `useAuth().user.language` from Commit 4 onward
+- `patchUserLanguage(lang: 'en' | 'de'): Promise<void>` — from `lib/api.ts`; used by both toggles
+- Cookie set pattern in the toggle: `document.cookie = \`NEXT_LOCALE=${lang};path=/;max-age=31536000\``; then `router.refresh()`
+- Message namespace structure for connector commits: `"connectors"` namespace with keys added per-commit; `"common"` for shared labels (Save, Cancel, Back, Next, Close, etc.)
 
-**Implementation notes** (only non-obvious constraints):
-- Keep the shared primitive layer intentionally small; it should support the current app shell, not become a full design-system buildout.
-- The login page still needs dev-only affordances, but they must be visually isolated from the primary production path.
+**Implementation notes:**
+- Check how `useAuth()` currently initializes `AuthUser` — if it decodes the JWT client-side, extend JWT claims to include `language` in `handler/auth.go`'s `issueJWT`; if it makes a `/v1/me` GET, add `language` to that response. The bootstrap GET approach is simpler.
+- `router.refresh()` from `next/navigation` re-fetches Server Component data with the new cookie value — sufficient for locale switching without a full page reload.
+- Do not nest message keys deeper than 2 levels: `{ "connectors": { "addConnector": "Add connector" } }`.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/login.spec.ts` — cover primary login path, visible async feedback, and user-facing error handling
+- No new test file; cover the toggle with a manual smoke pass
 
 **Done criteria:**
-- The app has reusable UI tokens/primitives that later commits can apply without duplicating inline patterns.
-- The login flow reads like a guided product entry point rather than a technical utility screen.
+- EN/DE toggle is visible in the builder sidebar footer and in the tools page header
+- Clicking DE: calls `PATCH /v1/me/language`, sets `NEXT_LOCALE=de` cookie, re-renders the page in German
+- All existing nav/shell strings are served from next-intl message files (no hardcoded English strings remain in `BuilderSidebar.tsx`, `tools/layout.tsx`, or `app/layout.tsx`)
+- `AuthUser.language` is `'de'` after the preference is saved
 
-### Commit 4 — feat(builder): guide workspace and app creation on the builder home
-**Why:** Make the first builder step self-explanatory so users can get from zero to an app shell without needing platform knowledge.
-**Parallelizable with:** none
+---
+
+### Commit 4 — feat(connectors): right-side drawer shell and intent tile picker
+**Why:** Replace the inline `ConnectorForm` and raw `<select>` type picker with a drawer-based tile grid; this is the entry point for the entire creation flow refactor.
+**Parallelizable with:** none (depends on Commit 3; all Phase 1–4 connector commits sequence through `page.tsx`)
 
 **Files:**
-- `apps/web/app/builder/page.tsx` — MODIFIED: split first-run setup from returning-user app management and add guided copy
-- `apps/web/app/builder/BuilderSidebar.tsx` — MODIFIED: reduce cognitive load in navigation and make the core path more obvious
-- `apps/web/tests/e2e/builder-home.spec.ts` — NEW: cover workspace creation, app creation, and guided first-run messaging
+- `apps/web/app/builder/connectors/ConnectorDrawer.tsx` — NEW: right-side slide-in drawer shell; overlay backdrop on mobile, slide-in on desktop; close button in header. Props: `{ isOpen: boolean; onClose: () => void; children: React.ReactNode; title?: string }`
+- `apps/web/app/builder/connectors/ConnectorTypePicker.tsx` — NEW: 6-tile intent picker rendered inside the drawer; tile labels via `useTranslations('connectors')`; "Connect a database" tile triggers an inline 3-tile sub-step (PostgreSQL / MySQL / SQL Server); emits `onSelect(type: ConnectorType, dbBrand?: 'postgres' | 'mysql' | 'mssql')`
+- `apps/web/app/builder/connectors/page.tsx` — MODIFIED: replace inline `ConnectorForm` open logic with `ConnectorDrawer` + `ConnectorTypePicker`; add `drawerState: 'closed' | 'type-picker' | 'wizard' | 'detail'` to component state; retain all existing CRUD state and API call wiring
+- `apps/web/messages/en.json` — MODIFIED: add `connectors.typePicker.*` keys (tile labels, database sub-step heading)
+- `apps/web/messages/de.json` — MODIFIED: German equivalents
 
 **Interface contracts** (names and shapes other commits depend on):
-- `BuilderHomeView = 'setup' | 'apps'` — internal state split that later tests and maintainers rely on for the guided builder home
-- `PrimaryBuilderNavItem` labels and ordering — navigation contract later commits preserve while adding deeper builder changes
+- `ConnectorDrawer` props: `{ isOpen: boolean; onClose: () => void; children: React.ReactNode; title?: string }`
+- `ConnectorTypePicker` props: `{ onSelect: (type: ConnectorType, dbBrand?: 'postgres' | 'mysql' | 'mssql') => void }`
+- `drawerState: 'closed' | 'type-picker' | 'wizard' | 'detail'` — lives in `page.tsx`; Commit 5 sets `'wizard'`, Commit 9 sets `'detail'`
+- Tile → `ConnectorType` map: "Upload a spreadsheet" → `csv`; "Connect a database" → sub-step → `postgres/mysql/mssql`; "Connect a web service" → `rest`; "Call a GraphQL API" → `graphql`; "Create a shared table" → `managed`
 
-**Implementation notes** (only non-obvious constraints):
-- Explain “workspace” only at the moment it matters; do not force users to learn the platform model before they can create their first app.
-- Keep sidebar changes compatible with the broader builder shell and future admin de-emphasis.
+**Implementation notes:**
+- The existing `ConnectorForm` component stays in `page.tsx` in this commit; Commit 5 removes it. Do not delete it here — just stop rendering it as the primary form.
+- The "More options" collapsed area in the tile picker is a visual placeholder in this commit; it does not need to reveal additional tiles yet.
+- The database sub-step is rendered inline within `ConnectorTypePicker` (not a separate drawer step): 3 tiles → PostgreSQL / MySQL / SQL Server; selection maps to `dbBrand` passed to `onSelect`.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/builder-home.spec.ts` — cover first-run setup path and returning-user app list path
+- `ConnectorDrawer.test.tsx` — NEW: renders open/closed states; close button fires `onClose`; `ConnectorTypePicker` tile click calls `onSelect` with the correct `ConnectorType`
 
 **Done criteria:**
-- A first-time self-serve user can understand how to create a workspace and an app from the builder home.
-- Navigation emphasizes core creation tasks over secondary administration.
+- Clicking "New connector" opens `ConnectorDrawer` with 6 intent tiles
+- "Connect a database" tile shows 3 brand sub-tiles; selecting one calls `onSelect` with correct type
+- No raw connector type codes (`postgres`, `rest`, `mssql`, etc.) are visible to the user
+- Existing connector list and detail panel continue to function (no regression)
 
-### Commit 5 — feat(connectors): simplify self-serve connector setup
-**Why:** Connector creation is part of the release-critical setup path and must stop feeling like an advanced admin screen.
-**Parallelizable with:** none
+---
+
+### Commit 5 — feat(connectors): per-type 3-step wizard with credential fields
+**Why:** Replace the one-step all-fields-at-once form with a guided 3-step flow showing max 3 fields per step with plain labels and contextual tooltips.
+**Parallelizable with:** none (modifies `ConnectorDrawer.tsx` and `page.tsx`)
 
 **Files:**
-- `apps/web/app/builder/connectors/page.tsx` — MODIFIED: reorganize connector setup around guided defaults and progressive disclosure for advanced controls
-- `apps/web/app/builder/connectors/ConnectorSetupHint.tsx` — NEW: reusable guidance surface for connector onboarding and empty states
-- `apps/web/tests/e2e/connectors.spec.ts` — NEW: cover first connector creation and the main guided setup path
+- `apps/web/app/builder/connectors/ConnectorWizard.tsx` — NEW: wizard orchestrator; renders step 1 (connector name + plain description of what this type does), step 2 (type-specific credential fields from `CredentialSteps`), step 3 (access control placeholder; replaced by API endpoint guide for REST/GraphQL in Commit 6). Props: `{ connectorType: ConnectorType; dbBrand?: 'postgres' | 'mysql' | 'mssql'; onComplete: (connector: Connector) => void; onBack: () => void }`
+- `apps/web/app/builder/connectors/CredentialSteps.tsx` — NEW: per-type step-2 field renderers; exports: `DatabaseStep`, `RestStep`, `CsvStep`, `ManagedStep`, `GraphQLStep`; each accepts `{ values: Record<string, string>; onChange: (key: string, value: string) => void }`. REST/GraphQL auth type shown as 4 tiles (No auth / Bearer token / API key / Username & password); MOCO hidden behind "More auth options" expand. CSV step auto-previews first 5 rows on file selection.
+- `apps/web/app/builder/connectors/ConnectorDrawer.tsx` — MODIFIED: render `ConnectorTypePicker` when `drawerState === 'type-picker'`; render `ConnectorWizard` when `drawerState === 'wizard'`
+- `apps/web/app/builder/connectors/page.tsx` — MODIFIED: remove `ConnectorForm` render path; on tile `onSelect`, set `drawerState = 'wizard'`; wire `ConnectorWizard.onComplete` to existing `createConnector` / `patchConnector` API calls
+- `apps/web/messages/en.json` — MODIFIED: add `connectors.wizard.*` keys (step labels, field labels, tooltips, auth tile labels)
+- `apps/web/messages/de.json` — MODIFIED: German equivalents
 
 **Interface contracts** (names and shapes other commits depend on):
-- `ConnectorSetupHint(props: { title: string; body: string; actionLabel?: string }): JSX.Element` — shared guidance surface used within connector setup flows
-- “basic” versus “advanced” connector sections within the connectors page — presentation contract later commits preserve when hardening the builder flow
+- `ConnectorWizard` props: `{ connectorType: ConnectorType; dbBrand?: 'postgres' | 'mysql' | 'mssql'; onComplete: (connector: Connector) => void; onBack: () => void }`
+- `CredentialSteps` named exports: `DatabaseStep`, `RestStep`, `CsvStep`, `ManagedStep`, `GraphQLStep` — each `(props: { values: Record<string, string>; onChange: (k: string, v: string) => void }) => JSX.Element`
+- Step 3 slot in `ConnectorWizard` is a `children`-style extensibility point that Commit 6 fills for REST/GraphQL; for all other types it shows a "Who can use this?" intro paragraph (placeholder for Commit 10's sharing panel)
 
-**Implementation notes** (only non-obvious constraints):
-- Keep advanced grants, actions, and low-frequency management controls accessible, but move them behind clear progressive-disclosure affordances.
-- Do not change backend connector semantics in this commit; the work is UX reorganization around existing APIs.
+**Implementation notes:**
+- Do NOT call the API on step 1→2 or 2→3 transitions; API call fires only when the user confirms step 3 ("Finish" / "Save" button).
+- CSV step 2: auto-preview first 5 rows using `FileReader` + `String.split('\n')` + `split(',')` — no external CSV library. Preview renders as a small table.
+- Managed type step 2: a single optional column name input ("Add your first column — you can add more later"); the full column builder is deferred to Commit 7.
+- `ConnectorForm` can be removed from `page.tsx` in this commit once `ConnectorWizard` covers all types.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/connectors.spec.ts` — cover connector list empty state, guided creation path, and successful return to the connector list
+- `ConnectorWizard.test.tsx` — NEW: step navigation (Next/Back), CSV preview renders on file load, form values persist when navigating back
 
 **Done criteria:**
-- A non-technical builder can understand how to start adding a connector from the current page.
-- Advanced connector controls no longer dominate the first-run experience.
+- Selecting any type from the tile picker opens a 3-step wizard inside the drawer
+- Host/port/database fields have a "What's this?" tooltip; max 3 credential fields visible per step
+- MOCO/token auth is hidden by default for REST; expand link reveals it
+- CSV selection auto-previews 5 rows
+- Completing the wizard creates the connector via the existing API; `ConnectorForm` is no longer rendered
 
-### Commit 6 — feat(editor): streamline publish, sharing, and blocker flows
-**Why:** The main editor currently exposes too much at once; v1 needs a dominant path of edit, preview, choose who can access the tool, publish it, and fix blockers.
-**Parallelizable with:** none
+---
+
+### Commit 6 — feat(connectors): API endpoint guidance step for REST/GraphQL
+**Why:** REST and GraphQL connectors need a choice between single-endpoint and action-catalog setups; this commit wires that choice into the wizard and introduces a simplified action form.
+**Parallelizable with:** none (modifies `ConnectorWizard.tsx` and `page.tsx`)
 
 **Files:**
-- `apps/web/app/builder/[appId]/page.tsx` — MODIFIED: reorganize the editor chrome around the primary self-serve path
-- `apps/web/app/builder/[appId]/Inspector.tsx` — MODIFIED: surface common widget properties first and reduce advanced noise
-- `apps/web/app/builder/[appId]/ChatPanel.tsx` — MODIFIED: de-emphasize chat-led creation as a secondary flow
-- `apps/web/app/builder/[appId]/SplitViewOverlay.tsx` — MODIFIED: hide or down-rank unfinished AI-generation affordances
-- `apps/web/lib/appValidation.ts` — MODIFIED: convert production issues into clearer user-facing publish blockers
-- `apps/web/tests/e2e/publish-flow.spec.ts` — NEW: cover create/edit/publish path and visible blocker messaging
+- `apps/web/app/builder/connectors/ApiEndpointGuide.tsx` — NEW: choice screen for REST/GraphQL wizard step 3; two tiles: "It does one specific thing" / "It has multiple actions". Props: `{ onSingleEndpoint: (label: string) => void; onMultiAction: () => void }`
+- `apps/web/app/builder/connectors/ActionForm.tsx` — NEW: extracted + simplified action form; plain "Action name" field (→ `action_label`), "What URL does it call?" (→ `path_template`), HTTP method as 4 intent tiles ("Fetch data" / "Send data" / "Update" / "Delete"); `action_key`, `resource_name`, `input_fields` behind "Advanced options" toggle. Props: `{ action?: ActionDefinition; connectorId: string; workspaceId: string; onSave: (action: ActionDefinition) => void; onCancel: () => void }`
+- `apps/web/app/builder/connectors/ConnectorWizard.tsx` — MODIFIED: for `rest`/`graphql` types, render `ApiEndpointGuide` at step 3; handle single-endpoint path (auto-create action then `onComplete`) and multi-action path (`onComplete` with a `{ multiAction: true }` flag)
+- `apps/web/app/builder/connectors/page.tsx` — MODIFIED: on wizard `onComplete` with `multiAction: true`, set `drawerState = 'detail'` with action catalog section highlighted
+- `apps/web/messages/en.json` — MODIFIED: add `connectors.apiGuide.*` and `connectors.actionForm.*` keys
+- `apps/web/messages/de.json` — MODIFIED: German equivalents
 
 **Interface contracts** (names and shapes other commits depend on):
-- `getUserFacingProductionIssues(doc): Array<{ code: string; message: string }>` — returns blocker messages suitable for non-technical builders
-- `PrimaryEditorAction = 'add-widget' | 'preview' | 'publish'` — interaction contract preserved across editor UI changes
-- `showAdvancedBuilderControls: boolean` — toggles secondary creation surfaces without changing the primary editor flow
-- `PublishAudienceSelection = 'group' | 'company' | 'discover-only'` — sharing model presented to users when they publish a tool
-- `ToolShareTarget = { type: 'group' | 'company'; id?: string; capability: 'discover' | 'use' }` — sharing shape the publish UI must collect before calling publication APIs
+- `ApiEndpointGuide` props: `{ onSingleEndpoint: (label: string) => void; onMultiAction: () => void }`
+- `ActionForm` props: `{ action?: ActionDefinition; connectorId: string; workspaceId: string; onSave: (action: ActionDefinition) => void; onCancel: () => void }`
+- HTTP method tile → `http_method` map: "Fetch data" → `"GET"`, "Send data" → `"POST"`, "Update" → `"PUT"`, "Delete" → `"DELETE"` — defined as a constant in `ActionForm.tsx`
+- `onComplete` extended signature: `(connector: Connector, opts?: { multiAction?: boolean }) => void`
 
-**Implementation notes** (only non-obvious constraints):
-- This commit should preserve existing editing capability while moving advanced/unfinished experiences out of the user’s way.
-- Publish blockers must explain user impact, not just internal configuration details.
-- The publish flow must read as a sharing flow for normal users: who should be able to discover or use this tool, including special groups and company-wide access when supported by existing APIs.
+**Implementation notes:**
+- Single-endpoint auto-creation: generate `action_key` as a URL-safe slug of the user's label (lowercase, spaces → underscores); `resource_name` defaults to the connector name slug; `path_template` defaults to `""`.
+- The existing inline action edit UI in `page.tsx` should be replaced by `ActionForm` in this commit. Check `page.tsx` for any inline action state and remove the duplicate form.
+- Confirm with the backend team (or `connector_actions.go`) that `action_key` accepts auto-generated slug values before implementation — see Open Questions.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/publish-flow.spec.ts` — cover primary editor actions, blocker visibility, audience selection, and successful publish entry conditions
+- `ActionForm.test.tsx` — NEW: HTTP method tiles map to correct `http_method` values; "Advanced options" toggle reveals hidden fields
 
 **Done criteria:**
-- The editor’s main path is visually obvious and centered on getting a basic tool published.
-- A non-technical builder can understand who they are sharing the tool with at publish time.
-- Publish validation reads like user guidance rather than internal diagnostics.
+- REST/GraphQL wizard step 3 shows the two-tile choice screen
+- "It does one specific thing" auto-creates one action and completes the wizard
+- "It has multiple actions" saves the connector and opens the action catalog with "Add your first action" prompt
+- HTTP method picker in `ActionForm` shows intent tiles, not a raw `<select>`
+- Technical fields are collapsed by default under "Advanced options"
 
-### Commit 7 — feat(runtime): turn tools and runtime into a guided post-publish experience
-**Why:** Once a tool exists, the tools home and runtime must feel like a simple launch surface, not a developer-facing artifact browser.
-**Parallelizable with:** none
+---
+
+### Commit 7 — feat(connectors): post-creation education card and managed column builder
+**Why:** Every connector must show contextual next-steps immediately after creation; managed tables need an editable column builder instead of read-only type chips.
+**Parallelizable with:** none (modifies `page.tsx`)
 
 **Files:**
-- `apps/web/app/tools/page.tsx` — MODIFIED: strengthen hierarchy, launch affordances, and post-publish guidance
-- `apps/web/app/app/[appId]/page.tsx` — MODIFIED: rewrite blocked/runtime states into plain-language task guidance
-- `apps/web/app/app/[appId]/RuntimeRenderer.tsx` — MODIFIED: replace diagnostic runtime messages with humane in-widget states and clearer pending/success feedback
-- `apps/web/tests/e2e/runtime-launch.spec.ts` — NEW: cover launch from tools, blocked runtime states, and basic successful runtime use
+- `apps/web/app/builder/connectors/ConnectorEducationCard.tsx` — NEW: per-type card with dismissal state stored in localStorage. Props: `{ connector: Connector; onDismiss: () => void; onCTA?: () => void }`. Card copy and CTA vary by `connector.type` per clarity plan Phase 2 Area 4.
+- `apps/web/app/builder/connectors/ManagedColumnBuilder.tsx` — NEW: editable column list with drag-to-reorder (HTML5 drag API, no external DnD library); each row: name input + plain type picker; blur-to-save (optimistic `patchConnector`); "Add a column" button appends blank row. Props: `{ connectorId: string; workspaceId: string; columns: ManagedTableColumn[]; onColumnsChange: () => void }`
+- `apps/web/app/builder/connectors/ConnectorSetupHint.tsx` — MODIFIED: remove usages from `page.tsx` in this commit; file may be deleted if no other consumers import it
+- `apps/web/app/builder/connectors/page.tsx` — MODIFIED: after `createConnector` resolves, set a flag to show `ConnectorEducationCard` in the detail area; render `ManagedColumnBuilder` for managed-type connectors
+- `apps/web/messages/en.json` — MODIFIED: add `connectors.educationCard.*` and `connectors.columnBuilder.*` keys
+- `apps/web/messages/de.json` — MODIFIED: German equivalents
 
 **Interface contracts** (names and shapes other commits depend on):
-- `ToolCardState = 'launchable' | 'discover-only' | 'inaccessible'` — state model used by the tools page to explain availability and next steps
-- `RuntimeStateMessage(props: { tone: 'muted' | 'warning' | 'error'; message: string }): JSX.Element` — shared runtime feedback component for user-facing widget states
+- `ConnectorEducationCard` props: `{ connector: Connector; onDismiss: () => void; onCTA?: () => void }`
+- `ManagedColumnBuilder` props: `{ connectorId: string; workspaceId: string; columns: ManagedTableColumn[]; onColumnsChange: () => void }`
+- localStorage key pattern: `lima_edu_dismissed_${connectorId}` — checked on mount; if set, card renders nothing
+- `col_type` → plain label map (constant exported from `ManagedColumnBuilder.tsx`, imported by Commit 9): `'text' → 'Text'`, `'int4' | 'float8' → 'Number'`, `'bool' → 'Yes/No'`, `'date' | 'timestamp' → 'Date'`, `'bytea' → 'File'`
 
-**Implementation notes** (only non-obvious constraints):
-- Keep builder links out of the default runtime experience unless the current user is explicitly in a builder flow.
-- “Discovery only” and access-denied states should explain what the user can do next instead of ending in a dead end.
+**Implementation notes:**
+- `ConnectorEducationCard` is temporarily placed in the detail area via direct `page.tsx` state; Commit 9 relocates it to the top of `ConnectorDetailDrawer`. The component itself does not care about placement.
+- `ManagedColumnBuilder` calls the existing `patchConnector` from `lib/api.ts` on each blur to save the updated `columns` array.
+- Raw `col_type` strings must never be displayed — always map through the plain label constant.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/runtime-launch.spec.ts` — cover tools search/launch, discovery-only tool handling, and runtime state messaging
+- `ConnectorEducationCard.test.tsx` — NEW: correct per-type CTA text; localStorage dismissed state hides card on remount
+- `ManagedColumnBuilder.test.tsx` — NEW: "Add a column" appends a row; plain type labels render; blur calls save (mocked API)
 
 **Done criteria:**
-- Published tools are easier to find and launch from the tools page.
-- Runtime failure and blocked states use plain-language guidance and safe recovery paths.
+- After creating any connector, the contextual education card appears with per-type copy and CTA
+- Dismissing the card writes to localStorage; refreshing does not re-show it
+- Managed connector detail shows the editable column builder; raw `col_type` values (`text`, `int4`, `bool`) are never shown
 
-### Commit 8 — feat(shell): add route-level loading and missing-resource state screens
-**Why:** The current app still drops users into blank or generic states during route transitions and missing-resource paths.
-**Parallelizable with:** none
+---
+
+### Commit 8 — feat(connectors): categorized connector list with status badges
+**Why:** Replace the flat card grid with a grouped, status-first list that lets non-technical users find their connectors at a glance.
+**Parallelizable with:** none (modifies `page.tsx`)
 
 **Files:**
-- `apps/web/app/loading.tsx` — NEW: top-level loading state for app-shell transitions
-- `apps/web/app/not-found.tsx` — NEW: top-level missing-route and missing-resource fallback
-- `apps/web/app/error.tsx` — NEW: top-level recoverable error boundary UI
-- `apps/web/app/app/[appId]/loading.tsx` — NEW: runtime-specific loading screen
-- `apps/web/app/_components/RouteStateScreen.tsx` — NEW: shared screen component for loading/error/not-found states
-- `apps/web/tests/e2e/route-states.spec.ts` — NEW: cover route-level loading and missing-resource presentation
+- `apps/web/app/builder/connectors/ConnectorList.tsx` — NEW: vertically grouped list with 4 categories: "Your Files" (csv), "Databases" (postgres/mysql/mssql), "APIs & Web Services" (rest/graphql), "Shared Tables" (managed); per row: SVG category icon + name + status badge + owner name + "Manage" button; category header has count badge + "＋ Add" button; empty categories collapse to "＋ Add your first [category]" link. Props: `{ connectors: Connector[]; onManage: (connector: Connector) => void; onAdd: (category: ConnectorCategory) => void }`
+- `apps/web/app/builder/connectors/page.tsx` — MODIFIED: replace card grid render with `ConnectorList`; wire `onManage` to open existing detail; wire `onAdd` to open drawer with tile picker at the correct category pre-highlighted
+- `apps/web/messages/en.json` — MODIFIED: add `connectors.list.*` keys (category names, status labels, "Manage", "Add" CTAs)
+- `apps/web/messages/de.json` — MODIFIED: German equivalents
 
 **Interface contracts** (names and shapes other commits depend on):
-- `RouteStateScreen(props: { title: string; body: string; actionHref?: string; actionLabel?: string }): JSX.Element` — shared full-screen state component for route-level experiences
-- Root App Router conventions: `loading.tsx`, `not-found.tsx`, and `error.tsx` — route-state file contract used by the Next.js shell
+- `ConnectorList` props: `{ connectors: Connector[]; onManage: (connector: Connector) => void; onAdd: (category: ConnectorCategory) => void }`
+- `ConnectorCategory = 'files' | 'databases' | 'apis' | 'shared-tables'` — exported from `ConnectorList.tsx`; used by `page.tsx` to pre-select tile picker context
+- Status badge derivation: `connector.schema_cached_at` non-null and within 7 days → `"Connected"` (green); otherwise → `"Not set up yet"` (grey)
+- SVG icons: one per category (not per sub-type); inline SVG or local `icons/` folder; do not add an icon library dependency
 
-**Implementation notes** (only non-obvious constraints):
-- Keep these screens generic enough for reuse but written in user-facing language, not framework error language.
-- This commit complements, rather than replaces, the visible auth-gate shells introduced earlier.
+**Implementation notes:**
+- Remove `ConnectorCard` component from `page.tsx` once `ConnectorList` replaces it.
+- The existing "Refresh" button moves to a small icon button (↻) in the page header — not per-row.
+- Empty category collapse: render category header + the "＋ Add your first [category]" link only; connector rows section is `null`.
+- Never expose `connector.type` raw values in the rendered list — use category names only.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/route-states.spec.ts` — cover root loading, runtime loading, and missing-resource fallback paths
+- `ConnectorList.test.tsx` — NEW: connectors grouped correctly; empty category collapses; status badge reflects `schema_cached_at`
 
 **Done criteria:**
-- Main route groups have explicit loading and missing-resource experiences instead of blank or ambiguous states.
-- Shared route-state screens are available for future recovery flows.
+- Connector list shows 4 plain category groups; raw type codes not visible
+- Status badge is "Connected" for connectors with a non-null `schema_cached_at` and "Not set up yet" otherwise
+- Empty categories show only the "＋ Add your first [category]" link
+- "Manage" and "＋ Add" buttons work correctly
 
-### Commit 9 — feat(accessibility): harden focus, semantics, and narrow-width layouts on shipped paths
-**Why:** The release bar requires keyboard usability, legible focus states, and safe behavior on common narrow desktop widths.
-**Parallelizable with:** none
+---
+
+### Commit 9 — feat(connectors): detail drawer with collapsible sections
+**Why:** Replace the current 3-tab bottom panel with a single slide-in drawer containing 5 collapsible accordion sections; integrate the education card and column builder into the drawer.
+**Parallelizable with:** none (depends on Commits 7 + 8; modifies `page.tsx`)
 
 **Files:**
-- `apps/web/app/globals.css` — MODIFIED: strengthen focus rings, spacing behavior, and responsive shell rules
-- `apps/web/app/login/page.tsx` — MODIFIED: improve form semantics and keyboard flow
-- `apps/web/app/tools/page.tsx` — MODIFIED: improve search, launch-card semantics, and narrow-width layout behavior
-- `apps/web/app/app/[appId]/page.tsx` — MODIFIED: improve runtime header semantics and responsive behavior
-- `apps/web/app/builder/layout.tsx` — MODIFIED: improve shell responsiveness and keyboard-safe overflow behavior
-- `apps/web/tests/e2e/accessibility.spec.ts` — NEW: cover focus order, keyboard reachability, and narrow-width smoke checks on shipped flows
+- `apps/web/app/builder/connectors/ConnectorDetailDrawer.tsx` — NEW: slide-in right-side drawer; 5 collapsible sections (first 2 open by default): (1) "What you can do" — `ConnectorEducationCard` (dismissible; after dismissal collapses to a one-line "Show tips" link); (2) "Your data" — `ManagedColumnBuilder` for managed, 10-row preview table for csv/database, action list for rest/graphql with "Add action" CTA; (3) "Connection settings" — credential edit using `CredentialSteps` as a single-step form + "Test connection" button with plain result copy; (4) "Who has access" — `<ConnectorSharingPanel>` placeholder (`data-testid="sharing-panel-placeholder"`) replaced in Commit 10; (5) "For developers" — schema tree, raw query tester, type badge — admin-only, collapsed by default. Props: `{ connector: Connector | null; isOpen: boolean; onClose: () => void; onConnectorChange: () => void }`
+- `apps/web/app/builder/connectors/page.tsx` — MODIFIED: replace `DetailPanel` (3-tab panel) with `ConnectorDetailDrawer`; wire "Manage" clicks from `ConnectorList` to set `drawerState = 'detail'`; set `selectedConnector` on manage click
+- `apps/web/messages/en.json` — MODIFIED: add `connectors.detail.*` keys (section headings, test connection copy, "For developers" label)
+- `apps/web/messages/de.json` — MODIFIED: German equivalents
 
 **Interface contracts** (names and shapes other commits depend on):
-- Global focus and responsive CSS custom properties in `globals.css` — accessibility contract used across all shipped screens
-- Landmark structure for main route groups (`header`, `main`, form labels, actionable buttons) — semantics contract validated by browser smoke tests
+- `ConnectorDetailDrawer` props: `{ connector: Connector | null; isOpen: boolean; onClose: () => void; onConnectorChange: () => void }`
+- Section 4 is a `data-testid="sharing-panel-placeholder"` div — Commit 10 replaces this with `<ConnectorSharingPanel>`
+- "Test connection" result copy map: `"ok"` backend status → `"Everything looks good ✓"`; error → `"We couldn't connect — {plain reason}. Check your {password / API key / address}."` — do not expose raw backend error strings
 
-**Implementation notes** (only non-obvious constraints):
-- Keep the visual direction dark only if contrast and hierarchy remain strong enough for non-technical users.
-- Treat keyboard traps and invisible focus as release blockers, not polish items.
+**Implementation notes:**
+- Sections use controlled expand/collapse state (not `<details>/<summary>`) so programmatic opening (e.g., after education card CTA) works reliably.
+- "For developers" section renders only when `useAuth().user.role === 'workspace_admin'`; moves `SchemaTree` and `QueryResultTable` out of the main panel and into this section.
+- Use `CredentialSteps` from Commit 5 rendered as a single-step form (not a 3-step wizard) inside "Connection settings".
+- Old `DetailPanel` component can be deleted from `page.tsx` in this commit.
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/accessibility.spec.ts` — cover keyboard navigation, visible focus, and narrow-width layout safety on login, tools, builder shell, and runtime
+- `ConnectorDetailDrawer.test.tsx` — NEW: open/close state, first 2 sections expanded by default, section 5 not rendered for non-admin
 
 **Done criteria:**
-- Core shipped flows are keyboard-usable and visually legible.
-- The app no longer breaks down on common narrow desktop and tablet-like widths.
+- Clicking "Manage" on any row opens `ConnectorDetailDrawer` (not the old 3-tab panel)
+- First 2 sections expanded; remaining 3 collapsed by default
+- "For developers" section not visible to non-admin users
+- "Test connection" button shows plain-language success/failure copy
+- Old 3-tab `DetailPanel` is no longer rendered
 
-### Commit 10 — test(web): add full self-serve smoke coverage and release gate scripts
-**Why:** Finish the implementation with a small but real regression suite and an enforceable release command for the full self-serve journey.
-**Parallelizable with:** none
+---
+
+### Commit 10 — feat(connectors): plain-language sharing panel
+**Why:** Replace the admin-only `ConnectorGrantsTab` with a sharing panel visible to all users, using only plain-language vocabulary (no "grants", "permissions", or "audience").
+**Parallelizable with:** none (depends on Commit 9)
 
 **Files:**
-- `package.json` — MODIFIED: add a top-level release smoke command that includes the web browser suite
-- `apps/web/package.json` — MODIFIED: add release-smoke and targeted spec commands for self-serve validation
-- `apps/web/tests/e2e/self-serve-smoke.spec.ts` — NEW: cover the full connector -> app -> publish -> launch path
-- `apps/web/tests/e2e/publish-blockers.spec.ts` — NEW: cover the main publish-blocker and recovery cases
-- `docs/release-checklist-ux-first-current.md` — NEW: encode the current go/no-go checklist tied to the shipped self-serve journey and smoke commands
+- `apps/web/app/builder/connectors/ConnectorSharingPanel.tsx` — NEW: sharing panel; current grantees as name+avatar chips with inline role dropdown ("Can view data" / "Can view and edit data"); "Add people" search input (name or email); remove (×) button per chip; owner chip pinned first and non-removable; admin-only "Restrict to read-only for everyone" toggle; escalation prevention: role dropdown disabled for options above the current user's own grant level for this connector. Props: `{ connectorId: string; workspaceId: string }`
+- `apps/web/app/builder/connectors/ConnectorDetailDrawer.tsx` — MODIFIED: replace section 4 placeholder div with `<ConnectorSharingPanel connectorId={connector.id} workspaceId={workspaceId} />`
+- `apps/web/messages/en.json` — MODIFIED: add `connectors.sharing.*` keys (role labels, "Add people" placeholder, "Who has access" heading, admin toggle label)
+- `apps/web/messages/de.json` — MODIFIED: German equivalents
 
 **Interface contracts** (names and shapes other commits depend on):
-- `pnpm release:smoke` — canonical release-gate command for the repo
-- `pnpm --filter @lima/web test:e2e:self-serve` — targeted self-serve smoke command for the web app
-- `docs/release-checklist-ux-first-current.md` sections aligned to the clarity acceptance criteria — human review contract for final release sign-off
+- `ConnectorSharingPanel` props: `{ connectorId: string; workspaceId: string }`
+- API calls used (all existing): `listResourceGrants`, `createResourceGrant`, `deleteResourceGrant` from `lib/api.ts`
+- Role label → capability map: "Can view data" = read grant; "Can view and edit data" = read/write grant
+- **Open question must be resolved before implementation:** Escalation prevention requires knowing the current user's own grant level for this connector — see Open Questions below
 
-**Implementation notes** (only non-obvious constraints):
-- This commit should reuse the Playwright helpers and route assumptions established earlier instead of inventing separate release scripts.
-- Keep the checklist current and specific to the shipped path, not the entire platform surface.
+**Implementation notes:**
+- `ConnectorGrantsTab.tsx` is superseded by this panel; delete it in this commit (no other files import it after Commit 9 removed the detail tab panel).
+- Escalation prevention is enforced client-side by disabling role options in the dropdown that exceed the caller's own level; server-side enforcement is assumed to exist in the grants API.
+- No "grants", "permissions", "audience", or "capability" vocabulary in any rendered string — use only "access", "who can use this", "view", "edit".
 
 **Tests** (written in this commit):
-- `apps/web/tests/e2e/self-serve-smoke.spec.ts` — full zero-to-live-tool smoke journey
-- `apps/web/tests/e2e/publish-blockers.spec.ts` — blocker and recovery coverage for release-critical publish scenarios
+- `ConnectorSharingPanel.test.tsx` — NEW: grantee chips render; owner chip has no × button; role dropdown disables options above current user level (mocked props)
 
 **Done criteria:**
-- The repo has an enforceable browser-based release smoke command.
-- The shipped self-serve journey is covered end-to-end from setup through launch.
+- "Who has access" drawer section shows current grantees as name chips with role dropdowns
+- "Add people" input is functional
+- Owner chip is listed first with no remove button
+- Role dropdown does not offer "Can view and edit data" to a user who only has read access
+- "Restrict to read-only for everyone" toggle is visible only to admins
+- No "grants", "permissions", or "audience" text is visible anywhere in the panel
+- `ConnectorGrantsTab.tsx` is deleted
+
+---
 
 ## Critical Files
 | File | Why Critical |
 |------|-------------|
-| `apps/web/app/page.tsx` | Controls the top-level landing logic that currently separates end users from builder access |
-| `apps/web/lib/auth.tsx` | Owns the auth context and any derived access flags the self-serve route model depends on |
-| `apps/web/app/builder/page.tsx` | First-run self-serve entry point for workspace and app creation |
-| `apps/web/app/builder/connectors/page.tsx` | Required setup surface for connecting data before a tool can be useful |
-| `apps/web/app/builder/[appId]/page.tsx` | Main editor and publish flow, the center of the builder simplification work |
-| `apps/web/app/app/[appId]/page.tsx` | User-facing runtime shell and blocked-state messaging |
-| `apps/web/app/app/[appId]/RuntimeRenderer.tsx` | Controls runtime widget behavior and in-widget user feedback |
-| `apps/web/app/globals.css` | Shared visual and accessibility foundation for the entire web shell |
-| `apps/web/package.json` | Owns the web scripts and the new browser-smoke workflow |
+| `apps/web/app/builder/connectors/page.tsx` | Modified in every connector commit (4–10); all new components are wired through it |
+| `services/api/internal/store/users.go` | `userCols` const and Scan calls must stay in sync with the `language` column added in migration 021 |
+| `services/api/internal/router/router.go` | Single route registration file; Commit 1 adds the language endpoint in the `/v1/me` group |
+| `apps/web/lib/auth.tsx` | `AuthUser.language` added in Commit 3 and consumed by every connector component via `useAuth()` |
+| `apps/web/messages/en.json` | Grows in every commit from 3 onward; all new keys must be mirrored in `de.json` |
+| `apps/web/messages/de.json` | German mirror of `en.json`; must never diverge in key structure |
+| `apps/web/middleware.ts` | next-intl cookie locale reading; misconfiguration silently breaks locale switching |
+| `apps/web/i18n/request.ts` | Server-side locale resolution; must correctly read `NEXT_LOCALE` cookie from headers |
 
 ## Open Questions
 Minor unknowns the implementing agent should resolve at implementation time:
-- Whether the new builder-first landing rule should switch to tools automatically when a workspace already has a published app, or remain consistently builder-first for all self-serve users.
-- Whether the route-state screens should use a single shared illustration/icon treatment or stay text-first in the first pass.
-- Whether the release checklist doc belongs under `docs/` long term or should later migrate into CI-owned release automation.
+- **Commit 3 / AuthUser initialization:** Check whether `AuthUser` is currently populated from the decoded JWT or from a `/v1/me` bootstrap GET. If from JWT, extend the JWT `Claims` struct in `handler/auth.go` to include `language` and re-issue on language change. If from a bootstrap GET, add `language` to that response.
+- **Commit 10 / Escalation prevention:** Confirm whether `GET /workspaces/{id}/connectors/{id}/grants` (or `listResourceGrants`) already returns the current caller's own grant entry in the response. If not, a small API addition is required before `ConnectorSharingPanel` can enforce the escalation rule.
+- **Commit 6 / `action_key` validation:** Confirm that the backend `connector_actions.go` accepts auto-generated slug values (lowercase, underscores) for `action_key` before implementing the single-endpoint auto-create path.
 
 ## Risks
 | Risk | Mitigation |
 |------|-----------|
-| Relaxing the role split could expose builder navigation to users who still lack backend permissions for some actions | Keep action-level admin checks intact and limit this work to shell/navigation access plus humane recovery states |
-| The builder editor simplification could accidentally remove discoverability for existing advanced users | Use progressive disclosure instead of hard deletion for advanced controls and keep capabilities accessible behind secondary affordances |
-| Adding Playwright from scratch may introduce setup friction | Start with a minimal harness in commit 1 and reuse shared helpers across all later browser specs |
-| Shared UI work could sprawl into a redesign | Keep the primitive layer small and scoped to currently shipped surfaces only |
-| Route-state additions could overlap with existing layout-based auth waits | Treat route-state screens and auth-gate shells as complementary and cover both with explicit browser tests |
+| `page.tsx` (~1300 lines) accumulates merge conflicts as each of commits 4–10 modifies it | Keep each commit's change to `page.tsx` minimal — extract all logic into new component files and swap only the render call; review diff per commit before merging |
+| next-intl v4 provider wrapping may break Server Component data fetching boundaries in Next.js 15 | Test `pnpm dev` immediately after Commit 2 before proceeding; `NextIntlClientProvider` must not wrap the root Server Component directly |
+| AI-generated German translations may produce awkward phrasing for technical compound nouns | Flag connector-specific German strings (Commit 3 onward) for a native-speaker spot-check before release; `en.json` is the authoritative source |
+| Access escalation prevention (Commit 10) may expose a missing API capability | Resolve the open question before starting Commit 10; do not stub the escalation check as always-passing |
+| CSV auto-preview (Commit 5) with naive `split('\n')` may break on quoted fields containing commas or newlines | Treat the preview as best-effort for simple CSVs; add a visible caveat "Preview may not show all formatting" rather than adding a CSV parsing library |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

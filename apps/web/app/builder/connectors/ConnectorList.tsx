@@ -27,6 +27,13 @@ const ADD_FIRST_LABELS: Record<ConnectorCategory, string> = {
   'shared-tables': '＋ Add your first shared table',
 }
 
+const ADD_LABELS: Record<ConnectorCategory, string> = {
+  'files': '＋ Add file',
+  'databases': '＋ Add database',
+  'apis': '＋ Add API',
+  'shared-tables': '＋ Add table',
+}
+
 function isConnected(connector: Connector): boolean {
   if (!connector.schema_cached_at) return false
   const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
@@ -133,7 +140,7 @@ export function ConnectorList({
                     color: '#3b82f6', fontSize: '0.75rem', padding: '2px 6px',
                   }}
                 >
-                  ＋ Add
+                  {ADD_LABELS[category]}
                 </button>
               )}
             </div>

@@ -174,4 +174,16 @@ describe('ConnectorTypePicker', () => {
     expect(container.querySelector('[data-tile="spreadsheet"]')).toBeTruthy()
     expect(container.querySelector('[data-tile="postgres"]')).toBeNull()
   })
+
+  it('shows only API choices when launched from the API category', () => {
+    const onSelect = vi.fn()
+    const { container } = render(
+      <ConnectorTypePicker onSelect={onSelect} initialCategory="apis" />,
+    )
+
+    expect(container.querySelector('[data-tile="webService"]')).toBeTruthy()
+    expect(container.querySelector('[data-tile="graphql"]')).toBeTruthy()
+    expect(container.querySelector('[data-tile="spreadsheet"]')).toBeNull()
+    expect(container.querySelector('[data-tile="sharedTable"]')).toBeNull()
+  })
 })

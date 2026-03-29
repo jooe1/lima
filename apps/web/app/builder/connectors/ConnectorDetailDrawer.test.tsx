@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import React from 'react'
 import { ConnectorDetailDrawer } from './ConnectorDetailDrawer'
 import { useAuth } from '../../../lib/auth'
+import { deleteConnector } from '../../../lib/api'
 
 vi.mock('next-intl', () => ({
   useTranslations: () => (key: string) => key,
@@ -20,6 +21,7 @@ vi.mock('../../../lib/api', () => ({
   runConnectorQuery: vi.fn().mockResolvedValue({ columns: [], rows: [], row_count: 0 }),
   getConnectorSchema: vi.fn().mockResolvedValue({ schema: null }),
   deleteConnectorAction: vi.fn().mockResolvedValue(undefined),
+  deleteConnector: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('./ConnectorEducationCard', () => ({
@@ -45,9 +47,10 @@ vi.mock('./ActionForm', () => ({
 
 const connector = {
   id: 'c1',
+  workspace_id: 'ws1',
   name: 'Test DB',
   type: 'postgres' as const,
-  schema_cache: null,
+  schema_cache: undefined,
   schema_cached_at: undefined,
   credentials: {},
   created_by: 'u1',
@@ -80,6 +83,7 @@ function makeLocalStorageMock() {
 beforeEach(() => {
   ;(useAuth as ReturnType<typeof vi.fn>).mockReturnValue(memberUser)
   vi.stubGlobal('localStorage', makeLocalStorageMock())
+  vi.stubGlobal('confirm', vi.fn(() => true))
 })
 
 describe('ConnectorDetailDrawer', () => {
@@ -175,5 +179,29 @@ describe('ConnectorDetailDrawer', () => {
     expect(section1Btn.getAttribute('aria-expanded')).toBe('true')
     fireEvent.click(section1Btn)
     expect(section1Btn.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('admin can delete a connector from the developer section', async () => {
+    ;(useAuth as ReturnType<typeof vi.fn>).mockReturnValue(adminUser)
+    const onClose = vi.fn()
+    const onConnectorChange = vi.fn()
+
+    render(
+      <ConnectorDetailDrawer
+        connector={connector}
+        workspaceId="ws1"
+        isOpen={true}
+        onClose={onClose}
+        onConnectorChange={onConnectorChange}
+      />
+    )
+
+    const sectionBtns = Array.from(document.querySelectorAll('[aria-expanded]')) as HTMLElement[]
+    fireEvent.click(sectionBtns[4])
+    fireEvent.click(screen.getByText('deleteButton'))
+
+    expect(deleteConnector).toHaveBeenCalledWith('ws1', 'c1')
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+    await waitFor(() => expect(onConnectorChange).toHaveBeenCalledOnce())
   })
 })

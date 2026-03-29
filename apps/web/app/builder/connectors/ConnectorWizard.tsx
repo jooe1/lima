@@ -2,9 +2,10 @@
 
 import React, { useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { createConnector, upsertConnectorAction } from '../../../lib/api'
+import { createConnector, setManagedTableColumns, upsertConnectorAction } from '../../../lib/api'
 import type { ConnectorType, Connector } from '../../../lib/api'
-import { DatabaseStep, RestStep, CsvStep, ManagedStep, GraphQLStep } from './CredentialSteps'
+import { ManagedColumnsEditor, type EditableManagedColumn } from './ManagedColumnBuilder'
+import { DatabaseStep, RestStep, CsvStep, GraphQLStep } from './CredentialSteps'
 import { ApiEndpointGuide } from './ApiEndpointGuide'
 
 export function ConnectorWizard({
@@ -27,14 +28,32 @@ export function ConnectorWizard({
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [credValues, setCredValues] = useState<Record<string, string>>({})
+  const [managedDraftColumns, setManagedDraftColumns] = useState<EditableManagedColumn[]>([
+    { id: 'draft-1', name: '', col_type: 'text', nullable: true },
+  ])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
 
   const effectiveType: ConnectorType = dbBrand ?? connectorType
   const isRestOrGraphql = effectiveType === 'rest' || effectiveType === 'graphql'
+  const maxStep = effectiveType === 'managed' ? 2 : 3
 
   function handleCredChange(key: string, value: string) {
     setCredValues(prev => ({ ...prev, [key]: value }))
+  }
+
+  function handleManagedDraftColumnsChange(columns: EditableManagedColumn[]) {
+    setManagedDraftColumns(columns)
+  }
+
+  function getManagedColumnsPayload() {
+    return managedDraftColumns
+      .map(col => ({
+        name: col.name.trim(),
+        col_type: col.col_type,
+        nullable: col.nullable,
+      }))
+      .filter(col => col.name.length > 0)
   }
 
   async function handleFinish() {
@@ -53,6 +72,14 @@ export function ConnectorWizard({
         type: effectiveType,
         credentials: apiCreds,
       })
+
+      if (effectiveType === 'managed') {
+        const initialColumns = getManagedColumnsPayload()
+        if (initialColumns.length > 0) {
+          await setManagedTableColumns(workspaceId, connector.id, initialColumns)
+        }
+      }
+
       onComplete(connector)
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : t('saveFailed'))
@@ -130,14 +157,14 @@ export function ConnectorWizard({
         return <GraphQLStep {...props} />
       case 'csv':
         return <CsvStep {...props} />
-      case 'managed':
-        return <ManagedStep {...props} />
       default:
         return null
     }
   }
 
-  const stepLabels = [t('step1.label'), t('step2.label'), t('step3.label')]
+  const stepLabels = effectiveType === 'managed'
+    ? [t('step1.label'), t('managed.columnsLabel')]
+    : [t('step1.label'), t('step2.label'), t('step3.label')]
   const canProceedStep1 = name.trim().length > 0
 
   return (
@@ -187,12 +214,27 @@ export function ConnectorWizard({
           </div>
         )}
 
-        {step === 2 && (
+        {step === 2 && effectiveType !== 'managed' && (
           <div>
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.95rem', fontWeight: 600, color: '#e5e5e5' }}>
               {t('step2.title')}
             </h3>
             {renderCredentials()}
+          </div>
+        )}
+
+        {step === 2 && effectiveType === 'managed' && (
+          <div>
+            <h3 style={{ margin: '0 0 1rem', fontSize: '0.95rem', fontWeight: 600, color: '#e5e5e5' }}>
+              {t('managed.columnsTitle')}
+            </h3>
+            <p style={{ color: '#888', fontSize: '0.85rem', lineHeight: 1.7, margin: '0 0 0.9rem' }}>
+              {t('managed.columnsBody')}
+            </p>
+            <ManagedColumnsEditor
+              columns={managedDraftColumns}
+              onChange={handleManagedDraftColumnsChange}
+            />
           </div>
         )}
 
@@ -233,7 +275,7 @@ export function ConnectorWizard({
           {t('back')}
         </button>
         <div style={{ flex: 1 }} />
-        {step < 3 ? (
+        {step < maxStep ? (
           <button
             type="button"
             disabled={step === 1 && !canProceedStep1}
@@ -263,7 +305,7 @@ export function ConnectorWizard({
               cursor: saving ? 'default' : 'pointer',
             }}
           >
-            {saving ? t('saving') : t('finish')}
+            {saving ? t('saving') : effectiveType === 'managed' ? t('managed.finish') : t('finish')}
           </button>
         )}
       </div>
