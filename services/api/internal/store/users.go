@@ -9,11 +9,11 @@ import (
 	"github.com/lima/api/internal/model"
 )
 
-const userCols = `id, company_id, email, name, sso_subject, created_at, updated_at`
+const userCols = `id, company_id, email, name, sso_subject, language, created_at, updated_at`
 
 func scanUser(row pgx.Row) (*model.User, error) {
 	u := &model.User{}
-	err := row.Scan(&u.ID, &u.CompanyID, &u.Email, &u.Name, &u.SSOSubject, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(&u.ID, &u.CompanyID, &u.Email, &u.Name, &u.SSOSubject, &u.Language, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -26,7 +26,7 @@ func scanUserRows(rows pgx.Rows) ([]model.User, error) {
 	var out []model.User
 	for rows.Next() {
 		u := model.User{}
-		if err := rows.Scan(&u.ID, &u.CompanyID, &u.Email, &u.Name, &u.SSOSubject, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.CompanyID, &u.Email, &u.Name, &u.SSOSubject, &u.Language, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -132,6 +132,18 @@ func (s *Store) ListCompanyUsers(ctx context.Context, companyID string) ([]model
 		return nil, fmt.Errorf("list company users scan: %w", err)
 	}
 	return users, nil
+}
+
+// SetUserLanguage updates the preferred language for a user.
+func (s *Store) SetUserLanguage(ctx context.Context, userID, lang string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE users SET language = $1, updated_at = now() WHERE id = $2`,
+		lang, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("set user language: %w", err)
+	}
+	return nil
 }
 
 // FindOrCreateCompany looks up a company by slug, creating it if absent.

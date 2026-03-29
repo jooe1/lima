@@ -62,6 +62,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 			r.Route("/me", func(r chi.Router) {
 				r.Get("/ai-settings", handler.GetMyAISettings(s, log))
 				r.Put("/ai-settings", handler.PutMyAISettings(cfg, s, log))
+				r.Patch("/language", handler.PatchMyLanguage(s, log))
 			})
 
 			// Identity & tenancy — company claim is verified per-route

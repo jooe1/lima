@@ -29,6 +29,7 @@ type User struct {
 	Email      string    `json:"email"`
 	Name       string    `json:"name"`
 	SSOSubject *string   `json:"-"` // never serialised to clients
+	Language   string    `json:"language"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
