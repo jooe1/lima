@@ -11,6 +11,7 @@ import {
 } from '../../../lib/api'
 import { ConnectorDrawer } from './ConnectorDrawer'
 import { ConnectorEducationCard } from './ConnectorEducationCard'
+import { ConnectorSharingPanel } from './ConnectorSharingPanel'
 import { ManagedColumnBuilder } from './ManagedColumnBuilder'
 import { DatabaseStep, RestStep, CsvStep, ManagedStep, GraphQLStep } from './CredentialSteps'
 import { ActionForm } from './ActionForm'
@@ -563,7 +564,12 @@ export function ConnectorDetailDrawer({
           </button>
           {open4 && (
             <div style={{ paddingBottom: '0.75rem' }}>
-              <div data-testid="sharing-panel-placeholder" />
+              {connector && (
+                <ConnectorSharingPanel
+                  connectorId={connector.id}
+                  workspaceId={workspaceId}
+                />
+              )}
             </div>
           )}
         </div>

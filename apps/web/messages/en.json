@@ -181,6 +181,18 @@
         "apis": "\uff0b Add your first API",
         "sharedTables": "\uff0b Add your first shared table"
       }
+    },
+    "sharing": {
+      "heading": "Who has access",
+      "loading": "Loading access list\u2026",
+      "addPlaceholder": "Add a person (enter their email or ID)",
+      "addButton": "Add",
+      "removeButton": "Remove",
+      "roleView": "Can view data",
+      "roleEdit": "Can view and edit data",
+      "owner": "Owner",
+      "restrictToggle": "Restrict to read-only for everyone",
+      "noAccess": "No one else has access yet."
     }
   }
 }

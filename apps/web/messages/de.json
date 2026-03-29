@@ -180,6 +180,18 @@
         "apis": "\uff0b Erste API hinzuf\u00fcgen",
         "sharedTables": "\uff0b Erste gemeinsame Tabelle hinzuf\u00fcgen"
       }
+    },
+    "sharing": {
+      "heading": "Wer Zugriff hat",
+      "loading": "Zugriffsliste wird geladen\u2026",
+      "addPlaceholder": "Person hinzuf\u00fcgen (E-Mail oder ID)",
+      "addButton": "Hinzuf\u00fcgen",
+      "removeButton": "Entfernen",
+      "roleView": "Kann Daten ansehen",
+      "roleEdit": "Kann Daten ansehen und bearbeiten",
+      "owner": "Eigent\u00fcmer",
+      "restrictToggle": "F\u00fcr alle auf Lesezugriff beschr\u00e4nken",
+      "noAccess": "Noch niemand sonst hat Zugriff."
     }
   }
 }
