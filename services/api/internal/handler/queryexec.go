@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/lima/api/internal/model"
 	_ "github.com/microsoft/go-mssqldb"
+	// Pure-Go SQLite driver used for in-memory managed-table query execution.
+	_ "modernc.org/sqlite"
 )
 
 // executeRelationalQuery dispatches a parameterized read-only SQL query to the
@@ -220,6 +223,145 @@ func testMySQLConn(ctx context.Context, creds model.RelationalCredentials) error
 	defer db.Close()
 	db.SetConnMaxLifetime(8 * time.Second)
 	return db.PingContext(ctx)
+}
+
+// runManagedQuery loads managed-table rows into an ephemeral in-memory SQLite
+// database and executes the caller-supplied SQL against it. This gives the
+// developer query tester full SELECT support (WHERE, ORDER BY, GROUP BY, LIMIT,
+// DISTINCT, aggregate functions, etc.) without any external database connection.
+//
+// tableName must already be a safe SQL identifier (use managedTableName first).
+// The caller is responsible for blocking mutations via sqlMutationRe.
+func runManagedQuery(
+	ctx context.Context,
+	tableName string,
+	cols []model.ManagedTableColumn,
+	rows []map[string]any,
+	sqlText string,
+	limit int,
+) (*model.DashboardQueryResponse, error) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, fmt.Errorf("open in-memory sqlite: %w", err)
+	}
+	defer db.Close()
+
+	// Build CREATE TABLE.
+	colDefs := make([]string, len(cols))
+	for i, c := range cols {
+		colDefs[i] = fmt.Sprintf("%q %s", c.Name, managedColTypeToSQLite(c.ColType))
+	}
+	createSQL := fmt.Sprintf("CREATE TABLE %q (%s)", tableName, strings.Join(colDefs, ", "))
+	if _, err := db.ExecContext(ctx, createSQL); err != nil {
+		return nil, fmt.Errorf("create table: %w", err)
+	}
+
+	// Insert rows using a prepared statement.
+	if len(rows) > 0 && len(cols) > 0 {
+		quotedCols := make([]string, len(cols))
+		placeholders := make([]string, len(cols))
+		for i, c := range cols {
+			quotedCols[i] = fmt.Sprintf("%q", c.Name)
+			placeholders[i] = "?"
+		}
+		insertSQL := fmt.Sprintf(
+			"INSERT INTO %q (%s) VALUES (%s)",
+			tableName,
+			strings.Join(quotedCols, ", "),
+			strings.Join(placeholders, ", "),
+		)
+		stmt, err := db.PrepareContext(ctx, insertSQL)
+		if err != nil {
+			return nil, fmt.Errorf("prepare insert: %w", err)
+		}
+		defer stmt.Close()
+
+		for _, row := range rows {
+			vals := make([]any, len(cols))
+			for i, c := range cols {
+				vals[i] = row[c.Name]
+			}
+			if _, err := stmt.ExecContext(ctx, vals...); err != nil {
+				return nil, fmt.Errorf("insert row: %w", err)
+			}
+		}
+	}
+
+	// Append LIMIT if the query has none.
+	trimmed := strings.TrimRight(strings.TrimSpace(sqlText), ";")
+	if !strings.Contains(strings.ToUpper(trimmed), " LIMIT ") {
+		trimmed = fmt.Sprintf("%s LIMIT %d", trimmed, limit)
+	}
+
+	qrows, err := db.QueryContext(ctx, trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+	defer qrows.Close()
+
+	resultCols, err := qrows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("columns: %w", err)
+	}
+
+	rawVals := make([]any, len(resultCols))
+	ptrs := make([]any, len(resultCols))
+	for i := range ptrs {
+		ptrs[i] = &rawVals[i]
+	}
+
+	var result []map[string]any
+	for qrows.Next() {
+		if err := qrows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		row := make(map[string]any, len(resultCols))
+		for i, col := range resultCols {
+			row[col] = rawVals[i]
+		}
+		result = append(result, row)
+	}
+	if err := qrows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+	if result == nil {
+		result = []map[string]any{}
+	}
+	return &model.DashboardQueryResponse{
+		Columns:  resultCols,
+		Rows:     result,
+		RowCount: len(result),
+	}, nil
+}
+
+// managedColTypeToSQLite maps Lima col_type values to SQLite type affinities.
+func managedColTypeToSQLite(colType string) string {
+	switch colType {
+	case "number":
+		return "REAL"
+	case "boolean":
+		return "INTEGER"
+	default: // "text", "date", and anything unknown
+		return "TEXT"
+	}
+}
+
+// managedTableName converts a connector name to a safe, unquoted SQL identifier
+// so users can type it directly in their queries.
+// Non-word characters are collapsed to underscores; a leading digit gets a
+// leading underscore prepended.
+var nonWordRe = regexp.MustCompile(`\W+`)
+
+func managedTableName(name string) string {
+	s := nonWordRe.ReplaceAllString(name, "_")
+	s = strings.Trim(s, "_")
+	if s == "" {
+		s = "data"
+	}
+	if s[0] >= '0' && s[0] <= '9' {
+		s = "_" + s
+	}
+	return s
 }
 
 // testMSSQLConn opens a SQL Server connection, pings the server, and closes it.

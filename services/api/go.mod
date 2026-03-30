@@ -12,6 +12,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/microsoft/go-mssqldb v1.8.0
 	github.com/redis/go-redis/v9 v9.7.3
+	modernc.org/sqlite v1.37.0
 	go.opentelemetry.io/otel v1.33.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.33.0
 	go.opentelemetry.io/otel/sdk v1.33.0

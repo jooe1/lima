@@ -626,7 +626,11 @@ export function ConnectorDetailDrawer({
                 <textarea
                   value={sql}
                   onChange={e => setSql(e.target.value)}
-                  placeholder="SELECT * FROM ..."
+                  placeholder={
+                    connector.type === 'managed'
+                      ? `SELECT * FROM ${connector.name.replace(/\W+/g, '_').replace(/^_+|_+$/g, '') || 'data'}`
+                      : 'SELECT * FROM ...'
+                  }
                   rows={3}
                   style={{
                     width: '100%', resize: 'vertical',

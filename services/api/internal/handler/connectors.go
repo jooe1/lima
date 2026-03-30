@@ -783,11 +783,12 @@ func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 			respond(w, http.StatusOK, result)
 
 		case model.ConnectorTypeManaged:
-			// Serve rows from Lima's managed table storage.
-			// If the caller supplies an app_version_id, serve the publish-time
-			// snapshot so published apps see deterministic, immutable data.
-			var colNames []string
+			// Load rows from Lima's managed table storage.
+			// app_version_id → use the publish-time snapshot (immutable);
+			// otherwise use live data.
+			var liveCols []model.ManagedTableColumn
 			var outRows []map[string]any
+
 			if req.AppVersionID != "" {
 				snap, serr := s.GetManagedSnapshotForVersion(ctx, req.AppVersionID, rec.Name)
 				if serr != nil && !errors.Is(serr, store.ErrNotFound) {
@@ -797,24 +798,22 @@ func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 				}
 				if snap != nil {
 					for _, c := range snap.Columns {
-						if name, ok := c["name"].(string); ok {
-							colNames = append(colNames, name)
-						}
+						name, _ := c["name"].(string)
+						colType, _ := c["col_type"].(string)
+						liveCols = append(liveCols, model.ManagedTableColumn{Name: name, ColType: colType})
 					}
 					outRows = snap.Rows
 				}
 			}
-			if colNames == nil {
-				// Live data path (no version id supplied, or no snapshot exists).
+			if liveCols == nil {
+				// Live data path.
 				cols, cerr := s.GetManagedTableColumns(ctx, connectorID)
 				if cerr != nil {
 					log.Error("get managed table columns", zap.Error(cerr))
 					respondErr(w, http.StatusInternalServerError, "db_error", "failed to load managed table schema")
 					return
 				}
-				for _, c := range cols {
-					colNames = append(colNames, c.Name)
-				}
+				liveCols = cols
 				tableRows, cerr := s.ListManagedTableRows(ctx, connectorID)
 				if cerr != nil {
 					log.Error("list managed table rows", zap.Error(cerr))
@@ -828,6 +827,34 @@ func RunQuery(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerF
 			}
 			if outRows == nil {
 				outRows = []map[string]any{}
+			}
+
+			// If the caller sent a SQL statement, execute it against an
+			// ephemeral in-memory SQLite database built from the loaded rows.
+			if strings.TrimSpace(req.SQL) != "" {
+				if sqlMutationRe.MatchString(req.SQL) {
+					respondErr(w, http.StatusUnprocessableEntity, "mutation_blocked",
+						"only SELECT queries are permitted in dashboard query mode")
+					return
+				}
+				tblName := managedTableName(rec.Name)
+				result, qerr := runManagedQuery(ctx, tblName, liveCols, outRows, req.SQL, limit)
+				if qerr != nil {
+					log.Warn("managed query failed",
+						zap.String("connector_id", connectorID),
+						zap.Error(qerr))
+					respondErr(w, http.StatusInternalServerError, "query_error", qerr.Error())
+					return
+				}
+				respond(w, http.StatusOK, result)
+				return
+			}
+
+			// No SQL supplied — return all rows (used by widgets that bind the
+			// entire table without a filter).
+			colNames := make([]string, len(liveCols))
+			for i, c := range liveCols {
+				colNames[i] = c.Name
 			}
 			respond(w, http.StatusOK, &model.DashboardQueryResponse{
 				Columns:  colNames,
