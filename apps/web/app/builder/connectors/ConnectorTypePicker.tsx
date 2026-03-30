@@ -3,22 +3,24 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import type { ConnectorType } from '../../../lib/api'
+import { FilesIcon, DatabasesIcon, ApisIcon, SharedTablesIcon } from './ConnectorIcons'
+import styles from './connectors.module.css'
 
 type DbBrand = 'postgres' | 'mysql' | 'mssql'
 
-const DB_TILES: Array<{ brand: DbBrand; icon: string }> = [
-  { brand: 'postgres', icon: '🐘' },
-  { brand: 'mysql', icon: '🐬' },
-  { brand: 'mssql', icon: '🪟' },
+const DB_TILES: { brand: DbBrand; Icon: typeof DatabasesIcon }[] = [
+  { brand: 'postgres', Icon: DatabasesIcon },
+  { brand: 'mysql', Icon: DatabasesIcon },
+  { brand: 'mssql', Icon: DatabasesIcon },
 ]
 
-const MAIN_TILES: Array<{ id: string; type: ConnectorType | null; icon: string }> = [
-  { id: 'spreadsheet', type: 'csv', icon: '📊' },
-  { id: 'database', type: null, icon: '🗄️' },
-  { id: 'webService', type: 'rest', icon: '🔗' },
-  { id: 'graphql', type: 'graphql', icon: '⚡' },
-  { id: 'sharedTable', type: 'managed', icon: '📋' },
-  { id: 'moreOptions', type: null, icon: '⋯' },
+const MAIN_TILES: { id: string; type: ConnectorType | null; Icon: typeof FilesIcon | null }[] = [
+  { id: 'spreadsheet', type: 'csv', Icon: FilesIcon },
+  { id: 'database', type: null, Icon: DatabasesIcon },
+  { id: 'webService', type: 'rest', Icon: ApisIcon },
+  { id: 'graphql', type: 'graphql', Icon: ApisIcon },
+  { id: 'sharedTable', type: 'managed', Icon: SharedTablesIcon },
+  { id: 'moreOptions', type: null, Icon: null },
 ]
 
 export function ConnectorTypePicker({
@@ -54,33 +56,27 @@ export function ConnectorTypePicker({
         <button
           type="button"
           onClick={() => setShowDbSub(false)}
-          style={backBtnStyle}
+          className={styles.typePickerBack}
         >
           ← {labels.back}
         </button>
-        <h3 style={subHeadStyle}>{labels.dbSubHeading}</h3>
+        <h3 className={styles.typePickerSubHead}>{labels.dbSubHeading}</h3>
         <div style={gridStyle}>
-          {DB_TILES.map(tile => (
-            <button
-              key={tile.brand}
-              type="button"
-              data-tile={tile.brand}
-              onClick={() => onSelect(tile.brand, tile.brand)}
-              style={tileStyle}
-              onMouseEnter={e =>
-                ((e.currentTarget as HTMLButtonElement).style.borderColor = '#2563eb')
-              }
-              onMouseLeave={e =>
-                ((e.currentTarget as HTMLButtonElement).style.borderColor =
-                  'var(--color-border)')
-              }
-            >
-              <span style={iconStyle}>{tile.icon}</span>
-              <span style={labelStyle}>
-                {labels[tile.brand]}
-              </span>
-            </button>
-          ))}
+          {DB_TILES.map(tile => {
+            const Icon = tile.Icon
+            return (
+              <button
+                key={tile.brand}
+                type="button"
+                data-tile={tile.brand}
+                onClick={() => onSelect(tile.brand, tile.brand)}
+                className={styles.typePickerTile}
+              >
+                <span className={styles.tileIcon}><Icon /></span>
+                <span>{labels[tile.brand]}</span>
+              </button>
+            )
+          })}
         </div>
       </div>
     )
@@ -91,6 +87,7 @@ export function ConnectorTypePicker({
       {visibleTiles.map(tile => {
         const isPlaceholder = tile.id === 'moreOptions'
         const label = labels[tile.id as keyof typeof labels] ?? tile.id
+        const Icon = tile.Icon
         return (
           <button
             key={tile.id}
@@ -104,21 +101,13 @@ export function ConnectorTypePicker({
               }
             }}
             disabled={isPlaceholder}
-            style={{
-              ...tileStyle,
-              opacity: isPlaceholder ? 0.4 : 1,
-              cursor: isPlaceholder ? 'default' : 'pointer',
-            }}
-            onMouseEnter={e => {
-              if (!isPlaceholder)
-                (e.currentTarget as HTMLButtonElement).style.borderColor = '#2563eb'
-            }}
-            onMouseLeave={e =>
-              ((e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--color-border)')
-            }
+            className={styles.typePickerTile}
+            style={isPlaceholder ? { opacity: 0.4, cursor: 'default' } : undefined}
           >
-            <span style={iconStyle}>{tile.icon}</span>
-            <span style={labelStyle}>{label}</span>
+            <span className={styles.tileIcon}>
+              {Icon ? <Icon /> : '⋯'}
+            </span>
+            <span>{label}</span>
           </button>
         )
       })}
@@ -130,49 +119,4 @@ const gridStyle: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'repeat(2, 1fr)',
   gap: '0.75rem',
-}
-
-const tileStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: '0.5rem',
-  padding: '1.25rem 1rem',
-  background: 'var(--color-surface-raised)',
-  border: '1px solid var(--color-border)',
-  borderRadius: 10,
-  cursor: 'pointer',
-  textAlign: 'center' as const,
-  transition: 'border-color 0.15s',
-  minHeight: 96,
-}
-
-const iconStyle: React.CSSProperties = {
-  fontSize: '1.5rem',
-  lineHeight: 1,
-}
-
-const labelStyle: React.CSSProperties = {
-  fontSize: 'var(--font-size-sm)',
-  color: 'var(--color-text)',
-  fontWeight: 500,
-  lineHeight: 1.3,
-}
-
-const subHeadStyle: React.CSSProperties = {
-  margin: '0 0 1rem',
-  fontSize: 'var(--font-size-sm)',
-  fontWeight: 600,
-  color: 'var(--color-text-muted)',
-}
-
-const backBtnStyle: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
-  cursor: 'pointer',
-  color: 'var(--color-text-subtle)',
-  fontSize: 'var(--font-size-sm)',
-  padding: '0 0 0.75rem',
-  display: 'block',
 }
