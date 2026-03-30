@@ -11,7 +11,7 @@ export function ConnectorDrawer({
   isOpen: boolean
   onClose: () => void
   children: React.ReactNode
-  title?: string
+  title?: React.ReactNode
 }) {
   return (
     <>
@@ -34,7 +34,7 @@ export function ConnectorDrawer({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={title ?? 'Drawer'}
+        aria-label={typeof title === 'string' ? title : 'Connector drawer'}
         style={{
           position: 'fixed',
           top: 0,

@@ -1,3 +1,4 @@
+import type { JSX } from 'react'
 import styles from './connectors.module.css'
 
 export function getConnectorStatus(connector: { schema_cached_at: string | null | undefined }): {

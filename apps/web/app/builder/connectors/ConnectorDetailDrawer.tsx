@@ -10,6 +10,9 @@ import {
   type Connector, type ManagedTableColumn, type ActionDefinition, type DashboardQueryResponse,
 } from '../../../lib/api'
 import { ConnectorDrawer } from './ConnectorDrawer'
+import { CATEGORY_ICONS, TYPE_TO_CATEGORY, CATEGORY_ACCENT } from './ConnectorIcons'
+import { ConnectorStatusBadge } from './ConnectorStatusBadge'
+import styles from './connectors.module.css'
 import { ConnectorEducationCard } from './ConnectorEducationCard'
 import { ConnectorSharingPanel } from './ConnectorSharingPanel'
 import { ManagedColumnBuilder } from './ManagedColumnBuilder'
@@ -408,6 +411,9 @@ export function ConnectorDetailDrawer({
 
   const testFeedback = getTestFeedback()
 
+  const category = TYPE_TO_CATEGORY[connector.type]
+  const Icon = category ? CATEGORY_ICONS[category] : null
+
   const sectionHeaderStyle: React.CSSProperties = {
     background: 'none',
     border: 'none',
@@ -421,7 +427,6 @@ export function ConnectorDetailDrawer({
     color: '#e5e5e5',
     fontSize: '0.85rem',
     fontWeight: 600,
-    borderTop: '1px solid #1e1e1e',
   }
 
   function handleCredChange(k: string, v: string) {
@@ -432,7 +437,13 @@ export function ConnectorDetailDrawer({
     <ConnectorDrawer
       isOpen={isOpen}
       onClose={onClose}
-      title={connector.name ?? t('title')}
+      title={
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+          {Icon && <Icon />}
+          <span>{connector.name ?? t('title')}</span>
+          <ConnectorStatusBadge connector={{ schema_cached_at: connector.schema_cached_at }} />
+        </span>
+      }
     >
       <div style={{ padding: '0 1.25rem 1.5rem', overflowY: 'auto', flex: 1 }}>
 
@@ -443,6 +454,7 @@ export function ConnectorDetailDrawer({
             aria-expanded={open1}
             onClick={() => setOpen1(prev => !prev)}
             style={sectionHeaderStyle}
+            className={styles.drawerDivider}
           >
             <span>{open1 ? '▼' : '▶'}</span>
             {t('section1')}
@@ -479,6 +491,7 @@ export function ConnectorDetailDrawer({
             aria-expanded={open2}
             onClick={() => setOpen2(prev => !prev)}
             style={sectionHeaderStyle}
+            className={styles.drawerDivider}
           >
             <span>{open2 ? '▼' : '▶'}</span>
             {t('section2')}
@@ -539,6 +552,7 @@ export function ConnectorDetailDrawer({
             aria-expanded={open3}
             onClick={() => setOpen3(prev => !prev)}
             style={sectionHeaderStyle}
+            className={styles.drawerDivider}
           >
             <span>{open3 ? '▼' : '▶'}</span>
             {t('section3')}
@@ -584,6 +598,7 @@ export function ConnectorDetailDrawer({
             aria-expanded={open4}
             onClick={() => setOpen4(prev => !prev)}
             style={sectionHeaderStyle}
+            className={styles.drawerDivider}
           >
             <span>{open4 ? '▼' : '▶'}</span>
             {t('section4')}
@@ -608,6 +623,7 @@ export function ConnectorDetailDrawer({
               aria-expanded={open5}
               onClick={() => setOpen5(prev => !prev)}
               style={sectionHeaderStyle}
+              className={styles.drawerDivider}
             >
               <span>{open5 ? '▼' : '▶'}</span>
               {t('section5')}
