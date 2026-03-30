@@ -1,21 +1,48 @@
-﻿# Orchestration Status: Connectors Tab Redesign + App-Wide i18n
-_Last updated: 2026-03-29_
+﻿# Orchestration Status: Connectors UI Visual Refresh
+_Last updated: 2026-03-30_
 _Depth: 0_
 _Commit mode: auto-commit_
-_Branch: feature-ux-first-release-readiness (no new branch)_
+_Branch: feature-connectors-ui-visual-refresh_
 
 | # | Commit | Status | Notes |
 |---|--------|--------|-------|
-| 1 | feat(api): add language field to users; PATCH /v1/me/language | complete | hash: d6e60a9 |
-| 2 | feat(web): install next-intl v4 and wire provider, middleware, i18n config | complete | hash: 0592dd0 |
-| 3 | feat(web): seed message files, extend AuthUser with language, add EN/DE toggle | complete | hash: 1ac0b48 |
-| 4 | feat(connectors): right-side drawer shell and intent tile picker | complete | hash: 43f101e |
-| 5 | feat(connectors): per-type 3-step wizard with credential fields | complete | hash: 227485e |
-| 6 | feat(connectors): API endpoint guidance step for REST/GraphQL | complete | hash: c00276a |
-| 7 | feat(connectors): post-creation education card and managed column builder | complete | hash: 30d26ba |
-| 8 | feat(connectors): categorized connector list with status badges | complete | hash: ace61e7 |
-| 9 | feat(connectors): detail drawer with collapsible sections | complete | hash: 55c1c34 |
-| 10 | feat(connectors): plain-language sharing panel | complete | hash: 064ae3a |
+| 1 | chore(connectors): add CSS module, shared icons, and status badge utility | complete | hash: fe06b5c |
+| 2 | feat(connectors): list — accent headers, card grid, rich empty states | complete | hash: 2327100 |
+| 3 | feat(connectors): type picker — SVG icons and CSS-only hover | complete | hash: 4a32324 |
+| 4 | feat(connectors): drawer — status-rich header and styled section dividers | complete | hash: fa0fab9 |
+
+## Final Report
+_Completed: 2026-03-30_
+
+| # | Commit | Iterations |
+|---|--------|-----------|
+| 1 | chore(connectors): add CSS module, shared icons, and status badge utility | 1 (+ JSX import fix folded into Commit 4 amend) |
+| 2 | feat(connectors): list — accent headers, card grid, rich empty states | 1 |
+| 3 | feat(connectors): type picker — SVG icons and CSS-only hover | 1 |
+| 4 | feat(connectors): drawer — status-rich header and styled section dividers | 1 |
+
+**Acceptance criteria:**
+- [x] `connectors.module.css` imports without error (TypeScript clean)
+- [x] `getConnectorStatus()` returns correct tier for fresh/stale/unconfigured inputs
+- [x] All four `*Icon` SVG components export correctly
+- [x] Connector list renders as 2-column card grid with accent headers and empty-state cards
+- [x] No `onMouseEnter`/`onMouseLeave` in `ConnectorTypePicker.tsx`
+- [x] No emoji in any tile button
+- [x] `ConnectorDrawer.title` widened to `React.ReactNode`; `aria-label` guarded with `typeof` check
+- [x] Section header `borderTop: '1px solid #1e1e1e'` replaced with `.drawerDivider` CSS module class
+- [x] Category SVG icon and status badge appear in drawer header
+- [ ] Visual acceptance in browser — requires manual review (cannot be automated in this pipeline)
+
+**Files modified:**
+- `apps/web/app/builder/connectors/connectors.module.css` (NEW)
+- `apps/web/app/builder/connectors/ConnectorIcons.tsx` (NEW)
+- `apps/web/app/builder/connectors/ConnectorStatusBadge.tsx` (NEW)
+- `apps/web/app/builder/connectors/ConnectorList.tsx` (MODIFIED)
+- `apps/web/app/builder/connectors/ConnectorTypePicker.tsx` (MODIFIED)
+- `apps/web/app/builder/connectors/ConnectorDrawer.tsx` (MODIFIED)
+- `apps/web/app/builder/connectors/ConnectorDetailDrawer.tsx` (MODIFIED)
+
+**Tests passing:** Pre-existing TypeScript errors in `RouteGateShell.tsx` and `login.spec.ts` are unrelated to this feature and were present before the branch. Zero new errors introduced.
 
 ## Final Report
 _Completed: 2026-03-29_
