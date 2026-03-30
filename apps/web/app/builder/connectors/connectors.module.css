@@ -1,0 +1,279 @@
+/* ── Global accent custom properties ───────────────────────────── */
+:root {
+  --accent-files: var(--color-warning, #f59e0b);
+  --accent-databases: #2dd4bf;
+  --accent-apis: var(--color-info, #60a5fa);
+  --accent-shared-tables: #a78bfa;
+}
+
+/* ── Section headers ───────────────────────────────────────────── */
+.sectionHeader {
+  display: flex;
+  border: none;
+  border-left: 3px solid var(--cat-accent, #6b7280);
+  padding-left: var(--space-3, 0.75rem);
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+}
+
+.categoryLabel {
+  font-size: var(--font-size-sm, 0.875rem);
+  font-weight: 600;
+  color: var(--color-text, #e5e7eb);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.countBadge {
+  margin-left: auto;
+  font-size: var(--font-size-xs, 0.75rem);
+  padding: 2px 6px;
+  background: var(--color-surface-raised, #2a2a2a);
+  border-radius: var(--radius-full, 9999px);
+  color: var(--color-text-muted, #9ca3af);
+}
+
+.addBtn {
+  font-size: var(--font-size-xs, 0.75rem);
+  padding: 4px 8px;
+  border: 1px solid var(--color-border, #2e2e2e);
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.addBtn:hover {
+  border-color: var(--cat-accent, #6b7280);
+  color: var(--cat-accent, #6b7280);
+}
+
+/* ── Card grid ─────────────────────────────────────────────────── */
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-3, 0.75rem);
+  margin-bottom: var(--space-4, 1rem);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface, #1a1a1a);
+  border: 1px solid var(--color-border, #2e2e2e);
+  border-radius: var(--radius-md, 8px);
+  transition: box-shadow 150ms, border-color 150ms;
+  position: relative;
+}
+
+.card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  border-color: var(--cat-accent, #6b7280);
+}
+
+.cardIconWell {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm, 4px);
+  background: color-mix(in srgb, var(--cat-accent, #6b7280) 15%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cat-accent, #6b7280);
+}
+
+.cardName {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.typeChip {
+  font-family: monospace;
+  font-size: var(--font-size-xs);
+  padding: 1px 5px;
+  background: var(--color-surface-raised, #2a2a2a);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  width: fit-content;
+}
+
+.manageBtn {
+  font-size: var(--font-size-xs);
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms;
+}
+
+.card:hover .manageBtn {
+  opacity: 1;
+}
+
+/* ── Status badges ─────────────────────────────────────────────── */
+.badgeFresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-success, #a3e635) 15%, transparent);
+  color: var(--color-success, #a3e635);
+}
+
+.badgeStale {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-warning, #f59e0b) 15%, transparent);
+  color: var(--color-warning, #f59e0b);
+}
+
+.badgeUnconfigured {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-text-muted, #9ca3af) 15%, transparent);
+  color: var(--color-text-muted, #9ca3af);
+}
+
+.badgeDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.badgeFresh .badgeDot {
+  animation: badgePulse 2s ease-in-out infinite;
+}
+
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Empty states ──────────────────────────────────────────────── */
+.emptyCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 100px;
+  border: 1.5px dashed var(--color-border, #2e2e2e);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  width: 100%;
+  grid-column: 1 / -1;
+}
+
+.emptyIcon {
+  font-size: 0;
+  line-height: 0;
+  opacity: 0.35;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.emptyDesc {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.emptyCta {
+  font-size: var(--font-size-sm);
+  padding: 6px 14px;
+  background: var(--color-primary, #3b82f6);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.emptyCta:hover {
+  opacity: 0.9;
+}
+
+/* ── Type picker ───────────────────────────────────────────────── */
+.typePickerTile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 150ms;
+}
+
+.typePickerTile:hover {
+  border-color: var(--tile-hover-border, var(--color-primary, #3b82f6));
+}
+
+.typePickerBack {
+  font-size: var(--font-size-sm);
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.typePickerSubHead {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
+}
+
+.tileIcon {
+  font-size: 0;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+[data-tile="spreadsheet"]:hover { --tile-hover-border: var(--accent-files); }
+[data-tile="database"]:hover { --tile-hover-border: var(--accent-databases); }
+[data-tile="postgres"]:hover,
+[data-tile="mysql"]:hover,
+[data-tile="mssql"]:hover { --tile-hover-border: var(--accent-databases); }
+[data-tile="webService"]:hover,
+[data-tile="graphql"]:hover { --tile-hover-border: var(--accent-apis); }
+[data-tile="sharedTable"]:hover { --tile-hover-border: var(--accent-shared-tables); }
+
+/* ── Drawer divider ────────────────────────────────────────────── */
+.drawerDivider {
+  border-top: 1px solid var(--color-border, #2e2e2e);
+}
