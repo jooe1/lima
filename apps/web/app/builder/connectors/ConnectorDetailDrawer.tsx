@@ -100,7 +100,7 @@ function SchemaTree({ schema }: { schema: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function QueryResultTable({ result }: { result: DashboardQueryResponse }) {
-  if (result.columns.length === 0) {
+  if (!result.columns || result.columns.length === 0) {
     return <p style={{ color: '#444', fontSize: '0.8rem', margin: '8px 0 0' }}>No results.</p>
   }
   return (
