@@ -13,6 +13,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/lima/api/internal/model"
 	_ "github.com/microsoft/go-mssqldb"
+
 	// Pure-Go SQLite driver used for in-memory managed-table query execution.
 	_ "modernc.org/sqlite"
 )
