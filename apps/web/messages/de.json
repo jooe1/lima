@@ -40,7 +40,7 @@
   },
   "connectors": {
     "typePicker": {
-      "spreadsheet": "Tabelle hochladen",
+      "spreadsheet": "Tabelle erstellen",
       "database": "Datenbank verbinden",
       "webService": "Webdienst verbinden",
       "graphql": "GraphQL-API aufrufen",
@@ -59,7 +59,7 @@
       "step3": {
         "label": "Zugriff",
         "title": "Wer kann das verwenden?",
-        "placeholder": "Alle Mitglieder des Arbeitsbereichs haben Zugriff auf diesen Konnektor. Detaillierte Zugriffssteuerung folgt bald."
+        "placeholder": "Nach der Erstellung k\u00f6nnen Sie den Zugriff auf diesen Konnektor \u00fcber den Tab \"Berechtigungen\" verwalten."
       },
       "back": "Zur\u00fcck",
       "next": "Weiter",

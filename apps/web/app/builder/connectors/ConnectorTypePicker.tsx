@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import type { ConnectorType } from '../../../lib/api'
-import { FilesIcon, DatabasesIcon, ApisIcon, SharedTablesIcon } from './ConnectorIcons'
+import { FilesIcon, DatabasesIcon, ApisIcon } from './ConnectorIcons'
 import styles from './connectors.module.css'
 
 type DbBrand = 'postgres' | 'mysql' | 'mssql'
@@ -26,11 +26,10 @@ const DB_TILES: { brand: DbBrand; Icon: typeof DatabasesIcon }[] = [
 ]
 
 const MAIN_TILES: { id: string; type: ConnectorType | null; Icon: typeof FilesIcon | null }[] = [
-  { id: 'spreadsheet', type: 'csv', Icon: FilesIcon },
+  { id: 'spreadsheet', type: 'managed', Icon: FilesIcon },
   { id: 'database', type: null, Icon: DatabasesIcon },
   { id: 'webService', type: 'rest', Icon: ApisIcon },
   { id: 'graphql', type: 'graphql', Icon: ApisIcon },
-  { id: 'sharedTable', type: 'managed', Icon: SharedTablesIcon },
   { id: 'moreOptions', type: null, Icon: null },
 ]
 
@@ -52,7 +51,6 @@ export function ConnectorTypePicker({
     database: t('typePicker.database'),
     webService: t('typePicker.webService'),
     graphql: t('typePicker.graphql'),
-    sharedTable: t('typePicker.sharedTable'),
     moreOptions: t('typePicker.moreOptions'),
     postgres: t('typePicker.postgres'),
     mysql: t('typePicker.mysql'),

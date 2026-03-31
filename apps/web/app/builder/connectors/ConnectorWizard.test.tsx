@@ -5,6 +5,7 @@ import { ConnectorWizard } from './ConnectorWizard'
 
 const mockCreateConnector = vi.fn()
 const mockSetManagedTableColumns = vi.fn()
+const mockGetConnector = vi.fn()
 
 vi.mock('next-intl', () => ({
   useTranslations: () => (key: string) => key,
@@ -13,6 +14,7 @@ vi.mock('next-intl', () => ({
 vi.mock('../../../lib/api', () => ({
   createConnector: (...args: unknown[]) => mockCreateConnector(...args),
   setManagedTableColumns: (...args: unknown[]) => mockSetManagedTableColumns(...args),
+  getConnector: (...args: unknown[]) => mockGetConnector(...args),
 }))
 
 // ---- Mock FileReader for CSV preview tests --------------------------------
@@ -53,6 +55,16 @@ describe('ConnectorWizard', () => {
       owner_scope: 'workspace',
     }))
     mockSetManagedTableColumns.mockResolvedValue({ columns: [] })
+    mockGetConnector.mockImplementation(async (_workspaceId: string, _id: string) => ({
+      id: 'c-1',
+      workspace_id: 'ws-1',
+      name: 'Leads',
+      type: 'managed',
+      created_by: 'u-1',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      owner_scope: 'workspace',
+    }))
   })
 
   // ---- Step 1 --------------------------------------------------------------
@@ -133,38 +145,6 @@ describe('ConnectorWizard', () => {
     fireEvent.click(screen.getByText('next'))
     fireEvent.click(screen.getByText('next'))
     expect(screen.getByText('custom-step3-slot')).toBeTruthy()
-  })
-
-  // ---- CSV step ------------------------------------------------------------
-
-  it('renders CsvStep on step 2 for csv connector type', () => {
-    render(<ConnectorWizard {...defaultProps} connectorType="csv" />)
-    fireEvent.change(screen.getByPlaceholderText('fields.name.placeholder'), { target: { value: 'My CSV' } })
-    fireEvent.click(screen.getByText('next'))
-    expect(screen.getByTestId('csv-file-input')).toBeTruthy()
-  })
-
-  it('shows CSV preview table after file selection', async () => {
-    const originalFileReader = globalThis.FileReader
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(globalThis as any).FileReader = MockFileReader
-    try {
-      render(<ConnectorWizard {...defaultProps} connectorType="csv" />)
-      fireEvent.change(screen.getByPlaceholderText('fields.name.placeholder'), { target: { value: 'My CSV' } })
-      fireEvent.click(screen.getByText('next'))
-
-      const fileInput = screen.getByTestId('csv-file-input')
-      const file = new File(['Name,Age\nAlice,30\nBob,25'], 'data.csv', { type: 'text/csv' })
-      Object.defineProperty(fileInput, 'files', { value: [file] })
-      fireEvent.change(fileInput)
-
-      await waitFor(() => {
-        expect(screen.getByText('Name')).toBeTruthy()
-        expect(screen.getByText('Age')).toBeTruthy()
-      })
-    } finally {
-      globalThis.FileReader = originalFileReader
-    }
   })
 
   it('lets shared tables define initial columns before finish and saves them', async () => {

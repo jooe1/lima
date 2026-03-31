@@ -159,8 +159,6 @@ export function ConnectorWizard({
         return <RestStep {...props} />
       case 'graphql':
         return <GraphQLStep {...props} />
-      case 'csv':
-        return <CsvStep {...props} />
       default:
         return null
     }

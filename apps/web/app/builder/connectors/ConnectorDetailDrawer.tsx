@@ -6,7 +6,7 @@ import { useAuth } from '../../../lib/auth'
 import {
   testConnector, getConnectorSchema, patchConnector, deleteConnector,
   getManagedTableColumns, listConnectorActions, deleteConnectorAction,
-  runConnectorQuery,
+  runConnectorQuery, seedManagedTableFromCSV, exportManagedTableCSV,
   type Connector, type ManagedTableColumn, type ActionDefinition, type DashboardQueryResponse,
 } from '../../../lib/api'
 import { ConnectorDrawer } from './ConnectorDrawer'
@@ -259,6 +259,8 @@ export function ConnectorDetailDrawer({
   // Section 2 — data
   const [managedCols, setManagedCols] = useState<ManagedTableColumn[]>([])
   const [managedColsLoading, setManagedColsLoading] = useState(false)
+  const [seedLoading, setSeedLoading] = useState(false)
+  const [seedFeedback, setSeedFeedback] = useState<{ text: string; color: string } | null>(null)
   const [actions, setActions] = useState<ActionDefinition[]>([])
   const [actionsLoading, setActionsLoading] = useState(false)
   const [schemaLoading, setSchemaLoading] = useState(false)
@@ -291,6 +293,8 @@ export function ConnectorDetailDrawer({
     )
     setManagedCols([])
     setManagedColsLoading(false)
+    setSeedLoading(false)
+    setSeedFeedback(null)
     setActions([])
     setActionsLoading(false)
     setSchemaLoading(false)
@@ -502,17 +506,75 @@ export function ConnectorDetailDrawer({
                 managedColsLoading ? (
                   <p style={{ color: '#888', fontSize: '0.8rem' }}>{t('loadingColumns')}</p>
                 ) : (
-                  <ManagedColumnBuilder
-                    connectorId={connector.id}
-                    workspaceId={workspaceId}
-                    columns={managedCols}
-                    onColumnsChange={() => {
-                      getManagedTableColumns(workspaceId, connector.id)
-                        .then(res => setManagedCols(res.columns ?? []))
-                        .catch(() => {})
-                      onConnectorChange()
-                    }}
-                  />
+                  <>
+                    <ManagedColumnBuilder
+                      connectorId={connector.id}
+                      workspaceId={workspaceId}
+                      columns={managedCols}
+                      onColumnsChange={() => {
+                        getManagedTableColumns(workspaceId, connector.id)
+                          .then(res => setManagedCols(res.columns ?? []))
+                          .catch(() => {})
+                        onConnectorChange()
+                      }}
+                    />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
+                      <label style={{ position: 'relative', overflow: 'hidden' }}>
+                        <button
+                          type="button"
+                          disabled={seedLoading}
+                          style={{ ...ghostBtn, fontSize: '0.78rem', padding: '5px 12px', cursor: seedLoading ? 'default' : 'pointer' }}
+                        >
+                          {seedLoading ? 'Importing…' : 'Seed from CSV'}
+                        </button>
+                        <input
+                          type="file"
+                          accept=".csv,text/csv"
+                          disabled={seedLoading}
+                          style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%' }}
+                          onChange={async e => {
+                            const file = e.target.files?.[0]
+                            if (!file) return
+                            e.target.value = ''
+                            setSeedLoading(true)
+                            setSeedFeedback(null)
+                            try {
+                              const res = await seedManagedTableFromCSV(workspaceId, connector.id, file)
+                              setSeedFeedback({ text: `Imported ${res.rows_inserted} row${res.rows_inserted === 1 ? '' : 's'}`, color: '#4ade80' })
+                              onConnectorChange()
+                            } catch (err) {
+                              setSeedFeedback({ text: err instanceof Error ? err.message : 'Import failed', color: '#f87171' })
+                            } finally {
+                              setSeedLoading(false)
+                            }
+                          }}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        disabled={seedLoading}
+                        style={{ ...ghostBtn, fontSize: '0.78rem', padding: '5px 12px' }}
+                        onClick={async () => {
+                          try {
+                            const blob = await exportManagedTableCSV(workspaceId, connector.id)
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement('a')
+                            a.href = url
+                            a.download = `${connector.name.replace(/\s+/g, '_')}.csv`
+                            a.click()
+                            URL.revokeObjectURL(url)
+                          } catch (err) {
+                            setSeedFeedback({ text: err instanceof Error ? err.message : 'Export failed', color: '#f87171' })
+                          }
+                        }}
+                      >
+                        Export CSV
+                      </button>
+                    </div>
+                    {seedFeedback && (
+                      <p style={{ color: seedFeedback.color, fontSize: '0.78rem', margin: '6px 0 0' }}>{seedFeedback.text}</p>
+                    )}
+                  </>
                 )
               )}
 

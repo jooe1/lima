@@ -81,12 +81,12 @@ describe('ConnectorDrawer', () => {
 // ---------------------------------------------------------------------------
 
 describe('ConnectorTypePicker', () => {
-  it('calls onSelect with csv when spreadsheet tile is clicked', () => {
+  it('calls onSelect with managed when spreadsheet tile is clicked', () => {
     const onSelect = vi.fn()
     const { container } = render(<ConnectorTypePicker onSelect={onSelect} />)
     const tile = container.querySelector('[data-tile="spreadsheet"]') as HTMLElement
     fireEvent.click(tile)
-    expect(onSelect).toHaveBeenCalledWith('csv')
+    expect(onSelect).toHaveBeenCalledWith('managed')
   })
 
   it('calls onSelect with rest when web service tile is clicked', () => {
@@ -103,14 +103,6 @@ describe('ConnectorTypePicker', () => {
     const tile = container.querySelector('[data-tile="graphql"]') as HTMLElement
     fireEvent.click(tile)
     expect(onSelect).toHaveBeenCalledWith('graphql')
-  })
-
-  it('calls onSelect with managed when shared table tile is clicked', () => {
-    const onSelect = vi.fn()
-    const { container } = render(<ConnectorTypePicker onSelect={onSelect} />)
-    const tile = container.querySelector('[data-tile="sharedTable"]') as HTMLElement
-    fireEvent.click(tile)
-    expect(onSelect).toHaveBeenCalledWith('managed')
   })
 
   it('does not call onSelect when moreOptions placeholder is clicked (disabled)', () => {
@@ -184,6 +176,5 @@ describe('ConnectorTypePicker', () => {
     expect(container.querySelector('[data-tile="webService"]')).toBeTruthy()
     expect(container.querySelector('[data-tile="graphql"]')).toBeTruthy()
     expect(container.querySelector('[data-tile="spreadsheet"]')).toBeNull()
-    expect(container.querySelector('[data-tile="sharedTable"]')).toBeNull()
   })
 })

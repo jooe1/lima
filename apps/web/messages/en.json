@@ -40,7 +40,7 @@
   },
   "connectors": {
     "typePicker": {
-      "spreadsheet": "Upload a spreadsheet",
+      "spreadsheet": "Create a table",
       "database": "Connect a database",
       "webService": "Connect a web service",
       "graphql": "Call a GraphQL API",
@@ -59,7 +59,7 @@
       "step3": {
         "label": "Access",
         "title": "Who can use this?",
-        "placeholder": "All workspace members will have access to this connector. Fine-grained access control is coming soon."
+        "placeholder": "After creation, manage who can access this connector from the Permissions tab."
       },
       "back": "Back",
       "next": "Next",

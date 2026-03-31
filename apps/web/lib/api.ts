@@ -924,8 +924,20 @@ export function seedManagedTableFromCSV(
   })
 }
 
-export function exportManagedTableCSVUrl(workspaceId: string, connectorId: string) {
-  return `${API_BASE}/v1/workspaces/${workspaceId}/connectors/${connectorId}/export.csv`
+export function exportManagedTableCSV(workspaceId: string, connectorId: string) {
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  return fetch(
+    `${API_BASE}/v1/workspaces/${workspaceId}/connectors/${connectorId}/export.csv`,
+    { headers },
+  ).then(async (res) => {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: res.statusText }))
+      throw new ApiError(res.status, err.error ?? 'unknown_error', err.message ?? res.statusText)
+    }
+    return res.blob()
+  })
 }
 
 // ---- Audit log -------------------------------------------------------------

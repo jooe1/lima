@@ -62,7 +62,7 @@ export default function ConnectorsPage() {
 
     if (category === 'files') {
       setPickerCategory(undefined)
-      setWizardType('csv')
+      setWizardType('managed')
       setWizardDbBrand(undefined)
       setDrawerState('wizard')
       return
@@ -121,8 +121,7 @@ export default function ConnectorsPage() {
 
   function getDrawerTitle() {
     if (drawerState === 'wizard') {
-      if (wizardType === 'managed') return 'New shared table'
-      if (wizardType === 'csv') return 'New file'
+      if (wizardType === 'managed') return 'New table'
       if (wizardType === 'rest') return 'New REST connector'
       if (wizardType === 'graphql') return 'New GraphQL connector'
       if (wizardType === 'postgres' || wizardType === 'mysql' || wizardType === 'mssql') {

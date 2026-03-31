@@ -9,13 +9,13 @@ import { ConnectorStatusBadge } from './ConnectorStatusBadge'
 export type ConnectorCategory = 'files' | 'databases' | 'apis' | 'shared-tables'
 
 const CATEGORY_TYPES: Record<ConnectorCategory, ConnectorType[]> = {
-  'files': ['csv'],
+  'files': ['managed'],
   'databases': ['postgres', 'mysql', 'mssql'],
   'apis': ['rest', 'graphql'],
   'shared-tables': ['managed'],
 }
 
-const CATEGORY_ORDER: ConnectorCategory[] = ['files', 'databases', 'apis', 'shared-tables']
+const CATEGORY_ORDER: ConnectorCategory[] = ['files', 'databases', 'apis']
 
 const CATEGORY_LABELS: Record<ConnectorCategory, string> = {
   'files': 'Your Files',
@@ -25,7 +25,7 @@ const CATEGORY_LABELS: Record<ConnectorCategory, string> = {
 }
 
 const EMPTY_DESC: Record<ConnectorCategory, string> = {
-  files: 'Upload CSV data files',
+  files: 'Create managed tables — seed from CSV or add rows manually',
   databases: 'Connect Postgres, MySQL, or SQL Server',
   apis: 'Connect REST or GraphQL web services',
   'shared-tables': 'Create managed shared data tables',
