@@ -29,6 +29,12 @@ body {
   --color-error: #f87171;
   --color-info: #60a5fa;
 
+  /* connector category accents */
+  --accent-files: var(--color-warning);
+  --accent-databases: #2dd4bf;
+  --accent-apis: var(--color-info);
+  --accent-shared-tables: #a78bfa;
+
   /* spacing */
   --space-1: 0.25rem;
   --space-2: 0.5rem;

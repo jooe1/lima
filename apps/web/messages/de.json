@@ -132,7 +132,7 @@
       "actionName": "Aktionsname",
       "actionNamePlaceholder": "z. B. Kunde abrufen",
       "urlPath": "Welche URL wird aufgerufen?",
-      "urlPathPlaceholder": "/kunden/{id}",
+      "urlPathPlaceholder": "/kunden/'{id}'",
       "httpMethod": "Was wird gemacht?",
       "advancedOptions": "Erweiterte Optionen",
       "hideAdvanced": "Erweiterte Optionen ausblenden",

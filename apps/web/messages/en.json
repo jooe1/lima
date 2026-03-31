@@ -132,7 +132,7 @@
       "actionName": "Action name",
       "actionNamePlaceholder": "e.g. Get customer",
       "urlPath": "What URL does it call?",
-      "urlPathPlaceholder": "/customers/{id}",
+      "urlPathPlaceholder": "/customers/'{id}'",
       "httpMethod": "What does it do?",
       "advancedOptions": "Advanced options",
       "hideAdvanced": "Hide advanced options",

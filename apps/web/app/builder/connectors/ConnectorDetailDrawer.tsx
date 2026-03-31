@@ -510,6 +510,7 @@ export function ConnectorDetailDrawer({
                       getManagedTableColumns(workspaceId, connector.id)
                         .then(res => setManagedCols(res.columns ?? []))
                         .catch(() => {})
+                      onConnectorChange()
                     }}
                   />
                 )
@@ -545,51 +546,50 @@ export function ConnectorDetailDrawer({
           )}
         </div>
 
-        {/* ── Section 3 — Connection settings ── */}
-        <div>
-          <button
-            type="button"
-            aria-expanded={open3}
-            onClick={() => setOpen3(prev => !prev)}
-            style={sectionHeaderStyle}
-            className={styles.drawerDivider}
-          >
-            <span>{open3 ? '▼' : '▶'}</span>
-            {t('section3')}
-          </button>
-          {open3 && (
-            <div style={{ paddingBottom: '0.75rem' }}>
-              {(connector.type === 'postgres' || connector.type === 'mysql' || connector.type === 'mssql') && (
-                <DatabaseStep values={credValues} onChange={handleCredChange} />
-              )}
-              {connector.type === 'rest' && (
-                <RestStep values={credValues} onChange={handleCredChange} />
-              )}
-              {connector.type === 'csv' && (
-                <CsvStep values={credValues} onChange={handleCredChange} />
-              )}
-              {connector.type === 'managed' && (
-                <ManagedStep values={credValues} onChange={handleCredChange} />
-              )}
-              {connector.type === 'graphql' && (
-                <GraphQLStep values={credValues} onChange={handleCredChange} />
-              )}
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                <button onClick={handleSaveSettings} disabled={saveLoading} style={primaryBtn}>
-                  {saveLoading ? '…' : t('saveSettings')}
-                </button>
-                <button onClick={handleTestConnection} disabled={testLoading} style={ghostBtn}>
-                  {testLoading ? '…' : t('testConnection')}
-                </button>
+        {/* ── Section 3 — Connection settings (hidden for managed tables) ── */}
+        {connector.type !== 'managed' && (
+          <div>
+            <button
+              type="button"
+              aria-expanded={open3}
+              onClick={() => setOpen3(prev => !prev)}
+              style={sectionHeaderStyle}
+              className={styles.drawerDivider}
+            >
+              <span>{open3 ? '▼' : '▶'}</span>
+              {t('section3')}
+            </button>
+            {open3 && (
+              <div style={{ paddingBottom: '0.75rem' }}>
+                {(connector.type === 'postgres' || connector.type === 'mysql' || connector.type === 'mssql') && (
+                  <DatabaseStep values={credValues} onChange={handleCredChange} />
+                )}
+                {connector.type === 'rest' && (
+                  <RestStep values={credValues} onChange={handleCredChange} />
+                )}
+                {connector.type === 'csv' && (
+                  <CsvStep values={credValues} onChange={handleCredChange} />
+                )}
+                {connector.type === 'graphql' && (
+                  <GraphQLStep values={credValues} onChange={handleCredChange} />
+                )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <button onClick={handleSaveSettings} disabled={saveLoading} style={primaryBtn}>
+                    {saveLoading ? '…' : t('saveSettings')}
+                  </button>
+                  <button onClick={handleTestConnection} disabled={testLoading} style={ghostBtn}>
+                    {testLoading ? '…' : t('testConnection')}
+                  </button>
+                </div>
+                {testFeedback && (
+                  <p style={{ color: testFeedback.color, fontSize: '0.8rem', margin: '8px 0 0' }}>
+                    {testFeedback.text}
+                  </p>
+                )}
               </div>
-              {testFeedback && (
-                <p style={{ color: testFeedback.color, fontSize: '0.8rem', margin: '8px 0 0' }}>
-                  {testFeedback.text}
-                </p>
-              )}
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         {/* ── Section 4 — Who has access ── */}
         <div>

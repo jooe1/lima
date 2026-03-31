@@ -76,7 +76,7 @@ export function ActionForm({
     const input: ActionDefinitionInput = {
       action_key: key,
       action_label: actionLabel.trim(),
-      resource_name: resourceName.trim(),
+      resource_name: resourceName.trim() || slugify(actionLabel),
       http_method: method,
       path_template: pathTemplate.trim(),
       input_fields: fields.filter(f => f.key.trim()).map(f => ({

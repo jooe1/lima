@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { createConnector, setManagedTableColumns, upsertConnectorAction } from '../../../lib/api'
+import { createConnector, setManagedTableColumns, getConnector, upsertConnectorAction } from '../../../lib/api'
 import type { ConnectorType, Connector } from '../../../lib/api'
 import { ManagedColumnsEditor, type EditableManagedColumn } from './ManagedColumnBuilder'
 import { DatabaseStep, RestStep, CsvStep, GraphQLStep } from './CredentialSteps'
@@ -78,6 +78,10 @@ export function ConnectorWizard({
         if (initialColumns.length > 0) {
           await setManagedTableColumns(workspaceId, connector.id, initialColumns)
         }
+        // Re-fetch so schema_cached_at is up-to-date before handing off to caller.
+        const fresh = await getConnector(workspaceId, connector.id)
+        onComplete(fresh)
+        return
       }
 
       onComplete(connector)

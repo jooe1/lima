@@ -153,6 +153,8 @@ export function ManagedColumnBuilder({
 }) {
   const [cols, setCols] = useState<ManagedTableColumn[]>(initialColumns)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     setCols(initialColumns)
@@ -160,6 +162,8 @@ export function ManagedColumnBuilder({
 
   async function save(colsToSave: EditableManagedColumn[]) {
     setSaving(true)
+    setSaveError('')
+    setSaved(false)
     try {
       await setManagedTableColumns(
         workspaceId,
@@ -167,19 +171,29 @@ export function ManagedColumnBuilder({
         colsToSave.map(c => ({ name: c.name, col_type: c.col_type, nullable: c.nullable })),
       )
       onColumnsChange()
-    } catch {
-      // optimistic — swallow error
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e: unknown) {
+      setSaveError(e instanceof Error ? e.message : 'Failed to save columns')
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <ManagedColumnsEditor
-      columns={cols}
-      onChange={columns => setCols(columns as ManagedTableColumn[])}
-      onCommit={save}
-      saving={saving}
-    />
+    <div>
+      <ManagedColumnsEditor
+        columns={cols}
+        onChange={columns => setCols(columns as ManagedTableColumn[])}
+        onCommit={save}
+        saving={saving}
+      />
+      {saved && (
+        <p style={{ color: '#4ade80', fontSize: '0.75rem', margin: '4px 0 0' }}>Saved</p>
+      )}
+      {saveError && (
+        <p style={{ color: '#f87171', fontSize: '0.75rem', margin: '4px 0 0' }}>{saveError}</p>
+      )}
+    </div>
   )
 }

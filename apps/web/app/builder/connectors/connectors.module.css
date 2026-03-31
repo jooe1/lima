@@ -1,11 +1,3 @@
-/* ── Global accent custom properties ───────────────────────────── */
-:root {
-  --accent-files: var(--color-warning, #f59e0b);
-  --accent-databases: #2dd4bf;
-  --accent-apis: var(--color-info, #60a5fa);
-  --accent-shared-tables: #a78bfa;
-}
-
 /* ── Section headers ───────────────────────────────────────────── */
 .sectionHeader {
   display: flex;
@@ -224,17 +216,20 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  background: var(--color-surface);
-  border: 2px solid var(--color-border);
-  border-radius: var(--radius-md);
+  gap: var(--space-3, 0.75rem);
+  padding: var(--space-4, 1rem) var(--space-3, 0.75rem);
+  min-height: 96px;
+  background: var(--color-surface-raised, #1a1a1a);
+  border: 1.5px solid var(--color-border-muted, #333);
+  border-radius: var(--radius-md, 8px);
   cursor: pointer;
-  transition: border-color 150ms;
+  color: var(--color-text, #e5e5e5);
+  transition: border-color 150ms, background 150ms;
 }
 
 .typePickerTile:hover {
   border-color: var(--tile-hover-border, var(--color-primary, #3b82f6));
+  background: color-mix(in srgb, var(--tile-hover-border, var(--color-primary, #3b82f6)) 8%, var(--color-surface-raised, #1a1a1a));
 }
 
 .typePickerBack {
@@ -255,23 +250,33 @@
 }
 
 .tileIcon {
-  font-size: 0;
-  line-height: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm, 4px);
+  background: color-mix(in srgb, var(--tile-accent, var(--color-primary, #3b82f6)) 15%, transparent);
+  color: var(--tile-accent, var(--color-primary, #3b82f6));
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  flex-shrink: 0;
 }
 
-[data-tile="spreadsheet"]:hover { --tile-hover-border: var(--accent-files); }
-[data-tile="database"]:hover { --tile-hover-border: var(--accent-databases); }
-[data-tile="postgres"]:hover,
-[data-tile="mysql"]:hover,
-[data-tile="mssql"]:hover { --tile-hover-border: var(--accent-databases); }
-[data-tile="webService"]:hover,
-[data-tile="graphql"]:hover { --tile-hover-border: var(--accent-apis); }
-[data-tile="sharedTable"]:hover { --tile-hover-border: var(--accent-shared-tables); }
+.tileLabel {
+  font-size: var(--font-size-sm, 0.875rem);
+  font-weight: 500;
+  color: var(--color-text, #e5e5e5);
+  text-align: center;
+  line-height: 1.3;
+}
+
+.typePickerTile[data-tile="spreadsheet"]:hover { --tile-hover-border: var(--accent-files); }
+.typePickerTile[data-tile="database"]:hover { --tile-hover-border: var(--accent-databases); }
+.typePickerTile[data-tile="postgres"]:hover,
+.typePickerTile[data-tile="mysql"]:hover,
+.typePickerTile[data-tile="mssql"]:hover { --tile-hover-border: var(--accent-databases); }
+.typePickerTile[data-tile="webService"]:hover,
+.typePickerTile[data-tile="graphql"]:hover { --tile-hover-border: var(--accent-apis); }
+.typePickerTile[data-tile="sharedTable"]:hover { --tile-hover-border: var(--accent-shared-tables); }
 
 /* ── Drawer divider ────────────────────────────────────────────── */
 .drawerDivider {

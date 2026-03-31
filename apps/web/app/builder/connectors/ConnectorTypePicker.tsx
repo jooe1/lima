@@ -8,6 +8,17 @@ import styles from './connectors.module.css'
 
 type DbBrand = 'postgres' | 'mysql' | 'mssql'
 
+const TILE_ACCENT: Partial<Record<string, string>> = {
+  spreadsheet: 'var(--accent-files)',
+  database: 'var(--accent-databases)',
+  webService: 'var(--accent-apis)',
+  graphql: 'var(--accent-apis)',
+  sharedTable: 'var(--accent-shared-tables)',
+  postgres: 'var(--accent-databases)',
+  mysql: 'var(--accent-databases)',
+  mssql: 'var(--accent-databases)',
+}
+
 const DB_TILES: { brand: DbBrand; Icon: typeof DatabasesIcon }[] = [
   { brand: 'postgres', Icon: DatabasesIcon },
   { brand: 'mysql', Icon: DatabasesIcon },
@@ -71,9 +82,10 @@ export function ConnectorTypePicker({
                 data-tile={tile.brand}
                 onClick={() => onSelect(tile.brand, tile.brand)}
                 className={styles.typePickerTile}
+                style={{ '--tile-accent': TILE_ACCENT[tile.brand] } as React.CSSProperties}
               >
                 <span className={styles.tileIcon}><Icon /></span>
-                <span>{labels[tile.brand]}</span>
+                <span className={styles.tileLabel}>{labels[tile.brand]}</span>
               </button>
             )
           })}
@@ -102,12 +114,15 @@ export function ConnectorTypePicker({
             }}
             disabled={isPlaceholder}
             className={styles.typePickerTile}
-            style={isPlaceholder ? { opacity: 0.4, cursor: 'default' } : undefined}
+            style={{
+              ...(isPlaceholder ? { opacity: 0.4, cursor: 'default' } : {}),
+              '--tile-accent': TILE_ACCENT[tile.id] ?? 'var(--color-primary)',
+            } as React.CSSProperties}
           >
             <span className={styles.tileIcon}>
               {Icon ? <Icon /> : '⋯'}
             </span>
-            <span>{label}</span>
+            <span className={styles.tileLabel}>{label}</span>
           </button>
         )
       })}
