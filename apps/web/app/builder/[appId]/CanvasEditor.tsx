@@ -1,10 +1,11 @@
 'use client'
 
-import React, { useCallback, useEffect, useRef } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { WidgetRenderer } from './widgets/WidgetRenderer'
 import { DashboardFilterProvider } from '../../../lib/dashboardFilters'
+import { TemplateGallery } from './TemplateGallery'
 
 export const CELL = 40   // pixels per grid unit
 // COLS is no longer a hard cap — the canvas expands to fit content.
@@ -34,8 +35,10 @@ interface Props {
   selectedId: string | null
   onChange: (doc: AuraDocument) => void
   onSelect: (id: string | null) => void
+  onApplyTemplate: (nodes: AuraNode[]) => void
   workspaceId: string
   highlightedWidgetIds?: string[]
+  onDropWidget?: (element: string, gridX: number, gridY: number) => void
 }
 
 export function getGrid(node: AuraNode, fallback = { w: 4, h: 3 }) {
@@ -51,9 +54,25 @@ export function getGrid(node: AuraNode, fallback = { w: 4, h: 3 }) {
   }
 }
 
-export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId, highlightedWidgetIds }: Props) {
+export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTemplate, workspaceId, highlightedWidgetIds, onDropWidget }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
+
+  // Gallery state: show when canvas is empty, re-show if user clears all widgets
+  const [showGallery, setShowGallery] = useState(doc.length === 0)
+  const prevDocLenRef = useRef(doc.length)
+  useEffect(() => {
+    const prev = prevDocLenRef.current
+    prevDocLenRef.current = doc.length
+    if (prev > 0 && doc.length === 0) {
+      setShowGallery(true)
+    }
+  }, [doc.length])
+
+  function handleTemplateSelect(nodes: AuraNode[]) {
+    setShowGallery(false)
+    if (nodes.length > 0) onApplyTemplate(nodes)
+  }
 
   // Stable refs so event handlers (attached once) always see current values
   const docRef = useRef<AuraDocument>(doc)
@@ -235,6 +254,16 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId,
         {/* Canvas content — expands to fit widgets */}
         <div
           data-canvas-bg="1"
+          onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
+          onDrop={e => {
+            e.preventDefault()
+            const element = e.dataTransfer.getData('widget-type')
+            if (!element || !onDropWidget) return
+            const rect = e.currentTarget.getBoundingClientRect()
+            const gridX = Math.max(0, Math.floor((e.clientX - rect.left) / CELL))
+            const gridY = Math.max(0, Math.floor((e.clientY - rect.top) / CELL))
+            onDropWidget(element, gridX, gridY)
+          }}
           style={{
             position: 'relative',
             width: canvasWidth,
@@ -316,7 +345,7 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId,
             )
           })}
 
-          {/* Empty state */}
+          {/* Empty state — template gallery or muted hint */}
           {doc.length === 0 && (
             <div style={{
               position: 'absolute',
@@ -326,10 +355,14 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, workspaceId,
               justifyContent: 'center',
               pointerEvents: 'none',
             }}>
-              <div style={{ textAlign: 'center', color: '#2a2a2a' }}>
-                <div style={{ fontSize: '0.85rem', marginBottom: 6 }}>Canvas is empty</div>
-                <div style={{ fontSize: '0.7rem' }}>Add widgets from the panel on the left</div>
-              </div>
+              {showGallery ? (
+                <TemplateGallery onSelect={handleTemplateSelect} />
+              ) : (
+                <div style={{ textAlign: 'center', color: '#2a2a2a', pointerEvents: 'none' }}>
+                  <div style={{ fontSize: '0.85rem', marginBottom: 6 }}>Canvas is empty</div>
+                  <div style={{ fontSize: '0.7rem' }}>Add widgets from the panel on the left</div>
+                </div>
+              )}
             </div>
           )}
         </div>

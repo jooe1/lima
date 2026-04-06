@@ -141,6 +141,30 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [history.undo, history.redo])
 
+  // Add widget to canvas at a specific grid position (from palette drag-to-canvas)
+  const handleDropWidget = useCallback((element: string, gridX: number, gridY: number) => {
+    const meta = WIDGET_REGISTRY[element as WidgetType]
+    const dw = meta?.defaultSize.w ?? 4
+    const dh = meta?.defaultSize.h ?? 3
+    const existingCount = history.doc.filter(n => n.element === element).length
+    const newId = `${element}${existingCount + 1}`
+    const newNode: AuraNode = {
+      element,
+      id: newId,
+      parentId: 'root',
+      style: {
+        gridX: String(gridX),
+        gridY: String(gridY),
+        gridW: String(dw),
+        gridH: String(dh),
+      },
+    }
+    setLoadError('')
+    history.set([...history.doc, newNode])
+    setSelectedId(newId)
+    markManual([newId])
+  }, [history, markManual])
+
   // Add widget to canvas
   const handleAddWidget = useCallback((element: string) => {
     const meta = WIDGET_REGISTRY[element as WidgetType]
@@ -213,6 +237,14 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     setLoadError('')
     if (changedIds.length > 0) markManual(changedIds)
     history.set(newDoc)
+  }, [history, markManual])
+
+  // Apply a canvas starter template — loads its pre-built nodes and marks them all as manually edited
+  const handleApplyTemplate = useCallback((nodes: AuraNode[]) => {
+    setLoadError('')
+    history.set(nodes)
+    markManual(nodes.map(n => n.id))
+    setSelectedId(null)
   }, [history, markManual])
 
   const loadPublications = useCallback(async () => {
@@ -604,14 +636,17 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           onSelect={setSelectedId}
           onAdd={handleAddWidget}
           onDelete={handleDeleteWidget}
+          workspaceId={workspace?.id ?? ''}
         />
         <CanvasEditor
           doc={history.doc}
           selectedId={selectedId}
           onChange={handleCanvasChange}
           onSelect={setSelectedId}
+          onApplyTemplate={handleApplyTemplate}
           workspaceId={workspace?.id ?? ''}
           highlightedWidgetIds={highlightedWidgetIds}
+          onDropWidget={handleDropWidget}
         />
         {/* Right panel: Inspector, AI Chat, or Workflows */}
         {rightPanel === 'inspector' ? (

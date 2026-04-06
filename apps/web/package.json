@@ -19,6 +19,7 @@
     "@lima/sdk-connectors": "workspace:*",
     "@lima/widget-catalog": "workspace:*",
     "@xyflow/react": "^12.10.1",
+    "lucide-react": "^1.7.0",
     "next": "15.1.0",
     "next-intl": "^4.0.0",
     "react": "^19.0.0",

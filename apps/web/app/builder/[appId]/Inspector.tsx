@@ -64,6 +64,11 @@ function setPropValue(node: AuraNode, propName: string, value: string): AuraNode
 }
 
 export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, pageId, onOpenCanvas, onOpenSplitView }: Props) {
+  const [activeTab, setActiveTab] = useState<'properties' | 'data' | 'layout'>('properties')
+
+  // Reset to Properties whenever a different widget is selected.
+  useEffect(() => { setActiveTab('properties') }, [node?.id])
+
   if (!node) {
     return (
       <aside style={panelStyle}>
@@ -142,133 +147,162 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, p
 
   return (
     <aside style={panelStyle}>
-      {/* Widget identity */}
-      <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1a1a1a' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          <span style={{
-            fontSize: '0.6rem', padding: '2px 7px', borderRadius: 99,
-            background: '#1e3a8a33', color: '#93c5fd', fontWeight: 500,
-          }}>
-            {meta?.displayName ?? n.element}
-          </span>
-          {n.manuallyEdited && (
-            <span title="Manually edited — protected from AI rewrites" style={{
-              fontSize: '0.55rem', padding: '2px 6px', borderRadius: 99,
-              background: '#78350f33', color: '#fcd34d',
-            }}>
-              manual
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#e5e5e5', fontFamily: 'monospace' }}>
-          {n.id}
-        </div>
-        {meta?.description && (
-          <div style={{ fontSize: '0.65rem', color: '#444', marginTop: 4 }}>{meta.description}</div>
-        )}
+      {/* Tab bar */}
+      <div style={{ display: 'flex', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
+        {(['properties', 'data', 'layout'] as const).map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            style={{
+              flex: 1,
+              padding: '7px 4px',
+              fontSize: '0.65rem',
+              fontWeight: 500,
+              background: activeTab === tab ? '#111' : 'transparent',
+              color: activeTab === tab ? '#e5e5e5' : '#555',
+              border: 'none',
+              borderBottom: activeTab === tab ? '2px solid #3b82f6' : '2px solid transparent',
+              cursor: 'pointer',
+              textTransform: 'capitalize',
+            }}
+          >
+            {tab === 'properties' ? 'Properties' : tab === 'data' ? 'Data' : 'Layout'}
+          </button>
+        ))}
       </div>
 
-      {/* Props section */}
-      {meta && (
-        <Section title="Props">
-          {Object.entries(meta.propSchema).map(([propName, def]) =>
-            def.type === 'workflow_trigger' ? (
-              <div key={propName}>
-                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4 }}>
-                  {def.label}
-                </label>
-                <WorkflowCard
-                  workspaceId={workspaceId}
-                  appId={appId}
-                  pageId={pageId}
-                  triggerType={n.element === 'form' ? 'form_submit' : 'button_click'}
-                  widgetId={n.id}
-                  workflowId={n.action}
-                  onLink={workflowId => onUpdate({ ...n, manuallyEdited: true, action: workflowId })}
-                  onUnlink={() => onUpdate({ ...n, manuallyEdited: true, action: undefined })}
-                  onOpenCanvas={onOpenCanvas}
-                  onOpenSplitView={onOpenSplitView}
-                />
-              </div>
-            ) : (
-              <PropField
-                key={propName}
-                name={propName}
-                def={def}
-                value={getPropValue(n, propName)}
-                onChange={v => handlePropChange(propName, v)}
+      {/* Properties tab: type pill + id + prop fields */}
+      {activeTab === 'properties' && (
+        <>
+          <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1a1a1a' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <span style={{
+                fontSize: '0.6rem', padding: '2px 7px', borderRadius: 99,
+                background: '#1e3a8a33', color: '#93c5fd', fontWeight: 500,
+              }}>
+                {meta?.displayName ?? n.element}
+              </span>
+              {n.manuallyEdited && (
+                <span title="Manually edited — protected from AI rewrites" style={{
+                  fontSize: '0.55rem', padding: '2px 6px', borderRadius: 99,
+                  background: '#78350f33', color: '#fcd34d',
+                }}>
+                  manual
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#e5e5e5', fontFamily: 'monospace' }}>
+              {n.id}
+            </div>
+            {meta?.description && (
+              <div style={{ fontSize: '0.65rem', color: '#444', marginTop: 4 }}>{meta.description}</div>
+            )}
+          </div>
+          {meta && (
+            <Section title="Props">
+              {Object.entries(meta.propSchema).map(([propName, def]) =>
+                def.type === 'workflow_trigger' ? (
+                  <div key={propName}>
+                    <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {def.label}
+                    </label>
+                    <WorkflowCard
+                      workspaceId={workspaceId}
+                      appId={appId}
+                      pageId={pageId}
+                      triggerType={n.element === 'form' ? 'form_submit' : 'button_click'}
+                      widgetId={n.id}
+                      workflowId={n.action}
+                      onLink={workflowId => onUpdate({ ...n, manuallyEdited: true, action: workflowId })}
+                      onUnlink={() => onUpdate({ ...n, manuallyEdited: true, action: undefined })}
+                      onOpenCanvas={onOpenCanvas}
+                      onOpenSplitView={onOpenSplitView}
+                    />
+                  </div>
+                ) : (
+                  <PropField
+                    key={propName}
+                    name={propName}
+                    def={def}
+                    value={getPropValue(n, propName)}
+                    onChange={v => handlePropChange(propName, v)}
+                  />
+                )
+              )}
+            </Section>
+          )}
+        </>
+      )}
+
+      {/* Data tab: connector selector + query builder + preview */}
+      {activeTab === 'data' && (
+        <>
+          {n.element === 'filter' && (
+            <Section title="Filter data source">
+              <FilterDataSourceEditor
+                node={n}
+                workspaceId={workspaceId}
+                onWithChange={handleWithChange}
               />
-            )
+            </Section>
           )}
-        </Section>
+          {isDataWidget ? (
+            <Section title="Data binding">
+              <DataBindingEditor
+                node={n}
+                workspaceId={workspaceId}
+                filterWidgets={filterWidgets}
+                onWithChange={handleWithChange}
+                onWithChangeMany={handleWithChangeMany}
+              />
+            </Section>
+          ) : n.with && Object.keys(n.with).length > 0 ? (
+            <Section title="Data binding">
+              <div style={{ fontSize: '0.65rem', color: '#444', fontFamily: 'monospace', background: '#0d0d0d', borderRadius: 4, padding: 8 }}>
+                {Object.entries(n.with).map(([k, v]) => (
+                  <div key={k}>{k}=&quot;{v}&quot;</div>
+                ))}
+              </div>
+            </Section>
+          ) : (
+            <div style={{ padding: '2rem 1rem', color: '#333', fontSize: '0.7rem', textAlign: 'center' }}>
+              No data binding for this widget.
+            </div>
+          )}
+        </>
       )}
 
-      {/* Filter data source */}
-      {n.element === 'filter' && (
-        <Section title="Filter data source">
-          <FilterDataSourceEditor
-            node={n}
-            workspaceId={workspaceId}
-            onWithChange={handleWithChange}
-          />
-        </Section>
+      {/* Layout tab: X/Y/W/H grid + delete */}
+      {activeTab === 'layout' && (
+        <>
+          <Section title="Position & Size">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <Field label="X" value={String(g.x)} type="number"
+                onChange={v => handleGridChange('gridX', v)} />
+              <Field label="Y" value={String(g.y)} type="number"
+                onChange={v => handleGridChange('gridY', v)} />
+              <Field label={`W (${g.w * CELL}px)`} value={String(g.w)} type="number"
+                onChange={v => handleGridChange('gridW', v)} />
+              <Field label={`H (${g.h * CELL}px)`} value={String(g.h)} type="number"
+                onChange={v => handleGridChange('gridH', v)} />
+            </div>
+          </Section>
+          <div style={{ padding: '0.75rem 1rem', marginTop: 'auto' }}>
+            <button
+              onClick={() => onDelete(n.id)}
+              style={{
+                width: '100%', padding: '6px 12px', borderRadius: 4, fontSize: '0.75rem',
+                background: 'transparent', border: '1px solid #2a1010', color: '#ef4444',
+                cursor: 'pointer',
+              }}
+              onMouseEnter={e => { (e.target as HTMLButtonElement).style.background = '#1a0a0a' }}
+              onMouseLeave={e => { (e.target as HTMLButtonElement).style.background = 'transparent' }}
+            >
+              Delete widget
+            </button>
+          </div>
+        </>
       )}
-
-      {/* Data binding (with clause) */}
-      {isDataWidget ? (
-        <Section title="Data binding">
-          <DataBindingEditor
-            node={n}
-            workspaceId={workspaceId}
-            filterWidgets={filterWidgets}
-            onWithChange={handleWithChange}
-            onWithChangeMany={handleWithChangeMany}
-          />
-        </Section>
-      ) : n.with && Object.keys(n.with).length > 0 ? (
-        <Section title="Data binding">
-          <div style={{ fontSize: '0.65rem', color: '#444', fontFamily: 'monospace', background: '#0d0d0d', borderRadius: 4, padding: 8 }}>
-            {Object.entries(n.with).map(([k, v]) => (
-              <div key={k}>{k}=&quot;{v}&quot;</div>
-            ))}
-          </div>
-        </Section>
-      ) : null}
-
-      {/* Layout & Position */}
-      <details style={{ borderTop: '1px solid #1a1a1a' }}>
-        <summary style={{ padding: '0.5rem 1rem', fontSize: '0.7rem', color: '#444', cursor: 'pointer', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ fontSize: '0.6rem' }}>▶</span> Layout &amp; Position
-        </summary>
-        <div style={{ padding: '0 1rem 0.75rem' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Field label="X" value={String(g.x)} type="number"
-              onChange={v => handleGridChange('gridX', v)} />
-            <Field label="Y" value={String(g.y)} type="number"
-              onChange={v => handleGridChange('gridY', v)} />
-            <Field label={`W (${g.w * CELL}px)`} value={String(g.w)} type="number"
-              onChange={v => handleGridChange('gridW', v)} />
-            <Field label={`H (${g.h * CELL}px)`} value={String(g.h)} type="number"
-              onChange={v => handleGridChange('gridH', v)} />
-          </div>
-        </div>
-      </details>
-
-      {/* Danger zone */}
-      <div style={{ padding: '0.75rem 1rem', marginTop: 'auto' }}>
-        <button
-          onClick={() => onDelete(n.id)}
-          style={{
-            width: '100%', padding: '6px 12px', borderRadius: 4, fontSize: '0.75rem',
-            background: 'transparent', border: '1px solid #2a1010', color: '#ef4444',
-            cursor: 'pointer',
-          }}
-          onMouseEnter={e => { (e.target as HTMLButtonElement).style.background = '#1a0a0a' }}
-          onMouseLeave={e => { (e.target as HTMLButtonElement).style.background = 'transparent' }}
-        >
-          Delete widget
-        </button>
-      </div>
     </aside>
   )
 }
