@@ -90,6 +90,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
+    document.cookie = `NEXT_LOCALE=${user.language};path=/;max-age=31536000`
+
     let cancelled = false
 
     const rehydrate = async () => {
@@ -123,6 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback(async (token: string, company: Company) => {
     const user = parseJWT(token)
     if (!user) throw new Error('invalid token')
+    document.cookie = `NEXT_LOCALE=${user.language};path=/;max-age=31536000`
     localStorage.setItem('lima_token', token)
     localStorage.setItem('lima_company', JSON.stringify(company))
 
