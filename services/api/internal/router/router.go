@@ -203,6 +203,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 					r.Get("/", handler.ListConnectors(s, log))
 					r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
 						Post("/", handler.CreateConnector(cfg, s, enq, log))
+					// AI connector chat — workspace_admin only (must be before /{connectorID} to avoid shadowing)
+					r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).
+						Post("/chat", handler.ConnectorChat(cfg, s, rdb, log))
 					r.Route("/{connectorID}", func(r chi.Router) {
 						r.Get("/", handler.GetConnector(s, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleWorkspaceAdmin)).

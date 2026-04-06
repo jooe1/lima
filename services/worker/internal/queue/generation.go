@@ -31,7 +31,7 @@ type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
 }
 
 type chatResponse struct {
@@ -88,7 +88,6 @@ func callOpenAI(ctx context.Context, settings userAISettings, messages []chatMes
 		Model:       settings.Model,
 		Messages:    messages,
 		Temperature: 0.2,
-		MaxTokens:   4096,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal llm request: %w", err)

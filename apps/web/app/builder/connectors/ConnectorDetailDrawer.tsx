@@ -7,6 +7,7 @@ import {
   testConnector, getConnectorSchema, patchConnector, deleteConnector,
   getManagedTableColumns, listConnectorActions, deleteConnectorAction,
   runConnectorQuery, seedManagedTableFromCSV, exportManagedTableCSV,
+  getEditableConnector,
   type Connector, type ManagedTableColumn, type ActionDefinition, type DashboardQueryResponse,
 } from '../../../lib/api'
 import { ConnectorDrawer } from './ConnectorDrawer'
@@ -164,6 +165,7 @@ function ActionCatalogInline({
   const [showForm, setShowForm] = useState(false)
   const [editingAction, setEditingAction] = useState<ActionDefinition | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   async function handleDelete(id: string) {
     setDeletingId(id)
@@ -199,28 +201,76 @@ function ActionCatalogInline({
 
   return (
     <div>
-      {actions.map(act => (
-        <div key={act.id} style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '6px 10px', borderRadius: 6, background: '#111',
-          border: '1px solid #1e1e1e', marginBottom: 4,
-        }}>
-          <span style={{
-            fontSize: '0.62rem', padding: '1px 6px', borderRadius: 99,
-            background: '#1e3a5f', color: '#60a5fa', fontFamily: 'monospace',
-          }}>{act.http_method}</span>
-          <span style={{ color: '#e5e5e5', fontSize: '0.78rem', flex: 1 }}>
-            {act.action_label || act.action_key}
-          </span>
-          <button
-            onClick={() => handleDelete(act.id)}
-            disabled={deletingId === act.id}
-            style={dangerBtn}
-          >
-            {deletingId === act.id ? '…' : 'Delete'}
-          </button>
-        </div>
-      ))}
+      {actions.map(act => {
+        const isExpanded = expandedId === act.id
+        return (
+          <div key={act.id} style={{
+            borderRadius: 6,
+            background: '#111',
+            border: '1px solid #1e1e1e',
+            marginBottom: 4,
+            overflow: 'hidden',
+          }}>
+            {/* Row header — clickable to expand */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setExpandedId(isExpanded ? null : act.id)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setExpandedId(isExpanded ? null : act.id) }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 10px', cursor: 'pointer',
+              }}
+            >
+              <span style={{ color: '#555', fontSize: '0.65rem' }}>{isExpanded ? '▼' : '▶'}</span>
+              <span style={{
+                fontSize: '0.62rem', padding: '1px 6px', borderRadius: 99,
+                background: '#1e3a5f', color: '#60a5fa', fontFamily: 'monospace',
+                flexShrink: 0,
+              }}>{act.http_method}</span>
+              <span style={{ color: '#e5e5e5', fontSize: '0.78rem', flex: 1 }}>
+                {act.action_label || act.action_key}
+              </span>
+              <button
+                onClick={e => { e.stopPropagation(); void handleDelete(act.id) }}
+                disabled={deletingId === act.id}
+                style={dangerBtn}
+              >
+                {deletingId === act.id ? '…' : 'Delete'}
+              </button>
+            </div>
+            {/* Expanded detail */}
+            {isExpanded && (
+              <div style={{ borderTop: '1px solid #1a1a1a', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                  <span style={{ color: '#555', fontSize: '0.7rem', width: 80, flexShrink: 0 }}>Path</span>
+                  <code style={{ color: '#93c5fd', fontSize: '0.75rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                    {act.path_template || '—'}
+                  </code>
+                </div>
+                {act.resource_name && (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                    <span style={{ color: '#555', fontSize: '0.7rem', width: 80, flexShrink: 0 }}>Resource</span>
+                    <span style={{ color: '#888', fontSize: '0.75rem' }}>{act.resource_name}</span>
+                  </div>
+                )}
+                {act.description && (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                    <span style={{ color: '#555', fontSize: '0.7rem', width: 80, flexShrink: 0 }}>Description</span>
+                    <span style={{ color: '#888', fontSize: '0.75rem' }}>{act.description}</span>
+                  </div>
+                )}
+                <button
+                  onClick={() => { setEditingAction(act); setShowForm(true) }}
+                  style={{ ...ghostBtn, alignSelf: 'flex-start', marginTop: 4, fontSize: '0.75rem', padding: '3px 10px' }}
+                >
+                  Edit
+                </button>
+              </div>
+            )}
+          </div>
+        )
+      })}
       <button
         onClick={() => { setEditingAction(null); setShowForm(true) }}
         style={ghostBtn}
@@ -267,6 +317,7 @@ export function ConnectorDetailDrawer({
 
   // Section 3 — connection settings
   const [credValues, setCredValues] = useState<Record<string, string>>({})
+  const [credLoading, setCredLoading] = useState(false)
   const [saveLoading, setSaveLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
@@ -307,6 +358,21 @@ export function ConnectorDetailDrawer({
     setSql('')
     setQueryResult(null)
     setQueryError('')
+
+    // Load existing credentials for non-managed connectors so the edit form is pre-filled
+    if (connector.type !== 'managed') {
+      setCredLoading(true)
+      getEditableConnector(workspaceId, connector.id)
+        .then(res => {
+          const flat: Record<string, string> = {}
+          for (const [k, v] of Object.entries(res.editable_credentials ?? {})) {
+            flat[k] = v == null ? '' : String(v)
+          }
+          setCredValues(flat)
+        })
+        .catch(() => {})
+        .finally(() => setCredLoading(false))
+    }
 
     if (connector.type === 'managed') {
       setManagedColsLoading(true)
@@ -623,6 +689,10 @@ export function ConnectorDetailDrawer({
             </button>
             {open3 && (
               <div style={{ paddingBottom: '0.75rem' }}>
+                {credLoading ? (
+                  <p style={{ color: '#888', fontSize: '0.8rem' }}>Loading…</p>
+                ) : (
+                  <>
                 {(connector.type === 'postgres' || connector.type === 'mysql' || connector.type === 'mssql') && (
                   <DatabaseStep values={credValues} onChange={handleCredChange} />
                 )}
@@ -647,6 +717,8 @@ export function ConnectorDetailDrawer({
                   <p style={{ color: testFeedback.color, fontSize: '0.8rem', margin: '8px 0 0' }}>
                     {testFeedback.text}
                   </p>
+                )}
+                  </>
                 )}
               </div>
             )}

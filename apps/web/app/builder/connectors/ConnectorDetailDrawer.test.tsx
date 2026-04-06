@@ -22,6 +22,7 @@ vi.mock('../../../lib/api', () => ({
   getConnectorSchema: vi.fn().mockResolvedValue({ schema: null }),
   deleteConnectorAction: vi.fn().mockResolvedValue(undefined),
   deleteConnector: vi.fn().mockResolvedValue(undefined),
+  getEditableConnector: vi.fn().mockResolvedValue({ connector: {}, editable_credentials: {}, stored_secrets: {} }),
 }))
 
 vi.mock('./ConnectorEducationCard', () => ({

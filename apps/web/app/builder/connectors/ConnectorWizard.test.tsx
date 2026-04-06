@@ -6,6 +6,8 @@ import { ConnectorWizard } from './ConnectorWizard'
 const mockCreateConnector = vi.fn()
 const mockSetManagedTableColumns = vi.fn()
 const mockGetConnector = vi.fn()
+const mockUpsertConnectorAction = vi.fn()
+const mockSendConnectorChatMessage = vi.fn()
 
 vi.mock('next-intl', () => ({
   useTranslations: () => (key: string) => key,
@@ -15,6 +17,8 @@ vi.mock('../../../lib/api', () => ({
   createConnector: (...args: unknown[]) => mockCreateConnector(...args),
   setManagedTableColumns: (...args: unknown[]) => mockSetManagedTableColumns(...args),
   getConnector: (...args: unknown[]) => mockGetConnector(...args),
+  upsertConnectorAction: (...args: unknown[]) => mockUpsertConnectorAction(...args),
+  sendConnectorChatMessage: (...args: unknown[]) => mockSendConnectorChatMessage(...args),
 }))
 
 // ---- Mock FileReader for CSV preview tests --------------------------------
@@ -65,6 +69,12 @@ describe('ConnectorWizard', () => {
       updated_at: new Date().toISOString(),
       owner_scope: 'workspace',
     }))
+    mockUpsertConnectorAction.mockResolvedValue({ action: {} })
+    mockSendConnectorChatMessage.mockResolvedValue({
+      conversationId: 'conv-1',
+      message: 'Hello! Please share your API docs URL.',
+      done: false,
+    })
   })
 
   // ---- Step 1 --------------------------------------------------------------
@@ -175,5 +185,76 @@ describe('ConnectorWizard', () => {
       ],
     )
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ type: 'managed', name: 'Leads' }))
+  })
+
+  // ---- REST AI chat panel --------------------------------------------------
+
+  it('shows Set up with AI and Manual setup toggles for REST on step 2', () => {
+    render(<ConnectorWizard {...defaultProps} connectorType="rest" />)
+    fireEvent.change(screen.getByPlaceholderText('fields.name.placeholder'), { target: { value: 'My API' } })
+    fireEvent.click(screen.getByText('next'))
+    expect(screen.getByText('Set up with AI')).toBeTruthy()
+    expect(screen.getByText('Manual setup')).toBeTruthy()
+  })
+
+  it('shows chat panel when Set up with AI is clicked', () => {
+    render(<ConnectorWizard {...defaultProps} connectorType="rest" />)
+    fireEvent.change(screen.getByPlaceholderText('fields.name.placeholder'), { target: { value: 'My API' } })
+    fireEvent.click(screen.getByText('next'))
+    fireEvent.click(screen.getByText('Set up with AI'))
+    expect(screen.getByPlaceholderText('Type a message…')).toBeTruthy()
+    expect(screen.getByText('Send')).toBeTruthy()
+  })
+
+  it('does not show chat panel when Manual setup is clicked', () => {
+    render(<ConnectorWizard {...defaultProps} connectorType="rest" />)
+    fireEvent.change(screen.getByPlaceholderText('fields.name.placeholder'), { target: { value: 'My API' } })
+    fireEvent.click(screen.getByText('next'))
+    fireEvent.click(screen.getByText('Manual setup'))
+    expect(screen.queryByPlaceholderText('Type a message…')).toBeNull()
+  })
+
+  it('sends user message and displays AI reply', async () => {
+    render(<ConnectorWizard {...defaultProps} connectorType="rest" />)
+    fireEvent.change(screen.getByPlaceholderText('fields.name.placeholder'), { target: { value: 'My API' } })
+    fireEvent.click(screen.getByText('next'))
+    fireEvent.click(screen.getByText('Set up with AI'))
+
+    const input = screen.getByPlaceholderText('Type a message…')
+    fireEvent.change(input, { target: { value: 'https://docs.example.com' } })
+    fireEvent.click(screen.getByText('Send'))
+
+    await waitFor(() => expect(mockSendConnectorChatMessage).toHaveBeenCalledOnce())
+    expect(mockSendConnectorChatMessage).toHaveBeenCalledWith('ws-1', 'https://docs.example.com', undefined, 'My API')
+
+    await waitFor(() => expect(screen.getByText('Hello! Please share your API docs URL.')).toBeTruthy())
+  })
+
+  it('calls onComplete when AI signals done', async () => {
+    const onComplete = vi.fn()
+    const connectorStub = { id: 'c-ai', workspace_id: 'ws-1', name: 'Stripe', type: 'rest', created_by: 'u-1', created_at: '', updated_at: '', owner_scope: 'workspace' }
+    mockSendConnectorChatMessage.mockResolvedValue({
+      conversationId: 'conv-1',
+      message: 'Done! Connector created.',
+      done: true,
+      connectorId: 'c-ai',
+    })
+    mockGetConnector.mockResolvedValue(connectorStub)
+
+    render(<ConnectorWizard {...defaultProps} connectorType="rest" onComplete={onComplete} />)
+    fireEvent.change(screen.getByPlaceholderText('fields.name.placeholder'), { target: { value: 'Stripe' } })
+    fireEvent.click(screen.getByText('next'))
+    fireEvent.click(screen.getByText('Set up with AI'))
+
+    const input = screen.getByPlaceholderText('Type a message…')
+    fireEvent.change(input, { target: { value: 'https://stripe.com/docs/api' } })
+    fireEvent.click(screen.getByText('Send'))
+
+    await waitFor(() => expect(mockGetConnector).toHaveBeenCalledWith('ws-1', 'c-ai'))
+    // Panel stays open until the user explicitly clicks Continue
+    expect(onComplete).not.toHaveBeenCalled()
+    const continueBtn = await screen.findByRole('button', { name: 'Continue →' })
+    fireEvent.click(continueBtn)
+    expect(onComplete).toHaveBeenCalledWith(connectorStub)
   })
 })

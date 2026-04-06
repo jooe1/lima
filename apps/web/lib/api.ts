@@ -1,3 +1,5 @@
+import type { ConnectorChatResponse } from '@lima/sdk-connectors'
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
 
 function getToken(): string | null {
@@ -827,6 +829,22 @@ export function getConnectorSchema(workspaceId: string, connectorId: string) {
   return request<ConnectorSchemaResponse>(
     `/v1/workspaces/${workspaceId}/connectors/${connectorId}/schema`,
   )
+}
+
+export async function sendConnectorChatMessage(
+  workspaceId: string,
+  message: string,
+  conversationId?: string,
+  connectorName?: string,
+): Promise<ConnectorChatResponse> {
+  return request<ConnectorChatResponse>(`/v1/workspaces/${workspaceId}/connectors/chat`, {
+    method: 'POST',
+    body: JSON.stringify({
+      message,
+      ...(conversationId ? { conversationId } : {}),
+      ...(connectorName ? { connectorName } : {}),
+    }),
+  })
 }
 
 // ---- Managed table (Lima Table) -------------------------------------------

@@ -316,6 +316,7 @@ export default function ResourcesPage() {
                 {CONNECTOR_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
+
             <textarea
               style={s.textarea}
               placeholder='Credentials JSON, e.g. {"host":"…","port":5432}'

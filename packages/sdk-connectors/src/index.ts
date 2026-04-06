@@ -170,3 +170,11 @@ export interface ConnectorConfig {
   createdAt: string
   updatedAt: string
 }
+
+export interface ConnectorChatResponse {
+  conversationId: string;
+  message: string;
+  done: boolean;
+  connectorId?: string;
+  authType?: string;
+}
