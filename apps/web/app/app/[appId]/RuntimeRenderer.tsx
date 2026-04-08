@@ -296,7 +296,7 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!connectorId || !querySql) {
+    if (!connectorId || querySql === null) {
       setData(null)
       setLoading(false)
       setError(null)
@@ -514,7 +514,7 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!connectorId || !querySql) {
+    if (!connectorId || querySql === null) {
       setData(null)
       setLoading(false)
       setError(null)
@@ -685,10 +685,10 @@ function RuntimeFilter({ node, workspaceId }: { node: AuraNode; workspaceId: str
     }
     const querySql =
       optionsConnectorType === 'csv'     ? 'SELECT * FROM csv' :
-      optionsConnectorType === 'managed' ? 'SELECT * FROM managed' :
+      optionsConnectorType === 'managed' ? '' :
       optionsConnectorType === 'rest'    ? (optionsEndpoint || '/') :
       null
-    if (!querySql) {
+    if (querySql === null) {
       setDynamicOptions([])
       return
     }

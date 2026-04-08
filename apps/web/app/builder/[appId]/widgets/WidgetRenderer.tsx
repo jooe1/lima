@@ -238,7 +238,7 @@ function CanvasTablePreview({ node, workspaceId }: { node: AuraNode; workspaceId
   const querySql = getConnectorQuerySQL(connectorType, sql)
 
   useEffect(() => {
-    if (!workspaceId || !connectorId || !querySql) {
+    if (!workspaceId || !connectorId || querySql === null) {
       setData(null)
       setLoading(false)
       setError(null)
@@ -366,7 +366,7 @@ function CanvasChartPreview({ node, workspaceId }: { node: AuraNode; workspaceId
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!workspaceId || !connectorId || !querySql) {
+    if (!workspaceId || !connectorId || querySql === null) {
       setData(null)
       setLoading(false)
       setError(null)
@@ -528,10 +528,10 @@ function CanvasFilterPreview({ node, workspaceId }: { node: AuraNode; workspaceI
     }
     const querySql =
       optionsConnectorType === 'csv'     ? 'SELECT * FROM csv' :
-      optionsConnectorType === 'managed' ? 'SELECT * FROM managed' :
+      optionsConnectorType === 'managed' ? '' :
       optionsConnectorType === 'rest'    ? (optionsEndpoint || '/') :
       null
-    if (!querySql) {
+    if (querySql === null) {
       setDynamicOptions([])
       return
     }
