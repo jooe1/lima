@@ -548,7 +548,40 @@ func TestConnector(cfg *config.Config, s *store.Store, log *zap.Logger) http.Han
 				respondErr(w, http.StatusUnprocessableEntity, "invalid_credentials", "cannot parse rest credentials")
 				return
 			}
-			testErr = testRESTConn(ctx, creds)
+			// Test base URL first — 4xx responses are now treated as failures.
+			if baseErr := testRESTConn(ctx, creds); baseErr != nil {
+				respond(w, http.StatusOK, map[string]any{"ok": false, "error": baseErr.Error()})
+				return
+			}
+			// If named endpoints are configured, probe each one and return a
+			// per-endpoint breakdown so the user can see exactly which paths fail.
+			if len(creds.Endpoints) > 0 {
+				type epResult struct {
+					Label string `json:"label"`
+					Path  string `json:"path"`
+					OK    bool   `json:"ok"`
+					Error string `json:"error,omitempty"`
+				}
+				results := make([]epResult, 0, len(creds.Endpoints))
+				allOK := true
+				for _, ep := range creds.Endpoints {
+					epErr := probeRESTEndpoint(ctx, creds, ep.Path)
+					r := epResult{Label: ep.Label, Path: ep.Path, OK: epErr == nil}
+					if epErr != nil {
+						r.Error = epErr.Error()
+						allOK = false
+					}
+					results = append(results, r)
+				}
+				respond(w, http.StatusOK, map[string]any{
+					"ok":               allOK,
+					"endpoint_results": results,
+				})
+				return
+			}
+			// No endpoints defined — base URL check passed.
+			respond(w, http.StatusOK, map[string]any{"ok": true})
+			return
 
 		case model.ConnectorTypeMySQL:
 			var creds model.RelationalCredentials
@@ -634,8 +667,38 @@ func testRESTConn(ctx context.Context, creds model.RestCredentials) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 500 {
+	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// probeRESTEndpoint GETs base_url+path and returns an error for any HTTP 4xx/5xx
+// or connection failure. Used by TestConnector to validate individually named endpoints.
+func probeRESTEndpoint(ctx context.Context, creds model.RestCredentials, path string) error {
+	base := strings.TrimRight(creds.BaseURL, "/")
+	var endpoint string
+	if path == "" || path == "/" {
+		endpoint = base
+	} else {
+		endpoint = base + "/" + strings.TrimLeft(path, "/")
+	}
+	if _, err := url.ParseRequestURI(endpoint); err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	applyRestAuth(req, creds)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

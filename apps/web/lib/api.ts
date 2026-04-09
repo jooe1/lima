@@ -760,6 +760,7 @@ export interface Connector {
 export interface TestConnectorResponse {
   ok: boolean
   error?: string
+  endpoint_results?: Array<{ label: string; path: string; ok: boolean; error?: string }>
 }
 
 export interface ConnectorSchemaResponse {
@@ -1328,5 +1329,25 @@ export function deleteConnectorAction(workspaceId: string, connectorId: string, 
   return request<void>(
     `/v1/workspaces/${workspaceId}/connectors/${connectorId}/actions/${actionId}`,
     { method: 'DELETE' },
+  )
+}
+
+export interface TestConnectorActionResponse {
+  ok: boolean
+  status: number
+  error?: string
+  url?: string
+  response_preview?: string
+}
+
+export function testConnectorAction(
+  workspaceId: string,
+  connectorId: string,
+  actionId: string,
+  inputValues?: Record<string, string>,
+) {
+  return request<TestConnectorActionResponse>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/actions/${actionId}/test`,
+    { method: 'POST', body: JSON.stringify({ input_values: inputValues ?? {} }) },
   )
 }

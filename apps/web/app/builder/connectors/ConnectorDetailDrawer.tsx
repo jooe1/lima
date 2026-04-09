@@ -7,8 +7,9 @@ import {
   testConnector, getConnectorSchema, patchConnector, deleteConnector,
   getManagedTableColumns, listConnectorActions, deleteConnectorAction,
   runConnectorQuery, seedManagedTableFromCSV, exportManagedTableCSV,
-  getEditableConnector,
+  getEditableConnector, testConnectorAction,
   type Connector, type ManagedTableColumn, type ActionDefinition, type DashboardQueryResponse,
+  type TestConnectorResponse,
 } from '../../../lib/api'
 import { ConnectorDrawer } from './ConnectorDrawer'
 import { CATEGORY_ICONS, TYPE_TO_CATEGORY, CATEGORY_ACCENT } from './ConnectorIcons'
@@ -167,6 +168,12 @@ function ActionCatalogInline({
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
+  // Per-action test state
+  const [showTestFormId, setShowTestFormId] = useState<string | null>(null)
+  const [testingId, setTestingId] = useState<string | null>(null)
+  const [testInputs, setTestInputs] = useState<Record<string, Record<string, string>>>({})
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; status: number; error?: string; response_preview?: string }>>({})
+
   async function handleDelete(id: string) {
     setDeletingId(id)
     try {
@@ -175,6 +182,26 @@ function ActionCatalogInline({
     } catch { /* ignore */ } finally {
       setDeletingId(null)
     }
+  }
+
+  async function handleRunTest(act: ActionDefinition) {
+    setTestingId(act.id)
+    try {
+      const inputs = testInputs[act.id] ?? {}
+      const res = await testConnectorAction(workspaceId, connectorId, act.id, inputs)
+      setTestResults(prev => ({ ...prev, [act.id]: res }))
+    } catch {
+      setTestResults(prev => ({ ...prev, [act.id]: { ok: false, status: 0, error: 'Request failed' } }))
+    } finally {
+      setTestingId(null)
+    }
+  }
+
+  function handleTestInputChange(actionId: string, key: string, value: string) {
+    setTestInputs(prev => ({
+      ...prev,
+      [actionId]: { ...(prev[actionId] ?? {}), [key]: value },
+    }))
   }
 
   if (showForm) {
@@ -203,6 +230,11 @@ function ActionCatalogInline({
     <div>
       {actions.map(act => {
         const isExpanded = expandedId === act.id
+        const hasInputFields = act.input_fields && act.input_fields.length > 0
+        const isTestFormOpen = showTestFormId === act.id
+        const isTesting = testingId === act.id
+        const testResult = testResults[act.id] ?? null
+        const inputs = testInputs[act.id] ?? {}
         return (
           <div key={act.id} style={{
             borderRadius: 6,
@@ -260,12 +292,103 @@ function ActionCatalogInline({
                     <span style={{ color: '#888', fontSize: '0.75rem' }}>{act.description}</span>
                   </div>
                 )}
-                <button
-                  onClick={() => { setEditingAction(act); setShowForm(true) }}
-                  style={{ ...ghostBtn, alignSelf: 'flex-start', marginTop: 4, fontSize: '0.75rem', padding: '3px 10px' }}
-                >
-                  Edit
-                </button>
+
+                {/* Test form / inline inputs */}
+                {isTestFormOpen && hasInputFields && (
+                  <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {act.input_fields.map(f => (
+                      <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <label style={{ color: '#888', fontSize: '0.7rem', width: 80, flexShrink: 0 }}>
+                          {f.label}{f.required && <span style={{ color: '#f87171' }}> *</span>}
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={f.description || f.key}
+                          value={inputs[f.key] ?? ''}
+                          onChange={e => handleTestInputChange(act.id, f.key, e.target.value)}
+                          style={{
+                            flex: 1, background: '#0a0a0a', border: '1px solid #333',
+                            borderRadius: 4, color: '#e5e5e5', fontSize: '0.75rem',
+                            padding: '3px 7px', fontFamily: 'monospace',
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Action buttons row */}
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => { setEditingAction(act); setShowForm(true) }}
+                    style={{ ...ghostBtn, fontSize: '0.75rem', padding: '3px 10px' }}
+                  >
+                    Edit
+                  </button>
+                  {hasInputFields && !isTestFormOpen ? (
+                    <button
+                      onClick={() => { setShowTestFormId(act.id); setTestResults(prev => ({ ...prev, [act.id]: undefined as unknown as typeof prev[string] })) }}
+                      style={{ ...ghostBtn, fontSize: '0.75rem', padding: '3px 10px' }}
+                    >
+                      Test
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { void handleRunTest(act) }}
+                      disabled={isTesting}
+                      style={{ ...ghostBtn, fontSize: '0.75rem', padding: '3px 10px' }}
+                    >
+                      {isTesting ? '…' : isTestFormOpen ? 'Run test' : 'Test'}
+                    </button>
+                  )}
+                  {isTestFormOpen && (
+                    <button
+                      onClick={() => { setShowTestFormId(null) }}
+                      style={{ ...ghostBtn, fontSize: '0.75rem', padding: '3px 10px', color: '#888' }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+
+                {/* Test result */}
+                {testResult && (
+                  <div style={{
+                    marginTop: 6,
+                    padding: '7px 9px',
+                    background: testResult.ok ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)',
+                    border: `1px solid ${testResult.ok ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)'}`,
+                    borderRadius: 5,
+                  }}>
+                    {/* Status line */}
+                    <p style={{ color: testResult.ok ? '#4ade80' : '#f87171', fontSize: '0.75rem', margin: 0, fontWeight: 600 }}>
+                      {testResult.ok ? '✓ ' : '✗ '}
+                      {testResult.error ?? (testResult.ok ? 'OK' : 'Failed')}
+                      {testResult.status > 0 && (
+                        <span style={{ fontWeight: 400, opacity: 0.6, marginLeft: 6 }}>
+                          HTTP {testResult.status}
+                        </span>
+                      )}
+                    </p>
+                    {/* URL called */}
+                    {testResult.url && (
+                      <p style={{ color: '#555', fontSize: '0.65rem', margin: '3px 0 0', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        {testResult.ok ? '→' : '→'} {testResult.url}
+                      </p>
+                    )}
+                    {/* Raw response body — only show on failure; collapse on success */}
+                    {testResult.response_preview && !testResult.ok && (
+                      <pre style={{
+                        margin: '5px 0 0', padding: '5px 7px', background: '#0a0a0a',
+                        border: '1px solid #1e1e1e', borderRadius: 4,
+                        color: '#888', fontSize: '0.65rem', maxHeight: 100,
+                        overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                      }}>
+                        {testResult.response_preview}
+                      </pre>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -320,7 +443,7 @@ export function ConnectorDetailDrawer({
   const [credLoading, setCredLoading] = useState(false)
   const [saveLoading, setSaveLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
-  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
+  const [testResult, setTestResult] = useState<TestConnectorResponse | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
   const [deleteError, setDeleteError] = useState('')
 
@@ -714,9 +837,23 @@ export function ConnectorDetailDrawer({
                   </button>
                 </div>
                 {testFeedback && (
-                  <p style={{ color: testFeedback.color, fontSize: '0.8rem', margin: '8px 0 0' }}>
-                    {testFeedback.text}
-                  </p>
+                  <div style={{ marginTop: 8 }}>
+                    <p style={{ color: testFeedback.color, fontSize: '0.8rem', margin: 0 }}>
+                      {testFeedback.text}
+                    </p>
+                    {testResult?.endpoint_results && testResult.endpoint_results.length > 0 && (
+                      <ul style={{ margin: '4px 0 0', padding: 0, fontSize: '0.75rem', listStyle: 'none' }}>
+                        {testResult.endpoint_results.map((ep, i) => (
+                          <li key={i} style={{ color: ep.ok ? '#4ade80' : '#f87171', marginTop: 2 }}>
+                            {ep.ok ? '✓' : '✗'}{' '}
+                            <strong>{ep.label}</strong>{' '}
+                            <span style={{ opacity: 0.55 }}>{ep.path}</span>
+                            {ep.error && <span> — {ep.error}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 )}
                   </>
                 )}

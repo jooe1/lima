@@ -250,6 +250,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 							Put("/actions/bulk", handler.BulkReplaceConnectorActions(s, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 							Delete("/actions/{actionID}", handler.DeleteConnectorAction(s, log))
+						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
+							Post("/actions/{actionID}/test", handler.TestConnectorAction(cfg, s, log))
 					})
 				})
 

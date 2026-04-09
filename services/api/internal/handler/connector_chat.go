@@ -171,12 +171,13 @@ const connectorChatSystemPrompt = `You are an expert API connector assistant for
 Your job is to help the user set up a REST API connector by analysing their API documentation.
 
 Workflow:
-1. If the user has not provided a documentation URL, call web_search with a query like "{service name} API documentation" to find the official API reference yourself. Do NOT ask the user for the URL.
-2. Fetch the documentation using fetch_page. If the initial page is a landing page with little technical content, try a linked API reference page.
-3. Identify: the base URL, the authentication method (none / bearer / api_key), and the most useful endpoints.
-4. In one sentence, tell the user what you found, then immediately call create_connector.
-5. Call upsert_action for each useful endpoint — choose at most 10, preferring reads (GET) and commonly queried resources.
-6. After all actions are created, write a brief completion message that:
+1. If the user has not provided a documentation URL, call web_search with a targeted query like "{service name} REST API reference endpoints" to find the official API reference. Do NOT ask the user for the URL.
+2. From the search results, prefer URLs that look like official API reference pages (e.g. /docs/api, /api/reference, developer.{service}.com). Avoid general marketing or landing pages.
+3. Fetch the API reference using fetch_page. If the fetched page is an index with section links but few actual endpoint paths, call fetch_page again on the most relevant linked sub-page (e.g. the "Endpoints", "Resources", or "Reference" section).
+4. Identify: the base URL, the authentication method (none / bearer / api_key), and the most useful endpoints.
+5. In one sentence, tell the user what you found, then immediately call create_connector.
+6. Call upsert_action for each useful endpoint — choose at most 10, preferring reads (GET) and commonly queried resources.
+7. After all actions are created, write a brief completion message that:
    - States the connector name and how many endpoints were added.
    - Tells the user what credential they will need to enter to activate it: a Bearer token for bearer auth, an API key for api_key auth, or nothing for public (none) APIs.
    - For bearer or api_key auth, briefly specify where they can typically find the credential (e.g. "Go to the [Service] dashboard → Developers → API Keys") and add: "Not sure where to find it? Just ask and I'll help you locate it."
@@ -185,6 +186,7 @@ Workflow:
 
 Rules:
 - Only set up REST connectors.
+- Copy endpoint paths EXACTLY as documented — do not shorten, generalise, or guess. For example, if the docs show /contacts/people/{id}, use that exact path, not /contacts/{id}.
 - Use {paramName} syntax for path parameters (e.g. /customers/{id}).
 - Do NOT ask the user for their API key; it will be entered securely outside this chat.
 - Be concise. If you can infer something from the docs, do not ask — proceed.
@@ -216,10 +218,50 @@ func isPrivateAddr(addr netip.Addr) bool {
 
 var ccTagRe = regexp.MustCompile(`<[^>]+>`)
 var ccCSSRe = regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</(script|style)>`)
+// Preserve <pre>/<code> content by wrapping it in backtick markers before
+// general tag stripping, so the LLM can identify exact API paths / code.
+var ccPreRe = regexp.MustCompile(`(?is)<pre[^>]*>(.*?)</pre>`)
+var ccCodeRe = regexp.MustCompile(`(?is)<code[^>]*>(.*?)</code>`)
+
+// Block-level elements that should become newline separators rather than
+// collapsing into surrounding prose.  This keeps table rows, list items, and
+// paragraphs on their own lines so paths like /contacts/people/{id} are
+// visually distinct and not merged with adjacent text.
+var ccBlockRe = regexp.MustCompile(`(?i)<(p|div|h[1-6]|tr|li|br|hr|dt|dd|section|article|blockquote)(\s[^>]*)?>`)
 
 func ccStripHTML(s string) string {
-	s = ccCSSRe.ReplaceAllString(s, " ")
+	// 1. Remove script and style blocks entirely.
+	s = ccCSSRe.ReplaceAllString(s, "")
+
+	// 2. Promote <pre> blocks: strip inner tags, fence with backtick blocks.
+	s = ccPreRe.ReplaceAllStringFunc(s, func(m string) string {
+		inner := ccPreRe.FindStringSubmatch(m)[1]
+		inner = ccTagRe.ReplaceAllString(inner, "")
+		inner = strings.TrimSpace(inner)
+		if inner == "" {
+			return ""
+		}
+		return "\n```\n" + inner + "\n```\n"
+	})
+
+	// 3. Promote inline <code> spans: wrap with backticks.
+	s = ccCodeRe.ReplaceAllStringFunc(s, func(m string) string {
+		inner := ccCodeRe.FindStringSubmatch(m)[1]
+		inner = ccTagRe.ReplaceAllString(inner, "")
+		inner = strings.TrimSpace(inner)
+		if inner == "" {
+			return ""
+		}
+		return "`" + inner + "`"
+	})
+
+	// 4. Block elements → newline so table rows / list items stay separate.
+	s = ccBlockRe.ReplaceAllString(s, "\n")
+
+	// 5. Strip all remaining tags.
 	s = ccTagRe.ReplaceAllString(s, " ")
+
+	// 6. Collapse whitespace per line; drop blank lines.
 	var b strings.Builder
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.Join(strings.Fields(line), " ")
@@ -509,8 +551,8 @@ func ccToolWebSearch(ctx context.Context, argsJSON string, cfg *config.Config) s
 	reqBody, err := json.Marshal(map[string]any{
 		"api_key":        cfg.TavilyAPIKey,
 		"query":          args.Query,
-		"search_depth":   "basic",
-		"max_results":    5,
+		"search_depth":   "advanced",
+		"max_results":    8,
 		"include_answer": true,
 	})
 	if err != nil {
