@@ -218,6 +218,7 @@ func isPrivateAddr(addr netip.Addr) bool {
 
 var ccTagRe = regexp.MustCompile(`<[^>]+>`)
 var ccCSSRe = regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</(script|style)>`)
+
 // Preserve <pre>/<code> content by wrapping it in backtick markers before
 // general tag stripping, so the LLM can identify exact API paths / code.
 var ccPreRe = regexp.MustCompile(`(?is)<pre[^>]*>(.*?)</pre>`)
