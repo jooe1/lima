@@ -100,6 +100,20 @@ var connectorChatTools = []ccToolDef{
 	{
 		Type: "function",
 		Function: ccToolFunction{
+			Name:        "web_search",
+			Description: "Search the web for API documentation, base URLs, and authentication details. Use this when the user has not provided a documentation URL so you can find it yourself.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string", "description": "Search query, e.g. \"Microsoft Graph API documentation base URL\""},
+				},
+				"required": []string{"query"},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: ccToolFunction{
 			Name:        "fetch_page",
 			Description: "Fetch a public URL and return its text content. Use this to read API documentation pages. HTML is stripped; returns plain text capped at 100 KB.",
 			Parameters: map[string]any{
@@ -157,7 +171,7 @@ const connectorChatSystemPrompt = `You are an expert API connector assistant for
 Your job is to help the user set up a REST API connector by analysing their API documentation.
 
 Workflow:
-1. If the user has not provided a documentation URL, ask for one.
+1. If the user has not provided a documentation URL, call web_search with a query like "{service name} API documentation" to find the official API reference yourself. Do NOT ask the user for the URL.
 2. Fetch the documentation using fetch_page. If the initial page is a landing page with little technical content, try a linked API reference page.
 3. Identify: the base URL, the authentication method (none / bearer / api_key), and the most useful endpoints.
 4. In one sentence, tell the user what you found, then immediately call create_connector.
@@ -355,7 +369,16 @@ func ConnectorChat(cfg *config.Config, s *store.Store, rdb *goredis.Client, log 
 				})
 				// Execute each tool and append results.
 				for _, tc := range turn.ToolCalls {
+					log.Debug("connector chat tool call",
+						zap.Int("iter", iter),
+						zap.String("tool", tc.Function.Name),
+						zap.String("args", tc.Function.Arguments),
+					)
 					result := executeConnectorChatTool(r.Context(), tc, workspaceID, claims.UserID, cfg, s, &conv, log)
+					log.Debug("connector chat tool result",
+						zap.String("tool", tc.Function.Name),
+						zap.String("result", result),
+					)
 					conv.Messages = append(conv.Messages, ccMessage{
 						Role:       "tool",
 						ToolCallID: tc.ID,
@@ -459,6 +482,8 @@ func executeConnectorChatTool(
 	log *zap.Logger,
 ) string {
 	switch tc.Function.Name {
+	case "web_search":
+		return ccToolWebSearch(ctx, tc.Function.Arguments, cfg)
 	case "fetch_page":
 		return ccToolFetchPage(tc.Function.Arguments)
 	case "create_connector":
@@ -468,6 +493,69 @@ func executeConnectorChatTool(
 	default:
 		return fmt.Sprintf(`{"error": "unknown tool %q"}`, tc.Function.Name)
 	}
+}
+
+func ccToolWebSearch(ctx context.Context, argsJSON string, cfg *config.Config) string {
+	if cfg.TavilyAPIKey == "" {
+		return `{"error": "web search is not configured on this server"}`
+	}
+	var args struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || strings.TrimSpace(args.Query) == "" {
+		return `{"error": "invalid arguments"}`
+	}
+
+	reqBody, err := json.Marshal(map[string]any{
+		"api_key":        cfg.TavilyAPIKey,
+		"query":          args.Query,
+		"search_depth":   "basic",
+		"max_results":    5,
+		"include_answer": true,
+	})
+	if err != nil {
+		return `{"error": "failed to build search request"}`
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.tavily.com/search", bytes.NewReader(reqBody))
+	if err != nil {
+		return `{"error": "failed to create search request"}`
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Sprintf(`{"error": "search request failed: %s"}`, err.Error())
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return `{"error": "failed to read search response"}`
+	}
+
+	var result struct {
+		Answer  string `json:"answer"`
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return `{"error": "failed to parse search response"}`
+	}
+
+	var sb strings.Builder
+	if result.Answer != "" {
+		sb.WriteString("Summary: ")
+		sb.WriteString(result.Answer)
+		sb.WriteString("\n\n")
+	}
+	for i, r := range result.Results {
+		fmt.Fprintf(&sb, "%d. %s\n   URL: %s\n   %s\n\n", i+1, r.Title, r.URL, r.Content)
+	}
+	return sb.String()
 }
 
 func ccToolFetchPage(argsJSON string) string {

@@ -41,6 +41,9 @@ type Config struct {
 	EmailFrom string
 	// Frontend base URL (used to build post-login redirect)
 	FrontendURL string
+	// TavilyAPIKey enables web search in the connector chat agent.
+	// When set, the agent can look up API documentation without asking the user for a URL.
+	TavilyAPIKey string
 }
 
 func getEnv(key, fallback string) string {
@@ -95,5 +98,6 @@ func Load() *Config {
 		SMTPPass:                         getEnv("SMTP_PASS", ""),
 		EmailFrom:                        getEnv("EMAIL_FROM", "noreply@localhost"),
 		FrontendURL:                      getEnv("FRONTEND_URL", "http://localhost:3000"),
+		TavilyAPIKey:                     getEnv("TAVILY_API_KEY", ""),
 	}
 }

@@ -90,6 +90,8 @@ func secretKeysForConnector(connType model.ConnectorType, creds map[string]any) 
 			return []string{"password"}
 		case "api_key":
 			return []string{"api_key"}
+		case "oauth2":
+			return []string{"client_secret", "refresh_token"}
 		}
 	case model.ConnectorTypeGraphQL:
 		authType, _ := creds["auth_type"].(string)
@@ -161,6 +163,12 @@ func pruneConnectorCredentialFields(connType model.ConnectorType, merged map[str
 			delete(merged, "token")
 			delete(merged, "username")
 			delete(merged, "password")
+		case "oauth2":
+			delete(merged, "token")
+			delete(merged, "username")
+			delete(merged, "password")
+			delete(merged, "api_key")
+			delete(merged, "api_key_header")
 		}
 	case model.ConnectorTypeGraphQL:
 		authTypeValue, ok := patch["auth_type"]

@@ -1,6 +1,7 @@
 'use client'
 
-import React, { use, useCallback, useEffect, useMemo, useState } from 'react'
+import React, { use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { parse, serialize, type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
@@ -64,8 +65,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
   const [archiveConfirm, setArchiveConfirm] = useState(false)
-  const [editorMode, setEditorMode] = useState<'build' | 'preview'>('build')
-  const [showOverflowMenu, setShowOverflowMenu] = useState(false)
+  const settingsRef = useRef<HTMLDivElement>(null)
   const router = useRouter()
 
   const history = useDocumentHistory()
@@ -282,6 +282,18 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     }
   }
 
+  const latestActivePublicationId = publications.find(publication => publication.status === 'active')?.id
+  const publishedAppHref = useMemo(() => {
+    if (!workspace) return `/app/${appId}`
+
+    const params = new URLSearchParams({ workspace: workspace.id })
+    if (latestActivePublicationId) {
+      params.set('publication', latestActivePublicationId)
+    }
+
+    return `/app/${appId}?${params.toString()}`
+  }, [appId, latestActivePublicationId, workspace])
+
   // Confirm publish — call legacy publish + new publication API
   const handlePublish = async () => {
     if (!workspace || publishing || loadError || publishBlocked) {
@@ -352,13 +364,12 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         display: 'flex',
         alignItems: 'center',
         padding: '0 1rem',
-        gap: 8,
+        gap: 10,
         flexShrink: 0,
         background: '#0a0a0a',
-        position: 'relative',
       }}>
-        {/* ── Left: app identity + undo/redo + save ── */}
-        <span style={{ fontWeight: 600, color: '#e5e5e5', fontSize: '0.875rem', flexShrink: 0 }}>
+        {/* App name + status */}
+        <span style={{ fontWeight: 600, color: '#e5e5e5', fontSize: '0.875rem' }}>
           {app?.name ?? appId}
         </span>
         {app && (
@@ -370,6 +381,11 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             {app.status}
           </span>
         )}
+
+        {/* Spacer */}
+        <div style={{ flex: 1 }} />
+
+        {/* Undo / Redo */}
         <button
           onClick={() => history.undo()}
           disabled={!history.canUndo}
@@ -386,7 +402,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         >
           ↪
         </button>
-        <span style={{ fontSize: '0.65rem', color: '#333', minWidth: 60 }}>
+
+        {/* Save indicator */}
+        <span style={{ fontSize: '0.65rem', color: '#333', minWidth: 60, textAlign: 'right' }}>
           {saving
             ? 'Saving…'
             : savedAt
@@ -394,54 +412,64 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               : ''}
         </span>
 
-        {/* ── Centre (absolutely pinned): Build | Preview segmented control ── */}
-        <div style={{
-          position: 'absolute',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          display: 'flex',
-          background: '#141414',
-          border: '1px solid #2a2a2a',
-          borderRadius: 6,
-          padding: 2,
-          gap: 2,
-        }}>
-          <button
-            onClick={() => setEditorMode('build')}
+        {/* Publications */}
+        <button
+          onClick={() => {
+            setShowPublications(!showPublications)
+            if (!showPublications && publications.length === 0) loadPublications()
+          }}
+          title="Publications"
+          style={iconBtn(true)}
+        >
+          📋
+        </button>
+
+        {/* Version history */}
+        <button
+          onClick={() => setShowVersionHistory(true)}
+          title="Version history"
+          style={iconBtn(true)}
+        >
+          ⏱
+        </button>
+
+        {/* Draft preview — always available to builders; opens current DSL */}
+        <Link
+          href={`/builder/${appId}/preview`}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Preview draft"
+          style={{
+            ...iconBtn(true),
+            textDecoration: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          ⊙
+        </Link>
+
+        {/* Preview link — only available once published */}
+        {app?.status === 'published' && (
+          <Link
+            href={publishedAppHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open published app"
             style={{
-              padding: '3px 18px',
-              borderRadius: 4,
-              fontSize: '0.75rem',
-              fontWeight: 500,
-              background: editorMode === 'build' ? '#222' : 'transparent',
-              border: 'none',
-              color: editorMode === 'build' ? '#e5e5e5' : '#555',
-              cursor: 'pointer',
+              ...iconBtn(true),
+              textDecoration: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
           >
-            Build
-          </button>
-          <button
-            onClick={() => setEditorMode('preview')}
-            style={{
-              padding: '3px 18px',
-              borderRadius: 4,
-              fontSize: '0.75rem',
-              fontWeight: 500,
-              background: editorMode === 'preview' ? '#222' : 'transparent',
-              border: 'none',
-              color: editorMode === 'preview' ? '#e5e5e5' : '#555',
-              cursor: 'pointer',
-            }}
-          >
-            Preview
-          </button>
-        </div>
+            ↗
+          </Link>
+        )}
 
-        {/* ── Spacer ── */}
-        <div style={{ flex: 1 }} />
-
-        {/* ── Errors ── */}
+        {/* Publish */}
         {publishError && (
           <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{publishError}</span>
         )}
@@ -449,13 +477,99 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           <span style={{ fontSize: '0.65rem', color: '#f87171' }}>{loadError}</span>
         )}
         {publishBlocked && userFacingBlockers.length > 0 && (
-          <span style={{ fontSize: '0.7rem', color: '#f87171', maxWidth: 220 }}>
+          <span style={{ fontSize: '0.7rem', color: '#f87171', maxWidth: 280 }}>
             {userFacingBlockers[0].message}
             {userFacingBlockers.length > 1 && ` (+${userFacingBlockers.length - 1} more)`}
           </span>
         )}
 
-        {/* ── Right: panel toggles, workflow, overflow menu, publish ── */}
+        {/* App settings dropdown */}
+        <div style={{ position: 'relative' }} ref={settingsRef}>
+          <button
+            onClick={() => {
+              if (!showAppSettings && app) {
+                setEditName(app.name)
+                setEditDesc(app.description ?? '')
+                setArchiveConfirm(false)
+              }
+              setShowAppSettings(v => !v)
+            }}
+            title="App settings"
+            style={iconBtn(true)}
+          >
+            ⋮
+          </button>
+          {showAppSettings && (
+            <>
+              <div onClick={() => setShowAppSettings(false)} style={{ position: 'fixed', inset: 0, zIndex: 99 }} />
+              <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, marginTop: 4, width: 280, background: '#111', border: '1px solid #2a2a2a', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <label style={{ fontSize: '0.65rem', color: '#888' }}>Name</label>
+                <input
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  onBlur={async () => {
+                    if (workspace && app && editName.trim() && editName !== app.name) {
+                      await patchApp(workspace.id, appId, { name: editName.trim() })
+                      setApp(prev => prev ? { ...prev, name: editName.trim() } : prev)
+                    }
+                  }}
+                  onKeyDown={async e => {
+                    if (e.key === 'Enter' && workspace && app && editName.trim() && editName !== app.name) {
+                      await patchApp(workspace.id, appId, { name: editName.trim() })
+                      setApp(prev => prev ? { ...prev, name: editName.trim() } : prev)
+                    }
+                  }}
+                  style={{ background: '#0a0a0a', border: '1px solid #333', borderRadius: 4, padding: '4px 8px', color: '#e5e5e5', fontSize: '0.75rem', outline: 'none' }}
+                />
+                <label style={{ fontSize: '0.65rem', color: '#888' }}>Description</label>
+                <textarea
+                  value={editDesc}
+                  onChange={e => setEditDesc(e.target.value)}
+                  onBlur={async () => {
+                    if (workspace && app && editDesc !== (app.description ?? '')) {
+                      await patchApp(workspace.id, appId, { description: editDesc })
+                      setApp(prev => prev ? { ...prev, description: editDesc } : prev)
+                    }
+                  }}
+                  rows={2}
+                  style={{ background: '#0a0a0a', border: '1px solid #333', borderRadius: 4, padding: '4px 8px', color: '#e5e5e5', fontSize: '0.75rem', outline: 'none', resize: 'vertical' }}
+                />
+                <div style={{ borderTop: '1px solid #2a2a2a', margin: '4px 0' }} />
+                {!archiveConfirm ? (
+                  <button
+                    onClick={() => setArchiveConfirm(true)}
+                    style={{ background: 'transparent', border: '1px solid #7f1d1d', borderRadius: 4, padding: '4px 8px', color: '#f87171', fontSize: '0.7rem', cursor: 'pointer' }}
+                  >
+                    Archive app
+                  </button>
+                ) : (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.65rem', color: '#f87171' }}>Confirm?</span>
+                    <button
+                      onClick={async () => {
+                        if (workspace) {
+                          await deleteApp(workspace.id, appId)
+                          router.push('/builder')
+                        }
+                      }}
+                      style={{ background: '#7f1d1d', border: 'none', borderRadius: 4, padding: '4px 10px', color: '#fff', fontSize: '0.65rem', cursor: 'pointer' }}
+                    >
+                      Yes, archive
+                    </button>
+                    <button
+                      onClick={() => setArchiveConfirm(false)}
+                      style={{ background: 'transparent', border: '1px solid #333', borderRadius: 4, padding: '4px 10px', color: '#888', fontSize: '0.65rem', cursor: 'pointer' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right-panel toggles */}
         <button
           onClick={() => setRightPanel('inspector')}
           title="Inspector"
@@ -477,51 +591,6 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         >
           ⚡
         </button>
-
-        {/* ••• overflow menu */}
-        <div style={{ position: 'relative' }}>
-          <button
-            onClick={() => setShowOverflowMenu(v => !v)}
-            title="More options"
-            style={{ ...iconBtn(true), background: showOverflowMenu ? '#161616' : 'transparent', borderColor: showOverflowMenu ? '#333' : '#1e1e1e', fontSize: '0.6rem', letterSpacing: 1 }}
-          >
-            •••
-          </button>
-          {showOverflowMenu && (
-            <>
-              <div onClick={() => setShowOverflowMenu(false)} style={{ position: 'fixed', inset: 0, zIndex: 99 }} />
-              <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, marginTop: 4, minWidth: 182, background: '#111', border: '1px solid #2a2a2a', borderRadius: 8, padding: '4px 0', display: 'flex', flexDirection: 'column' }}>
-                <button
-                  onClick={() => { setShowVersionHistory(true); setShowOverflowMenu(false) }}
-                  style={overflowMenuItem()}
-                >
-                  ⏱ Version history
-                </button>
-                <button
-                  onClick={() => {
-                    setShowPublications(v => !v)
-                    if (!showPublications && publications.length === 0) void loadPublications()
-                    setShowOverflowMenu(false)
-                  }}
-                  style={overflowMenuItem()}
-                >
-                  📋 Publications
-                </button>
-                <div style={{ borderTop: '1px solid #1e1e1e', margin: '4px 0' }} />
-                <button
-                  onClick={() => {
-                    if (app) { setEditName(app.name); setEditDesc(app.description ?? ''); setArchiveConfirm(false) }
-                    setShowAppSettings(true)
-                    setShowOverflowMenu(false)
-                  }}
-                  style={overflowMenuItem()}
-                >
-                  ⋮ App settings
-                </button>
-              </div>
-            </>
-          )}
-        </div>
 
         <button
           onClick={handleOpenPublishDialog}
@@ -811,139 +880,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           onBindingWidgetsChange={setHighlightedWidgetIds}
         />
       )}
-
-      {/* ── App settings overlay ── */}
-      {showAppSettings && (
-        <>
-          <div onClick={() => setShowAppSettings(false)} style={{ position: 'fixed', inset: 0, zIndex: 199 }} />
-          <div style={{ position: 'fixed', top: 52, right: 16, zIndex: 200, width: 280, background: '#111', border: '1px solid #2a2a2a', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <label style={{ fontSize: '0.65rem', color: '#888' }}>Name</label>
-            <input
-              value={editName}
-              onChange={e => setEditName(e.target.value)}
-              onBlur={async () => {
-                if (workspace && app && editName.trim() && editName !== app.name) {
-                  await patchApp(workspace.id, appId, { name: editName.trim() })
-                  setApp(prev => prev ? { ...prev, name: editName.trim() } : prev)
-                }
-              }}
-              onKeyDown={async e => {
-                if (e.key === 'Enter' && workspace && app && editName.trim() && editName !== app.name) {
-                  await patchApp(workspace.id, appId, { name: editName.trim() })
-                  setApp(prev => prev ? { ...prev, name: editName.trim() } : prev)
-                }
-              }}
-              style={{ background: '#0a0a0a', border: '1px solid #333', borderRadius: 4, padding: '4px 8px', color: '#e5e5e5', fontSize: '0.75rem', outline: 'none' }}
-            />
-            <label style={{ fontSize: '0.65rem', color: '#888' }}>Description</label>
-            <textarea
-              value={editDesc}
-              onChange={e => setEditDesc(e.target.value)}
-              onBlur={async () => {
-                if (workspace && app && editDesc !== (app.description ?? '')) {
-                  await patchApp(workspace.id, appId, { description: editDesc })
-                  setApp(prev => prev ? { ...prev, description: editDesc } : prev)
-                }
-              }}
-              rows={2}
-              style={{ background: '#0a0a0a', border: '1px solid #333', borderRadius: 4, padding: '4px 8px', color: '#e5e5e5', fontSize: '0.75rem', outline: 'none', resize: 'vertical' }}
-            />
-            <div style={{ borderTop: '1px solid #2a2a2a', margin: '4px 0' }} />
-            {!archiveConfirm ? (
-              <button
-                onClick={() => setArchiveConfirm(true)}
-                style={{ background: 'transparent', border: '1px solid #7f1d1d', borderRadius: 4, padding: '4px 8px', color: '#f87171', fontSize: '0.7rem', cursor: 'pointer' }}
-              >
-                Archive app
-              </button>
-            ) : (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={{ fontSize: '0.65rem', color: '#f87171' }}>Confirm?</span>
-                <button
-                  onClick={async () => {
-                    if (workspace) {
-                      await deleteApp(workspace.id, appId)
-                      router.push('/builder')
-                    }
-                  }}
-                  style={{ background: '#7f1d1d', border: 'none', borderRadius: 4, padding: '4px 10px', color: '#fff', fontSize: '0.65rem', cursor: 'pointer' }}
-                >
-                  Yes, archive
-                </button>
-                <button
-                  onClick={() => setArchiveConfirm(false)}
-                  style={{ background: 'transparent', border: '1px solid #333', borderRadius: 4, padding: '4px 10px', color: '#888', fontSize: '0.65rem', cursor: 'pointer' }}
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
-      {/* ── Draft preview overlay ── */}
-      {editorMode === 'preview' && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 300,
-          background: '#0a0a0a',
-          display: 'flex',
-          flexDirection: 'column',
-        }}>
-          <div style={{
-            height: 40,
-            display: 'flex',
-            alignItems: 'center',
-            padding: '0 1rem',
-            gap: 12,
-            background: '#111',
-            borderBottom: '1px solid #1a1a1a',
-            flexShrink: 0,
-          }}>
-            <span style={{ fontSize: '0.75rem', color: '#888', fontWeight: 500 }}>
-              Preview — {app?.name ?? appId}
-            </span>
-            <div style={{ flex: 1 }} />
-            <button
-              onClick={() => setEditorMode('build')}
-              style={{
-                padding: '4px 14px',
-                borderRadius: 4,
-                fontSize: '0.75rem',
-                fontWeight: 500,
-                background: 'transparent',
-                border: '1px solid #333',
-                color: '#aaa',
-                cursor: 'pointer',
-              }}
-            >
-              ✕ Back to editor
-            </button>
-          </div>
-          <iframe
-            src={`/builder/${appId}/preview`}
-            style={{ flex: 1, border: 'none', width: '100%' }}
-            title={`Preview — ${app?.name ?? appId}`}
-          />
-        </div>
-      )}
     </div>
   )
-}
-
-function overflowMenuItem(): React.CSSProperties {
-  return {
-    background: 'transparent',
-    border: 'none',
-    padding: '7px 14px',
-    fontSize: '0.75rem',
-    color: '#ccc',
-    cursor: 'pointer',
-    textAlign: 'left',
-    width: '100%',
-  }
 }
 
 function PublicationsPanel({ publications, loading, workspaceId, appId, companyId, onRefresh, onArchive, onClose }: {

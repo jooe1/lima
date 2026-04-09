@@ -12,6 +12,7 @@ import { type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, listWidgets, type WidgetType } from '@lima/widget-catalog'
 import { isProductionReadyWidget } from '../../../lib/appValidation'
 import { WidgetRenderer } from './widgets/WidgetRenderer'
+import { DashboardFilterProvider } from '../../../lib/dashboardFilters'
 
 interface Props {
   doc: AuraDocument
@@ -208,7 +209,9 @@ function LayerRow({ node, depth, selectedId, onSelect, onDelete, workspaceId, ch
             transform: `scale(${THUMB_SCALE})`,
             transformOrigin: 'top left',
           }}>
-            <WidgetRenderer node={node} selected={false} workspaceId={workspaceId} />
+            <DashboardFilterProvider>
+              <WidgetRenderer node={node} selected={false} workspaceId={workspaceId} />
+            </DashboardFilterProvider>
           </div>
         </div>,
         document.body,

@@ -20,6 +20,10 @@ type Config struct {
 	// Concurrency controls
 	GenerationWorkers int
 	SchemaWorkers     int
+	// TavilyMCPURL is the full Tavily MCP endpoint URL (including the API key
+	// query parameter). When set, the generation agent will have access to a
+	// web-search tool so it can resolve API endpoints without asking the user.
+	TavilyMCPURL string
 }
 
 func getEnv(key, fallback string) string {
@@ -53,5 +57,6 @@ func Load() *Config {
 		SchemaWorkers:                    getInt("SCHEMA_WORKERS", 2),
 		CredentialsEncryptionKey:         getEnv("CREDENTIALS_ENCRYPTION_KEY", getEnv("JWT_SECRET", "")),
 		CredentialsEncryptionKeyPrevious: getEnv("CREDENTIALS_ENCRYPTION_KEY_PREVIOUS", ""),
+		TavilyMCPURL:                     getEnv("TAVILY_MCP_URL", ""),
 	}
 }

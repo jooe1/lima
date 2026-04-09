@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -28,6 +29,103 @@ type restCreds struct {
 	Password     string `json:"password,omitempty"`
 	APIKey       string `json:"api_key,omitempty"`
 	APIKeyHeader string `json:"api_key_header,omitempty"`
+	// OAuth2 refresh-token grant fields (never stored in Token — fetched at runtime).
+	TokenURL     string `json:"token_url,omitempty"`
+	ClientID     string `json:"client_id,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Scopes       string `json:"scopes,omitempty"`
+	// connectorID is set at runtime (not in DB); used as the token-cache key.
+	connectorID string
+}
+
+// oauth2TokenEntry holds a cached access token and its expiry.
+type oauth2TokenEntry struct {
+	accessToken string
+	expiresAt   time.Time
+}
+
+// restOAuth2Cache stores short-lived OAuth2 access tokens keyed by connectorID.
+// Safe for concurrent use; entries are replaced atomically.
+var restOAuth2Cache sync.Map
+
+// resolveOAuth2Token returns a valid access token for the given connector,
+// using a cached value when available and performing a refresh-token grant
+// when the cache is empty or the cached token has expired.
+func resolveOAuth2Token(ctx context.Context, connectorID string, creds restCreds) (string, error) {
+	if entry, ok := restOAuth2Cache.Load(connectorID); ok {
+		e := entry.(oauth2TokenEntry)
+		if time.Now().Before(e.expiresAt) {
+			return e.accessToken, nil
+		}
+	}
+
+	if creds.TokenURL == "" {
+		return "", fmt.Errorf("oauth2 auth requires token_url in credentials")
+	}
+	if creds.ClientID == "" {
+		return "", fmt.Errorf("oauth2 auth requires client_id in credentials")
+	}
+	if creds.RefreshToken == "" {
+		return "", fmt.Errorf("oauth2 auth requires refresh_token in credentials")
+	}
+
+	// Validate that token_url is a proper HTTPS URL (guard against accidental
+	// internal service calls and obvious mis-configuration).
+	tokenURL, err := url.Parse(creds.TokenURL)
+	if err != nil || tokenURL.Host == "" {
+		return "", fmt.Errorf("oauth2 token_url is not a valid URL")
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("client_id", creds.ClientID)
+	if creds.ClientSecret != "" {
+		form.Set("client_secret", creds.ClientSecret)
+	}
+	form.Set("refresh_token", creds.RefreshToken)
+	if creds.Scopes != "" {
+		form.Set("scope", creds.Scopes)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, creds.TokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("build oauth2 token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("oauth2 token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("oauth2 token endpoint returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", fmt.Errorf("decode oauth2 token response: %w", err)
+	}
+	if tokenResp.AccessToken == "" {
+		return "", fmt.Errorf("oauth2 token endpoint returned empty access_token")
+	}
+
+	ttl := time.Duration(tokenResp.ExpiresIn-60) * time.Second
+	if ttl <= 0 {
+		ttl = 55 * time.Minute
+	}
+	restOAuth2Cache.Store(connectorID, oauth2TokenEntry{
+		accessToken: tokenResp.AccessToken,
+		expiresAt:   time.Now().Add(ttl),
+	})
+	return tokenResp.AccessToken, nil
 }
 
 type graphqlMutationCreds struct {
@@ -1048,6 +1146,7 @@ func executeMutationStep(ctx context.Context, cfg *config.Config, pool *pgxpool.
 		if err := json.Unmarshal(plainCreds, &creds); err != nil {
 			return nil, fmt.Errorf("parse rest credentials: %w", err)
 		}
+		creds.connectorID = connectorID
 		return runRESTMutationStep(ctx, creds, step, inputData, log, stepResults)
 
 	case "graphql":
@@ -1346,6 +1445,15 @@ func runRESTMutationStep(ctx context.Context, creds restCreds, step wfStep, inpu
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	// Resolve OAuth2 access token just before the request is sent.
+	if creds.AuthType == "oauth2" {
+		token, err := resolveOAuth2Token(ctx, creds.connectorID, creds)
+		if err != nil {
+			return nil, fmt.Errorf("oauth2 token refresh: %w", err)
+		}
+		creds.Token = token
+		creds.AuthType = "bearer"
 	}
 	applyWorkflowRESTAuth(req, creds)
 

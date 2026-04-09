@@ -79,6 +79,7 @@ type userAISettings struct {
 	Model         string
 	OpenAIBaseURL *string
 	Credentials   userAICredentials
+	TavilyMCPURL  string
 }
 
 var auraBlockRe = regexp.MustCompile("(?s)```(?:aura)?\\s*\n(.*?)\\s*```")
@@ -156,7 +157,7 @@ func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt stri
 		}
 	}()
 
-	session, err := client.CreateSession(ctx, &copilot.SessionConfig{
+	sessionCfg := &copilot.SessionConfig{
 		Model:               settings.Model,
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		AvailableTools:      []string{},
@@ -164,7 +165,17 @@ func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt stri
 			Mode:    "replace",
 			Content: systemPrompt,
 		},
-	})
+	}
+	if settings.TavilyMCPURL != "" {
+		sessionCfg.MCPServers = map[string]copilot.MCPServerConfig{
+			"tavily": {
+				"type": "http",
+				"url":  settings.TavilyMCPURL,
+			},
+		}
+	}
+
+	session, err := client.CreateSession(ctx, sessionCfg)
 	if err != nil {
 		return "", fmt.Errorf("create copilot session: %w", err)
 	}
@@ -466,6 +477,7 @@ func fetchUserAISettings(ctx context.Context, cfg *config.Config, pool *pgxpool.
 			return userAISettings{}, fmt.Errorf("unmarshal ai credentials: %w", err)
 		}
 	}
+	settings.TavilyMCPURL = cfg.TavilyMCPURL
 	return settings, nil
 }
 

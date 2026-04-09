@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { type AuraNode, type AuraDocument } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType, type PropDef } from '@lima/widget-catalog'
 import { getGrid, CELL, COLS } from './CanvasEditor'
-import { listConnectors, runConnectorQuery, createWorkflow, getWorkflow, type Connector, type DashboardQueryResponse, type Workflow } from '../../../lib/api'
+import { listConnectors, runConnectorQuery, listConnectorActions, createWorkflow, getWorkflow, type Connector, type ActionDefinition, type DashboardQueryResponse, type Workflow } from '../../../lib/api'
 import { applyTableDataBinding, getConnectorQuerySQL, getConnectorSchemaColumns, mergeColumns } from '../../../lib/tableBinding'
 import { WorkflowSelector } from './widgets/WorkflowSelector'
 
@@ -409,6 +409,8 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
   onWithChangeMany: (updates: Record<string, string>) => void
 }) {
   const [connectors, setConnectors] = useState<Connector[]>([])
+  const [connectorActions, setConnectorActions] = useState<ActionDefinition[]>([])
+  const [actionsLoadError, setActionsLoadError] = useState('')
   const [preview, setPreview] = useState<DashboardQueryResponse | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
@@ -429,10 +431,36 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
   const isCSVConnector = connectorType === 'csv'
   const isManagedConnector = connectorType === 'managed'
   const isRESTConnector = connectorType === 'rest'
-  const restEndpoints = isRESTConnector
-    ? ((selectedConnector?.schema_cache?.endpoints ?? []) as Array<{ label: string; path: string }>)
-    : []
-  const hasNamedEndpoints = restEndpoints.length > 0
+
+  // Load connector actions when a REST connector is selected.
+  useEffect(() => {
+    if (!workspaceId || !connectorId || !isRESTConnector) {
+      setConnectorActions([])
+      setActionsLoadError('')
+      return
+    }
+    let cancelled = false
+    setActionsLoadError('')
+    listConnectorActions(workspaceId, connectorId)
+      .then(res => { if (!cancelled) { setConnectorActions(res.actions ?? []); setActionsLoadError('') } })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setConnectorActions([])
+          setActionsLoadError(e instanceof Error ? e.message : 'Failed to load actions for this connector.')
+        }
+      })
+    return () => { cancelled = true }
+  }, [workspaceId, connectorId, isRESTConnector])
+
+  // For table data-binding, only GET actions fetch rows; POST/PUT/PATCH/DELETE
+  // are mutation actions wired to workflows, not to the read path.
+  const restGetActions = connectorActions.filter(a => a.http_method === 'GET')
+  const hasNamedEndpoints = restGetActions.length > 0
+  // Map to the { label, path } shape the dropdown expects.
+  const restEndpoints: Array<{ label: string; path: string }> = restGetActions.map(a => ({
+    label: a.action_label || a.action_key,
+    path: a.path_template,
+  }))
   // Derive what the endpoint dropdown currently shows:
   // '' = nothing selected, a path = that endpoint is active, '__custom__' = user-typed path
   const endpointDropdownValue = (() => {
@@ -450,11 +478,15 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
   }, [selectedConnector?.type, node.with?.connectorType, onWithChange])
 
   const querySql = getConnectorQuerySQL(connectorType, sql)
+  // For REST connectors, don't fire any fetch until the user has explicitly
+  // chosen an endpoint path (i.e. sql is non-empty and not the default '/').
+  // Fetching '/' auto-GETs the base URL which commonly returns 404 or HTML.
+  const restEndpointReady = !isRESTConnector || (sql.trim() !== '' && sql.trim() !== '/')
 
   // Auto-fetch a 1-row preview whenever connector + query changes so that
   // availableColumns is populated and column pickers render as dropdowns.
   useEffect(() => {
-    if (!workspaceId || !connectorId || querySql === null) return
+    if (!workspaceId || !connectorId || querySql === null || !restEndpointReady) return
     let cancelled = false
     ;(async () => {
       try {
@@ -518,7 +550,7 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
   const needsAggregateColumn = ['sum', 'avg', 'min', 'max'].includes(aggregateMode)
   const sortBy = node.with?.sortBy ?? 'none'
   const sortDirection = node.with?.sortDirection ?? 'desc'
-  const canPreview = Boolean(connectorId && querySql)
+  const canPreview = Boolean(connectorId && querySql && restEndpointReady)
 
   const renderColumnField = (
     label: string,
@@ -580,6 +612,12 @@ function DataBindingEditor({ node, workspaceId, filterWidgets, onWithChange, onW
           ))}
         </select>
       </div>
+
+      {actionsLoadError && isRESTConnector && (
+        <div style={{ fontSize: '0.65rem', color: '#f87171', background: '#1a0a0a', borderRadius: 4, padding: 8 }}>
+          Could not load actions: {actionsLoadError}
+        </div>
+      )}
 
       {isCSVConnector || isManagedConnector ? (
         <div style={{ fontSize: '0.62rem', color: '#555', lineHeight: 1.5 }}>
@@ -1289,6 +1327,7 @@ function FilterDataSourceEditor({
   onWithChange: (key: string, value: string) => void
 }) {
   const [connectors, setConnectors] = useState<Connector[]>([])
+  const [filterConnectorActions, setFilterConnectorActions] = useState<ActionDefinition[]>([])
 
   useEffect(() => {
     if (!workspaceId) return
@@ -1305,12 +1344,27 @@ function FilterDataSourceEditor({
   const optionsColumn = node.with?.optionsColumn ?? ''
   const optionsEndpoint = node.with?.optionsEndpoint ?? ''
   const isREST = selectedConnector?.type === 'rest'
-  const restEndpoints = (() => {
-    if (!isREST) return []
-    const eps = selectedConnector?.schema_cache?.endpoints
-    if (!Array.isArray(eps)) return []
-    return eps as { label: string; path: string }[]
-  })()
+
+  // Load connector actions when a REST connector is selected, using the same
+  // connector_actions catalog as DataBindingEditor instead of the stale schema_cache.
+  useEffect(() => {
+    if (!workspaceId || !connectorId || !isREST) {
+      setFilterConnectorActions([])
+      return
+    }
+    let cancelled = false
+    listConnectorActions(workspaceId, connectorId)
+      .then(res => { if (!cancelled) setFilterConnectorActions(res.actions ?? []) })
+      .catch(() => { if (!cancelled) setFilterConnectorActions([]) })
+    return () => { cancelled = true }
+  }, [workspaceId, connectorId, isREST])
+
+  // Only GET actions are relevant for populating a filter/select dropdown.
+  const restEndpoints = isREST
+    ? filterConnectorActions
+        .filter(a => a.http_method === 'GET')
+        .map(a => ({ label: a.action_label || a.action_key, path: a.path_template }))
+    : []
 
   // Sync optionsConnectorType whenever the selected connector changes — mirrors
   // the same pattern DataBindingEditor uses for connectorType to avoid the

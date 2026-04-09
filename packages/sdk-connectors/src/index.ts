@@ -27,12 +27,21 @@ export interface RelationalCredentials {
 
 export interface RestCredentials {
   baseUrl: string
-  authType: 'none' | 'bearer' | 'basic' | 'api_key'
+  authType: 'none' | 'bearer' | 'basic' | 'api_key' | 'oauth2'
   token?: string
   username?: string
   password?: string
   apiKeyHeader?: string
   apiKeyValue?: string
+  /** OAuth2 token endpoint URL (e.g. https://oauth2.googleapis.com/token) */
+  tokenUrl?: string
+  clientId?: string
+  /** Stored encrypted; redacted in API responses */
+  clientSecret?: string
+  /** Stored encrypted; redacted in API responses */
+  refreshToken?: string
+  /** Space-separated OAuth2 scopes (informational; not sent in refresh grant) */
+  scopes?: string
 }
 
 export interface GraphQLCredentials {
