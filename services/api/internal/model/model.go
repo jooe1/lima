@@ -167,7 +167,7 @@ type AuraEdge struct {
 	FromPort   string `json:"from_port"`
 	ToNodeID   string `json:"to_node_id"`
 	ToPort     string `json:"to_port"`
-	EdgeType   string `json:"edge_type"`   // "reactive" | "async"
+	EdgeType   string `json:"edge_type"` // "reactive" | "async"
 	Transform  string `json:"transform,omitempty"`
 }
 
