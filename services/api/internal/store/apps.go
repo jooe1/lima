@@ -28,7 +28,7 @@ func scanAppVersionRow(row pgx.Row) (*model.AppVersion, error) {
 // ListApps returns all apps in a workspace, ordered by update time descending.
 func (s *Store) ListApps(ctx context.Context, workspaceID string) ([]model.App, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at
+		`SELECT id, workspace_id, name, description, status, dsl_source, node_metadata, dsl_edges, dsl_version, created_by, created_at, updated_at
 		 FROM apps WHERE workspace_id = $1 ORDER BY updated_at DESC`,
 		workspaceID,
 	)
@@ -40,11 +40,15 @@ func (s *Store) ListApps(ctx context.Context, workspaceID string) ([]model.App, 
 	for rows.Next() {
 		var a model.App
 		var nodeMetaRaw []byte
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var dslEdgesRaw []byte
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &dslEdgesRaw, &a.DslVersion, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("list apps scan: %w", err)
 		}
 		if nodeMetaRaw != nil {
 			_ = json.Unmarshal(nodeMetaRaw, &a.NodeMetadata)
+		}
+		if len(dslEdgesRaw) > 0 {
+			_ = json.Unmarshal(dslEdgesRaw, &a.DslEdges)
 		}
 		apps = append(apps, a)
 	}
@@ -55,11 +59,12 @@ func (s *Store) ListApps(ctx context.Context, workspaceID string) ([]model.App, 
 func (s *Store) GetApp(ctx context.Context, workspaceID, appID string) (*model.App, error) {
 	a := &model.App{}
 	var nodeMetaRaw []byte
+	var dslEdgesRaw []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at
+		`SELECT id, workspace_id, name, description, status, dsl_source, node_metadata, dsl_edges, dsl_version, created_by, created_at, updated_at
 		 FROM apps WHERE id = $1 AND workspace_id = $2`,
 		appID, workspaceID,
-	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &dslEdgesRaw, &a.DslVersion, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -69,6 +74,9 @@ func (s *Store) GetApp(ctx context.Context, workspaceID, appID string) (*model.A
 	if nodeMetaRaw != nil {
 		_ = json.Unmarshal(nodeMetaRaw, &a.NodeMetadata)
 	}
+	if len(dslEdgesRaw) > 0 {
+		_ = json.Unmarshal(dslEdgesRaw, &a.DslEdges)
+	}
 	return a, nil
 }
 
@@ -76,17 +84,21 @@ func (s *Store) GetApp(ctx context.Context, workspaceID, appID string) (*model.A
 func (s *Store) CreateApp(ctx context.Context, workspaceID, name string, description *string, createdBy string) (*model.App, error) {
 	a := &model.App{}
 	var nodeMetaRaw []byte
+	var dslEdgesRaw []byte
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO apps (workspace_id, name, description, created_by)
 		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at`,
+		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, dsl_edges, dsl_version, created_by, created_at, updated_at`,
 		workspaceID, name, description, createdBy,
-	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &dslEdgesRaw, &a.DslVersion, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create app: %w", err)
 	}
 	if nodeMetaRaw != nil {
 		_ = json.Unmarshal(nodeMetaRaw, &a.NodeMetadata)
+	}
+	if len(dslEdgesRaw) > 0 {
+		_ = json.Unmarshal(dslEdgesRaw, &a.DslEdges)
 	}
 	return a, nil
 }
@@ -94,7 +106,7 @@ func (s *Store) CreateApp(ctx context.Context, workspaceID, name string, descrip
 // PatchApp applies partial updates to name, description, dsl_source, and/or node_metadata.
 // node_metadata is merged into (not replaced) the existing value: only keys present in the
 // incoming map are updated; other nodes' metadata are left intact.
-func (s *Store) PatchApp(ctx context.Context, workspaceID, appID string, name *string, description *string, dslSource *string, nodeMetadata map[string]model.NodeMeta) (*model.App, error) {
+func (s *Store) PatchApp(ctx context.Context, workspaceID, appID string, name *string, description *string, dslSource *string, nodeMetadata map[string]model.NodeMeta, dslEdges []model.AuraEdge, dslVersion *int) (*model.App, error) {
 	var inMetaRaw []byte
 	if nodeMetadata != nil {
 		var err error
@@ -103,19 +115,30 @@ func (s *Store) PatchApp(ctx context.Context, workspaceID, appID string, name *s
 			return nil, fmt.Errorf("patch app: marshal node_metadata: %w", err)
 		}
 	}
+	var inEdgesRaw []byte
+	if dslEdges != nil {
+		var err error
+		inEdgesRaw, err = json.Marshal(dslEdges)
+		if err != nil {
+			return nil, fmt.Errorf("patch app: marshal dsl_edges: %w", err)
+		}
+	}
 	a := &model.App{}
 	var nodeMetaRaw []byte
+	var dslEdgesRaw []byte
 	err := s.pool.QueryRow(ctx,
 		`UPDATE apps SET
 		    name          = COALESCE($3, name),
 		    description   = COALESCE($4, description),
 		    dsl_source    = COALESCE($5, dsl_source),
 		    node_metadata = CASE WHEN $6::jsonb IS NULL THEN node_metadata ELSE node_metadata || $6::jsonb END,
+		    dsl_edges     = COALESCE($7::jsonb, dsl_edges),
+		    dsl_version   = COALESCE($8, dsl_version),
 		    updated_at    = now()
 		 WHERE id = $1 AND workspace_id = $2
-		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at`,
-		appID, workspaceID, name, description, dslSource, inMetaRaw,
-	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, dsl_edges, dsl_version, created_by, created_at, updated_at`,
+		appID, workspaceID, name, description, dslSource, inMetaRaw, inEdgesRaw, dslVersion,
+	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &nodeMetaRaw, &dslEdgesRaw, &a.DslVersion, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -124,6 +147,9 @@ func (s *Store) PatchApp(ctx context.Context, workspaceID, appID string, name *s
 	}
 	if nodeMetaRaw != nil {
 		_ = json.Unmarshal(nodeMetaRaw, &a.NodeMetadata)
+	}
+	if len(dslEdgesRaw) > 0 {
+		_ = json.Unmarshal(dslEdgesRaw, &a.DslEdges)
 	}
 	return a, nil
 }
@@ -232,12 +258,13 @@ func (s *Store) RollbackApp(ctx context.Context, workspaceID, appID string, vers
 
 	a := &model.App{}
 	var appMetaRaw []byte
+	var dslEdgesRaw []byte
 	err = tx.QueryRow(ctx,
 		`UPDATE apps SET dsl_source = $3, node_metadata = $4, status = 'draft', updated_at = now()
 		 WHERE id = $1 AND workspace_id = $2
-		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, created_by, created_at, updated_at`,
+		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, dsl_edges, dsl_version, created_by, created_at, updated_at`,
 		appID, workspaceID, dslSource, versionMetaRaw,
-	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &appMetaRaw, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &appMetaRaw, &dslEdgesRaw, &a.DslVersion, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -246,6 +273,9 @@ func (s *Store) RollbackApp(ctx context.Context, workspaceID, appID string, vers
 	}
 	if appMetaRaw != nil {
 		_ = json.Unmarshal(appMetaRaw, &a.NodeMetadata)
+	}
+	if len(dslEdgesRaw) > 0 {
+		_ = json.Unmarshal(dslEdgesRaw, &a.DslEdges)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

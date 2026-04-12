@@ -30,6 +30,13 @@ interface DragState {
   snapH: number
 }
 
+interface PanState {
+  startMouseX: number
+  startMouseY: number
+  startScrollLeft: number
+  startScrollTop: number
+}
+
 interface Props {
   doc: AuraDocument
   selectedId: string | null
@@ -57,6 +64,8 @@ export function getGrid(node: AuraNode, fallback = { w: 4, h: 3 }) {
 export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTemplate, workspaceId, highlightedWidgetIds, onDropWidget }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
+  const panRef = useRef<PanState | null>(null)
+  const [isPanning, setIsPanning] = React.useState(false)
 
   // Gallery state: show when canvas is empty, re-show if user clears all widgets
   const [showGallery, setShowGallery] = useState(doc.length === 0)
@@ -116,6 +125,17 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
     }
 
     function handleMouseMove(e: MouseEvent) {
+      // Pan gesture
+      const pan = panRef.current
+      if (pan) {
+        const container = containerRef.current
+        if (container) {
+          container.scrollLeft = pan.startScrollLeft - (e.clientX - pan.startMouseX)
+          container.scrollTop  = pan.startScrollTop  - (e.clientY - pan.startMouseY)
+        }
+        return
+      }
+
       const drag = dragRef.current
       const container = containerRef.current
       if (!drag || !container) return
@@ -151,6 +171,13 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
     }
 
     function handleMouseUp() {
+      // End pan gesture
+      if (panRef.current) {
+        panRef.current = null
+        setIsPanning(false)
+        return
+      }
+
       const drag = dragRef.current
       if (!drag) return
       dragRef.current = null
@@ -237,13 +264,35 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
 
   return (
     <DashboardFilterProvider>
+      {/* Non-scrolling wrapper — position anchor for the minimap overlay */}
+      <div style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden' }}>
       <div
         ref={containerRef}
+        className="canvas-scroll-container"
         style={{
-          flex: 1,
+          width: '100%',
+          height: '100%',
           overflow: 'auto',
           background: '#080808',
-          position: 'relative',
+          cursor: isPanning ? 'grabbing' : 'default',
+          // Hide native scrollbars — panning replaces them
+          scrollbarWidth: 'none',
+        }}
+        onMouseDown={e => {
+          // Middle-mouse anywhere, or left-mouse on the background (not a widget)
+          const isBackground = e.target === e.currentTarget || (e.target as HTMLElement).dataset.canvasBg === '1'
+          if (e.button === 1 || (e.button === 0 && isBackground)) {
+            e.preventDefault()
+            const container = containerRef.current
+            if (!container) return
+            panRef.current = {
+              startMouseX: e.clientX,
+              startMouseY: e.clientY,
+              startScrollLeft: container.scrollLeft,
+              startScrollTop: container.scrollTop,
+            }
+            setIsPanning(true)
+          }
         }}
         onClick={e => {
           if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.canvasBg === '1') {
@@ -367,7 +416,9 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
           )}
         </div>
 
-        {/* Minimap — scaled thumbnail of all widgets in bottom-right corner */}
+      </div>
+
+        {/* Minimap — anchored to the non-scrolling wrapper, always visible in bottom-right */}
         {doc.length > 0 && (
           <MinimapOverlay doc={doc} canvasHeight={canvasHeight} selectedId={selectedId} />
         )}

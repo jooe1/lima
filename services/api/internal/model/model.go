@@ -159,6 +159,18 @@ type WorkspaceAccessPolicyRuleInput struct {
 
 // ---- Apps -------------------------------------------------------------------
 
+// AuraEdge represents a typed, directional data-flow edge in an AuraDocumentV2.
+// Stored as JSONB in apps.dsl_edges (migration 022).
+type AuraEdge struct {
+	ID         string `json:"id"`
+	FromNodeID string `json:"from_node_id"`
+	FromPort   string `json:"from_port"`
+	ToNodeID   string `json:"to_node_id"`
+	ToPort     string `json:"to_port"`
+	EdgeType   string `json:"edge_type"`   // "reactive" | "async"
+	Transform  string `json:"transform,omitempty"`
+}
+
 // AppStatus mirrors the app_status DB enum.
 type AppStatus string
 
@@ -181,6 +193,8 @@ type App struct {
 	Status       AppStatus           `json:"status"`
 	DSLSource    string              `json:"dsl_source"`
 	NodeMetadata map[string]NodeMeta `json:"node_metadata,omitempty"`
+	DslEdges     []AuraEdge          `json:"dsl_edges"`
+	DslVersion   int                 `json:"dsl_version"`
 	CreatedBy    string              `json:"created_by"`
 	CreatedAt    time.Time           `json:"created_at"`
 	UpdatedAt    time.Time           `json:"updated_at"`

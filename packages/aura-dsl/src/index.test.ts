@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { parse, serialize, validate, diff, applyDiff, ParseError, type WidgetBinding, type OutputBinding } from '../src/index'
+import {
+  parse, parseV2, serialize, serializeV2, validate, validateV2, diff, diffV2, applyDiff, applyDiffV2,
+  ParseError, type WidgetBinding, type OutputBinding, type AuraEdge, type AuraDocumentV2, type PortRegistry,
+} from '../src/index'
 
 const SIMPLE_DSL = `
 table orders-table @ root
@@ -242,5 +245,318 @@ describe('widget_bindings and output_bindings', () => {
     const ops = diff(from, to)
     const updateOp = ops.find((o) => o.op === 'update' && o.id === 's1') as { op: 'update'; id: string; patch: Partial<import('../src/index').AuraNode> } | undefined
     expect(updateOp?.patch.widget_bindings).toEqual(wbB)
+  })
+})
+
+describe('AuraEdge and AuraDocumentV2 types', () => {
+  it('AuraEdge literal is constructable and exported', () => {
+    const edge: AuraEdge = {
+      id: 'e1',
+      fromNodeId: 'table1',
+      fromPort: 'selectedRow',
+      toNodeId: 'text1',
+      toPort: 'content',
+      edgeType: 'reactive',
+    }
+    expect(typeof edge).toBe('object')
+    expect(edge.id).toBe('e1')
+  })
+
+  it('AuraEdge with optional transform field', () => {
+    const edge: AuraEdge = {
+      id: 'e2',
+      fromNodeId: 'table1',
+      fromPort: 'selectedRow',
+      toNodeId: 'form1',
+      toPort: 'setValues',
+      edgeType: 'async',
+      transform: '$.toUpperCase()',
+    }
+    expect(edge.transform).toBe('$.toUpperCase()')
+  })
+
+  it('AuraDocumentV2 literal is constructable and exported', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [],
+      edges: [
+        {
+          id: 'e1',
+          fromNodeId: 'table1',
+          fromPort: 'selectedRow',
+          toNodeId: 'text1',
+          toPort: 'content',
+          edgeType: 'reactive',
+        },
+      ],
+    }
+    expect(typeof doc).toBe('object')
+    expect(doc.edges).toHaveLength(1)
+  })
+
+  it('EdgeType only allows reactive or async', () => {
+    // TypeScript compilation enforces this; runtime check via cast
+    const reactive: AuraEdge['edgeType'] = 'reactive'
+    const async_: AuraEdge['edgeType'] = 'async'
+    expect(reactive).toBe('reactive')
+    expect(async_).toBe('async')
+  })
+})
+
+const EDGES_DSL = `
+table table1 @ root
+  text "Users"
+;
+
+text text1 @ root
+  text "Name"
+;
+
+---edges---
+
+edge e1 from table1.selectedRow to text1.content reactive ;
+`
+
+const EDGES_DSL_TRANSFORM = `
+table table1 @ root ;
+text text1 @ root ;
+---edges---
+edge e2 from table1.selectedRow to text1.content async transform "$.name.toUpperCase()" ;
+`
+
+describe('parseV2', () => {
+  it('parses a document with ---edges--- section into AuraDocumentV2', () => {
+    const doc = parseV2(EDGES_DSL)
+    expect(doc.nodes).toHaveLength(2)
+    expect(doc.edges).toHaveLength(1)
+    expect(doc.edges[0]).toMatchObject({
+      id: 'e1',
+      fromNodeId: 'table1',
+      fromPort: 'selectedRow',
+      toNodeId: 'text1',
+      toPort: 'content',
+      edgeType: 'reactive',
+    })
+  })
+
+  it('parses a document without ---edges--- section with edges: []', () => {
+    const doc = parseV2(SIMPLE_DSL)
+    expect(doc.nodes).toHaveLength(2)
+    expect(doc.edges).toHaveLength(0)
+  })
+
+  it('parses an edge with transform clause', () => {
+    const doc = parseV2(EDGES_DSL_TRANSFORM)
+    expect(doc.edges[0]).toMatchObject({
+      id: 'e2',
+      edgeType: 'async',
+      transform: '$.name.toUpperCase()',
+    })
+  })
+
+  it('throws ParseError for edge missing from keyword', () => {
+    const bad = `
+table t @ root ;
+---edges---
+edge e1 t.port to t2.port reactive ;
+`
+    expect(() => parseV2(bad)).toThrow(ParseError)
+  })
+
+  it('throws ParseError for edge missing to keyword', () => {
+    const bad = `
+table t @ root ;
+---edges---
+edge e1 from t.port t2.port reactive ;
+`
+    expect(() => parseV2(bad)).toThrow(ParseError)
+  })
+
+  it('round-trip: parseV2(serialize(parseV2(src).nodes)) returns edges: []', () => {
+    const doc1 = parseV2(EDGES_DSL)
+    const src2 = serialize(doc1.nodes)
+    const doc2 = parseV2(src2)
+    expect(doc2.edges).toHaveLength(0)
+    expect(doc2.nodes).toEqual(doc1.nodes)
+  })
+
+  it('splits fromPort on first dot only (nested port path)', () => {
+    const src = `
+table t @ root ;
+form f @ root ;
+---edges---
+edge e1 from t.selectedRow to f.sql_param.user_id reactive ;
+`
+    const doc = parseV2(src)
+    expect(doc.edges[0].fromPort).toBe('selectedRow')
+    expect(doc.edges[0].toPort).toBe('sql_param.user_id')
+  })
+})
+
+const EDGE_DSL = `
+table contacts_table @ root
+  value "{{query.rows}}"
+  style { gridX: "0"; gridY: "0"; gridW: "6"; gridH: "4"; }
+;
+form new_contact @ root
+  style { gridX: "6"; gridY: "0"; gridW: "6"; gridH: "4"; }
+;
+---edges---
+edge e1 from contacts_table.selectedRow to new_contact.setValues reactive ;
+edge e2 from new_contact.submitted to step_create.params async transform "$.first_name" ;
+`
+
+describe('parseV2', () => {
+  it('parses a document with ---edges--- section', () => {
+    const doc = parseV2(EDGE_DSL)
+    expect(doc.nodes).toHaveLength(2)
+    expect(doc.edges).toHaveLength(2)
+  })
+
+  it('populates edge fields correctly', () => {
+    const doc = parseV2(EDGE_DSL)
+    expect(doc.edges[0]).toMatchObject({
+      id: 'e1',
+      fromNodeId: 'contacts_table',
+      fromPort: 'selectedRow',
+      toNodeId: 'new_contact',
+      toPort: 'setValues',
+      edgeType: 'reactive',
+    })
+  })
+
+  it('parses transform clause on edge', () => {
+    const doc = parseV2(EDGE_DSL)
+    expect(doc.edges[1].transform).toBe('$.first_name')
+  })
+
+  it('returns edges: [] when no ---edges--- section', () => {
+    const doc = parseV2('table t @ root ;')
+    expect(doc.edges).toHaveLength(0)
+    expect(doc.nodes).toHaveLength(1)
+  })
+
+  it('throws ParseError on malformed edge (wrong keyword)', () => {
+    const bad = `table t @ root ;
+---edges---
+edge e1 foo table1.out to table2.in reactive ;`
+    expect(() => parseV2(bad)).toThrow(ParseError)
+  })
+
+  it('throws ParseError on edge missing dot in from token', () => {
+    const bad = `table t @ root ;
+---edges---
+edge e1 from nodewithoutdot to table2.in reactive ;`
+    expect(() => parseV2(bad)).toThrow(ParseError)
+  })
+})
+
+describe('V2 serializer / validator / diff', () => {
+  const sampleDoc: AuraDocumentV2 = {
+    nodes: [
+      { element: 'table', id: 'tbl', parentId: 'root' },
+      { element: 'text', id: 'txt', parentId: 'root' },
+    ],
+    edges: [
+      { id: 'e1', fromNodeId: 'tbl', fromPort: 'selectedRow', toNodeId: 'txt', toPort: 'setContent', edgeType: 'reactive' },
+    ],
+  }
+
+  it('serializeV2 → parseV2 round-trip preserves nodes and edges', () => {
+    const src = serializeV2(sampleDoc)
+    const doc2 = parseV2(src)
+    expect(doc2.nodes).toHaveLength(2)
+    expect(doc2.edges).toHaveLength(1)
+    expect(doc2.edges[0]).toMatchObject({ id: 'e1', edgeType: 'reactive' })
+  })
+
+  it('serializeV2 emits no ---edges--- section when edges is empty', () => {
+    const src = serializeV2({ nodes: sampleDoc.nodes, edges: [] })
+    expect(src).not.toContain('---edges---')
+  })
+
+  it('validateV2 returns no errors for a valid document', () => {
+    expect(validateV2(sampleDoc)).toHaveLength(0)
+  })
+
+  it('validateV2 flags unknown fromNodeId', () => {
+    const bad: AuraDocumentV2 = {
+      nodes: [{ element: 'table', id: 'tbl', parentId: 'root' }],
+      edges: [{ id: 'e1', fromNodeId: 'ghost', fromPort: 'x', toNodeId: 'tbl', toPort: 'y', edgeType: 'reactive' }],
+    }
+    const errs = validateV2(bad)
+    expect(errs.some((e) => e.message.includes('fromNodeId'))).toBe(true)
+  })
+
+  it('validateV2 detects a reactive cycle', () => {
+    const cycleDoc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'table', id: 'A', parentId: 'root' },
+        { element: 'text', id: 'B', parentId: 'root' },
+        { element: 'text', id: 'C', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'A', fromPort: 'out', toNodeId: 'B', toPort: 'in', edgeType: 'reactive' },
+        { id: 'e2', fromNodeId: 'B', fromPort: 'out', toNodeId: 'C', toPort: 'in', edgeType: 'reactive' },
+        { id: 'e3', fromNodeId: 'C', fromPort: 'out', toNodeId: 'A', toPort: 'in', edgeType: 'reactive' },
+      ],
+    }
+    const errs = validateV2(cycleDoc)
+    expect(errs.some((e) => e.message.toLowerCase().includes('cycle'))).toBe(true)
+  })
+
+  it('validateV2 does NOT flag an async-only cycle', () => {
+    const asyncCycleDoc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'table', id: 'A', parentId: 'root' },
+        { element: 'text', id: 'B', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'A', fromPort: 'out', toNodeId: 'B', toPort: 'in', edgeType: 'async' },
+        { id: 'e2', fromNodeId: 'B', fromPort: 'out', toNodeId: 'A', toPort: 'in', edgeType: 'async' },
+      ],
+    }
+    const errs = validateV2(asyncCycleDoc)
+    // Only node-level errors (if any), no cycle errors
+    expect(errs.filter((e) => e.message.toLowerCase().includes('cycle'))).toHaveLength(0)
+  })
+
+  it('validateV2 flags invalid fromPort when portRegistry provided', () => {
+    const reg: PortRegistry = new Map([
+      ['table', [{ name: 'selectedRow', direction: 'output' }]],
+      ['text', [{ name: 'setContent', direction: 'input' }]],
+    ])
+    const badPortDoc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'table', id: 'tbl', parentId: 'root' },
+        { element: 'text', id: 'txt', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'tbl', fromPort: 'nonexistentPort', toNodeId: 'txt', toPort: 'setContent', edgeType: 'reactive' },
+      ],
+    }
+    const errs = validateV2(badPortDoc, reg)
+    expect(errs.some((e) => e.message.includes('fromPort') || e.message.includes('nonexistentPort'))).toBe(true)
+  })
+
+  it('diffV2 detects added and removed edges', () => {
+    const from: AuraDocumentV2 = { nodes: sampleDoc.nodes, edges: [] }
+    const to: AuraDocumentV2 = sampleDoc
+    const ops = diffV2(from, to)
+    expect(ops.some((o) => o.op === 'add_edge')).toBe(true)
+
+    const ops2 = diffV2(to, from)
+    expect(ops2.some((o) => o.op === 'remove_edge')).toBe(true)
+  })
+
+  it('applyDiffV2 applies add_edge, remove_edge, update_edge ops', () => {
+    const from: AuraDocumentV2 = { nodes: sampleDoc.nodes, edges: [] }
+    const ops = diffV2(from, sampleDoc)
+    const result = applyDiffV2(from, ops)
+    expect(result.edges).toHaveLength(1)
+    expect(result.edges[0].id).toBe('e1')
+
+    const ops2 = diffV2(sampleDoc, from)
+    const result2 = applyDiffV2(sampleDoc, ops2)
+    expect(result2.edges).toHaveLength(0)
   })
 })

@@ -59,6 +59,14 @@ export interface PropDef {
 
 export type PropSchema = Record<string, PropDef>
 
+export interface PortDef {
+  name: string
+  direction: 'input' | 'output'
+  dataType: 'string' | 'number' | 'boolean' | 'date' | 'object' | 'array' | 'trigger' | 'void'
+  description: string
+  dynamic?: boolean  // true → additional ports generated at runtime from widget config
+}
+
 // Per-widget prop schemas — these drive both the inspector panel and the
 // AI system-prompt context so the model knows which props are valid.
 export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
@@ -128,6 +136,8 @@ export interface WidgetMeta {
   propSchema: PropSchema
   /** Hints for dashboard-oriented query generation (Phase 6). */
   dashboardHint: DashboardQueryHint
+  /** Port schema for Flow View wiring (Phase 1 dual-layer canvas). */
+  ports: PortDef[]
 }
 
 export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
@@ -143,6 +153,14 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       description: 'Feed with a SELECT query returning multiple rows.',
       exampleSQL: 'SELECT * FROM {{table}} ORDER BY created_at DESC LIMIT 100',
     },
+    ports: [
+      { name: 'selectedRow', direction: 'output', dataType: 'object', description: 'Currently selected row object' },
+      { name: 'rows', direction: 'output', dataType: 'array', description: 'All rows currently displayed in the table' },
+      { name: 'selectedRowIndex', direction: 'output', dataType: 'number', description: 'Zero-based index of the selected row' },
+      { name: 'refresh', direction: 'input', dataType: 'trigger', description: 'Trigger a data refresh' },
+      { name: 'setRows', direction: 'input', dataType: 'array', description: 'Override the displayed rows' },
+      { name: 'setFilter', direction: 'input', dataType: 'object', description: 'Apply a filter object to the table' },
+    ],
   },
   form: {
     type: 'form',
@@ -155,6 +173,14 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       pattern: 'none',
       description: 'Forms do not consume a query; they produce data on submit.',
     },
+    ports: [
+      { name: 'values', direction: 'output', dataType: 'object', description: 'Current form field values as an object' },
+      { name: 'submitted', direction: 'output', dataType: 'trigger', description: 'Triggered when the form is submitted' },
+      { name: '*', direction: 'output', dataType: 'string', description: 'One port per form field, keyed by field name', dynamic: true },
+      { name: 'reset', direction: 'input', dataType: 'trigger', description: 'Reset the form to initial values' },
+      { name: 'setValues', direction: 'input', dataType: 'object', description: 'Populate form fields programmatically' },
+      { name: 'setErrors', direction: 'input', dataType: 'object', description: 'Set validation error messages on fields' },
+    ],
   },
   text: {
     type: 'text',
@@ -167,6 +193,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       pattern: 'none',
       description: 'Text widgets display static or expression-bound content.',
     },
+    ports: [
+      { name: 'content', direction: 'output', dataType: 'string', description: 'Current rendered text content as a string' },
+      { name: 'setContent', direction: 'input', dataType: 'string', description: 'Override the displayed text content' },
+    ],
   },
   button: {
     type: 'button',
@@ -179,6 +209,12 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       pattern: 'none',
       description: 'Buttons trigger workflow actions; they do not consume queries.',
     },
+    ports: [
+      { name: 'clicked', direction: 'output', dataType: 'trigger', description: 'Triggered when the button is clicked' },
+      { name: 'clickedAt', direction: 'output', dataType: 'date', description: 'Timestamp of the last click' },
+      { name: 'setDisabled', direction: 'input', dataType: 'boolean', description: 'Enable or disable the button' },
+      { name: 'setLabel', direction: 'input', dataType: 'string', description: 'Override the button label text' },
+    ],
   },
   chart: {
     type: 'chart',
@@ -192,6 +228,11 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       description: 'Feed with a grouped query that returns label/value rows suitable for a bar chart.',
       exampleSQL: 'SELECT {{labelColumn}} AS label, COUNT(*) AS value FROM {{table}} GROUP BY {{labelColumn}} ORDER BY {{labelColumn}}',
     },
+    ports: [
+      { name: 'selectedPoint', direction: 'output', dataType: 'object', description: 'Currently selected chart data point' },
+      { name: 'setData', direction: 'input', dataType: 'array', description: 'Override the chart data array' },
+      { name: 'refresh', direction: 'input', dataType: 'trigger', description: 'Trigger a data refresh' },
+    ],
   },
   kpi: {
     type: 'kpi',
@@ -205,6 +246,11 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       description: 'Feed with a single-row aggregate query (COUNT, SUM, AVG, etc.).',
       exampleSQL: 'SELECT COUNT(*) AS value FROM {{table}}',
     },
+    ports: [
+      { name: 'value', direction: 'output', dataType: 'number', description: 'Current KPI numeric value' },
+      { name: 'setValue', direction: 'input', dataType: 'number', description: 'Override the KPI value' },
+      { name: 'setTrend', direction: 'input', dataType: 'string', description: 'Override the trend indicator value' },
+    ],
   },
   filter: {
     type: 'filter',
@@ -217,6 +263,12 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       pattern: 'none',
       description: 'Filter widgets hold end-user input that can be linked to table and chart widgets.',
     },
+    ports: [
+      { name: 'value', direction: 'output', dataType: 'string', description: 'Current filter input value' },
+      { name: 'selectedValue', direction: 'output', dataType: 'string', description: 'Currently selected option value' },
+      { name: 'setOptions', direction: 'input', dataType: 'array', description: 'Populate the dropdown options list' },
+      { name: 'setValue', direction: 'input', dataType: 'string', description: 'Set the current filter value programmatically' },
+    ],
   },
   container: {
     type: 'container',
@@ -229,6 +281,9 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       pattern: 'none',
       description: 'Containers are layout wrappers; data is bound to child widgets.',
     },
+    ports: [
+      { name: 'children', direction: 'input', dataType: 'array', description: 'Child widget slot (layout only)' },
+    ],
   },
   modal: {
     type: 'modal',
@@ -241,6 +296,11 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       pattern: 'none',
       description: 'Modals are UI wrappers; bind data to the widgets inside them.',
     },
+    ports: [
+      { name: 'closed', direction: 'output', dataType: 'trigger', description: 'Triggered when the modal is closed' },
+      { name: 'open', direction: 'input', dataType: 'trigger', description: 'Trigger to open the modal' },
+      { name: 'close', direction: 'input', dataType: 'trigger', description: 'Trigger to close the modal' },
+    ],
   },
   tabs: {
     type: 'tabs',
@@ -253,6 +313,11 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       pattern: 'none',
       description: 'Tabs are navigation wrappers; bind data to the widgets inside each tab.',
     },
+    ports: [
+      { name: 'activeTab', direction: 'output', dataType: 'string', description: 'Label of the currently active tab' },
+      { name: 'activeTabIndex', direction: 'output', dataType: 'number', description: 'Zero-based index of the active tab' },
+      { name: 'setActiveTab', direction: 'input', dataType: 'string', description: 'Programmatically set the active tab by label' },
+    ],
   },
   markdown: {
     type: 'markdown',
@@ -265,6 +330,86 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       pattern: 'none',
       description: 'Markdown widgets display static documentation or instructions.',
     },
+    ports: [
+      { name: 'setContent', direction: 'input', dataType: 'string', description: 'Override the markdown content' },
+    ],
+  },
+}
+
+// ---- Step node types (Flow View — dual-layer canvas Phase 1) ---------------
+
+export type StepNodeType =
+  | 'step:query'
+  | 'step:mutation'
+  | 'step:condition'
+  | 'step:approval_gate'
+  | 'step:notification'
+
+export interface StepNodeMeta {
+  type: StepNodeType
+  displayName: string
+  description: string
+  icon: string       // Lucide icon name
+  ports: PortDef[]
+}
+
+export const STEP_NODE_REGISTRY: Record<StepNodeType, StepNodeMeta> = {
+  'step:query': {
+    type: 'step:query',
+    displayName: 'Query',
+    description: 'Execute a read-only SQL query against a connector',
+    icon: 'Database',
+    ports: [
+      { name: 'params', direction: 'input', dataType: 'object', description: 'SQL parameters (one dynamic port per parameter)', dynamic: true },
+      { name: 'result', direction: 'output', dataType: 'object', description: 'Full query result object' },
+      { name: 'rows', direction: 'output', dataType: 'array', description: 'Array of result rows' },
+      { name: 'firstRow', direction: 'output', dataType: 'object', description: 'First row of the result set' },
+      { name: 'rowCount', direction: 'output', dataType: 'number', description: 'Number of rows returned' },
+    ],
+  },
+  'step:mutation': {
+    type: 'step:mutation',
+    displayName: 'Mutation',
+    description: 'Execute a write SQL statement (INSERT/UPDATE/DELETE)',
+    icon: 'PenLine',
+    ports: [
+      { name: 'params', direction: 'input', dataType: 'object', description: 'SQL parameters (one dynamic port per parameter)', dynamic: true },
+      { name: 'result', direction: 'output', dataType: 'object', description: 'Full mutation result object' },
+      { name: 'affectedRows', direction: 'output', dataType: 'number', description: 'Number of rows affected' },
+    ],
+  },
+  'step:condition': {
+    type: 'step:condition',
+    displayName: 'Condition',
+    description: 'Branch execution based on a boolean expression',
+    icon: 'GitBranch',
+    ports: [
+      { name: 'value', direction: 'input', dataType: 'object', description: 'Value to test' },
+      { name: 'compareTo', direction: 'input', dataType: 'object', description: 'Value to compare against' },
+      { name: 'trueBranch', direction: 'output', dataType: 'trigger', description: 'Triggered when condition is true' },
+      { name: 'falseBranch', direction: 'output', dataType: 'trigger', description: 'Triggered when condition is false' },
+    ],
+  },
+  'step:approval_gate': {
+    type: 'step:approval_gate',
+    displayName: 'Approval Gate',
+    description: 'Pause execution and wait for a human approval decision',
+    icon: 'ShieldCheck',
+    ports: [
+      { name: 'approved', direction: 'output', dataType: 'trigger', description: 'Triggered when the gate is approved' },
+      { name: 'rejected', direction: 'output', dataType: 'trigger', description: 'Triggered when the gate is rejected' },
+    ],
+  },
+  'step:notification': {
+    type: 'step:notification',
+    displayName: 'Notification',
+    description: 'Send a notification to a channel',
+    icon: 'Bell',
+    ports: [
+      { name: 'message', direction: 'input', dataType: 'string', description: 'Notification message body' },
+      { name: 'channel', direction: 'input', dataType: 'string', description: 'Target channel or recipient' },
+      { name: 'sent', direction: 'output', dataType: 'trigger', description: 'Triggered after the notification is sent' },
+    ],
   },
 }
 
@@ -280,4 +425,9 @@ export function listWidgets(): WidgetMeta[] {
   return Object.values(WIDGET_REGISTRY).sort((a, b) =>
     a.displayName.localeCompare(b.displayName),
   )
+}
+
+/** Returns the StepNodeMeta for a given step element name, or undefined. */
+export function getStepNode(element: string): StepNodeMeta | undefined {
+  return STEP_NODE_REGISTRY[element as StepNodeType]
 }

@@ -86,6 +86,11 @@ body {
   overflow-x: hidden;
 }
 
+/* Hide scrollbars on the canvas editor — panning replaces them */
+.canvas-scroll-container::-webkit-scrollbar {
+  display: none;
+}
+
 /* Safe min-width for the app shell — prevents layout collapse */
 #__next,
 [data-nextjs-scroll-focus-boundary] {

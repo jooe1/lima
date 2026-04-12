@@ -1,0 +1,2 @@
+ALTER TABLE apps DROP COLUMN IF EXISTS dsl_version;
+ALTER TABLE apps DROP COLUMN IF EXISTS dsl_edges;

@@ -90,7 +90,7 @@ func PatchApp(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		app, err := s.PatchApp(r.Context(), workspaceID, appID, req.Name, req.Description, req.DSLSource, req.NodeMetadata)
+		app, err := s.PatchApp(r.Context(), workspaceID, appID, req.Name, req.Description, req.DSLSource, req.NodeMetadata, nil, nil)
 		if err != nil {
 			handleStoreErr(w, err)
 			return

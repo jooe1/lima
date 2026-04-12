@@ -59,6 +59,23 @@ export interface AuraNode {
 
 export type AuraDocument = AuraNode[]
 
+export type EdgeType = 'reactive' | 'async'
+
+export interface AuraEdge {
+  id: string
+  fromNodeId: string   // widget ID or step node ID (e.g. "step_load_user")
+  fromPort: string     // output port name (e.g. "selectedRow", "result")
+  toNodeId: string
+  toPort: string       // input port name (e.g. "content", "sql_param.user_id")
+  edgeType: EdgeType
+  transform?: string   // optional JS expression; $ is the source value
+}
+
+export interface AuraDocumentV2 {
+  nodes: AuraNode[]
+  edges: AuraEdge[]
+}
+
 // ---- Parser ----------------------------------------------------------------
 
 /**
@@ -73,7 +90,6 @@ export type AuraDocument = AuraNode[]
  *                   | transform_clause | style_clause
  */
 export function parse(source: string): AuraDocument {
-  const nodes: AuraDocument = []
   const tokens = tokenise(source)
   let pos = 0
 
@@ -85,62 +101,169 @@ export function parse(source: string): AuraDocument {
     return t
   }
 
+  const nodes: AuraNode[] = []
   while (pos < tokens.length) {
     if (peek() === ';') { consume(); continue } // stray semicolon — skip
-
-    const element = consume()
-    const id = consume()
-    expect('@')
-    const parentId = consume()
-
-    const node: AuraNode = { element, id, parentId }
-
-    // Parse clauses until `;`
-    while (pos < tokens.length && peek() !== ';') {
-      const clause = consume()
-      switch (clause) {
-        case 'text':
-          node.text = consumeString(tokens, pos - 1, () => consume())
-          break
-        case 'value':
-          node.value = consumeString(tokens, pos - 1, () => consume())
-          break
-        case 'forEach':
-          node.forEach = consume()
-          break
-        case 'key':
-          node.key = consume()
-          break
-        case 'if':
-          node.if = consumeString(tokens, pos - 1, () => consume())
-          break
-        case 'with':
-          node.with = parseWithMap(tokens, () => peek(), () => consume())
-          break
-        case 'transform':
-          node.transform = consumeString(tokens, pos - 1, () => consume())
-          break
-        case 'action':
-          node.action = consume()
-          break
-        case 'widget_bindings':
-          node.widget_bindings = JSON.parse(consumeString(tokens, pos - 1, () => consume()))
-          break
-        case 'output_bindings':
-          node.output_bindings = JSON.parse(consumeString(tokens, pos - 1, () => consume()))
-          break
-        case 'style':
-          node.style = parseStyleBlock(tokens, () => peek(), () => consume(), expect)
-          break
-        default:
-          throw new ParseError(`unknown clause '${clause}' in node '${id}'`)
-      }
-    }
-    if (peek() === ';') consume()
-    nodes.push(node)
+    nodes.push(parseNode(tokens, peek, consume, expect, () => pos))
   }
 
   return nodes
+}
+
+/**
+ * parseV2 parses an Aura V2 DSL source string into an AuraDocumentV2.
+ *
+ * The source may optionally contain an `---edges---` separator:
+ *   <node statements>
+ *   ---edges---
+ *   <edge statements>
+ *
+ * Documents without `---edges---` are treated as having an empty edge list.
+ * Throws `ParseError` on syntax violations.
+ *
+ * Edge statement grammar:
+ *   edge <id> from <fromNodeId>.<fromPort> to <toNodeId>.<toPort> <edgeType> [transform <quotedExpr>] ;
+ *
+ * Notes:
+ * - `fromNodeId.fromPort` is a single token; split on the FIRST dot only
+ *   because toPort values can contain dots (e.g. `sql_param.user_id`).
+ * - Valid edgeType values are `reactive` and `async`.
+ */
+export function parseV2(source: string): AuraDocumentV2 {
+  const SENTINEL = '---edges---'
+  const sentinelIdx = source.indexOf(SENTINEL)
+
+  let nodeSource: string
+  let edgeSource: string
+
+  if (sentinelIdx === -1) {
+    nodeSource = source
+    edgeSource = ''
+  } else {
+    nodeSource = source.slice(0, sentinelIdx)
+    edgeSource = source.slice(sentinelIdx + SENTINEL.length)
+  }
+
+  // Parse nodes using the existing parser (backward-compatible)
+  const nodes = parse(nodeSource)
+
+  // Parse edges
+  const edges: AuraEdge[] = []
+  if (edgeSource.trim()) {
+    const tokens = tokeniseEdges(edgeSource)
+    let pos = 0
+
+    const peek = () => tokens[pos]
+    const consume = () => tokens[pos++]
+    const expect = (val: string) => {
+      const t = consume()
+      if (t !== val) throw new ParseError(`expected '${val}' in edge statement, got '${t}'`)
+      return t
+    }
+
+    while (pos < tokens.length) {
+      if (peek() === ';') { consume(); continue }
+
+      expect('edge')
+      const id = consume()
+      expect('from')
+
+      // fromNodeId.fromPort — split on first dot only
+      const fromToken = consume()
+      const firstDot = fromToken.indexOf('.')
+      if (firstDot === -1) throw new ParseError(`edge '${id}': from token '${fromToken}' must be in format 'nodeId.portName'`)
+      const fromNodeId = fromToken.slice(0, firstDot)
+      const fromPort = fromToken.slice(firstDot + 1)
+
+      expect('to')
+
+      // toNodeId.toPort — same: split on first dot only
+      const toToken = consume()
+      const toDot = toToken.indexOf('.')
+      if (toDot === -1) throw new ParseError(`edge '${id}': to token '${toToken}' must be in format 'nodeId.portName'`)
+      const toNodeId = toToken.slice(0, toDot)
+      const toPort = toToken.slice(toDot + 1)
+
+      const edgeTypeToken = consume()
+      if (edgeTypeToken !== 'reactive' && edgeTypeToken !== 'async') {
+        throw new ParseError(`edge '${id}': unknown edgeType '${edgeTypeToken}'; expected 'reactive' or 'async'`)
+      }
+      const edgeType = edgeTypeToken as EdgeType
+
+      const edge: AuraEdge = { id, fromNodeId, fromPort, toNodeId, toPort, edgeType }
+
+      // Optional transform clause
+      if (peek() === 'transform') {
+        consume()
+        edge.transform = consumeEdgeString(tokens, () => consume())
+      }
+
+      if (peek() === ';') consume()
+      edges.push(edge)
+    }
+  }
+
+  return { nodes, edges }
+}
+
+/** Parses a single node statement from the shared token stream. */
+function parseNode(
+  tokens: string[],
+  peek: () => string,
+  consume: () => string,
+  expect: (val: string) => string,
+  getPos: () => number,
+): AuraNode {
+  const element = consume()
+  const id = consume()
+  expect('@')
+  const parentId = consume()
+
+  const node: AuraNode = { element, id, parentId }
+
+  // Parse clauses until `;`
+  while (getPos() < tokens.length && peek() !== ';') {
+    const clause = consume()
+    switch (clause) {
+      case 'text':
+        node.text = consumeString(tokens, getPos() - 1, () => consume())
+        break
+      case 'value':
+        node.value = consumeString(tokens, getPos() - 1, () => consume())
+        break
+      case 'forEach':
+        node.forEach = consume()
+        break
+      case 'key':
+        node.key = consume()
+        break
+      case 'if':
+        node.if = consumeString(tokens, getPos() - 1, () => consume())
+        break
+      case 'with':
+        node.with = parseWithMap(tokens, () => peek(), () => consume())
+        break
+      case 'transform':
+        node.transform = consumeString(tokens, getPos() - 1, () => consume())
+        break
+      case 'action':
+        node.action = consume()
+        break
+      case 'widget_bindings':
+        node.widget_bindings = JSON.parse(consumeString(tokens, getPos() - 1, () => consume()))
+        break
+      case 'output_bindings':
+        node.output_bindings = JSON.parse(consumeString(tokens, getPos() - 1, () => consume()))
+        break
+      case 'style':
+        node.style = parseStyleBlock(tokens, () => peek(), () => consume(), expect)
+        break
+      default:
+        throw new ParseError(`unknown clause '${clause}' in node '${id}'`)
+    }
+  }
+  if (peek() === ';') consume()
+  return node
 }
 
 // ---- Serializer ------------------------------------------------------------
@@ -148,6 +271,23 @@ export function parse(source: string): AuraDocument {
 /** serialize converts an AuraDocument back to canonical DSL source. */
 export function serialize(doc: AuraDocument): string {
   return doc.map(serializeNode).join('\n')
+}
+
+/**
+ * serializeV2 converts an AuraDocumentV2 back to canonical V2 DSL source.
+ * If edges.length > 0, appends an `---edges---` section.
+ */
+export function serializeV2(doc: AuraDocumentV2): string {
+  const nodePart = doc.nodes.map(serializeNode).join('\n')
+  if (doc.edges.length === 0) return nodePart
+
+  const edgeLines = doc.edges.map((e) => {
+    let line = `edge ${e.id} from ${e.fromNodeId}.${e.fromPort} to ${e.toNodeId}.${e.toPort} ${e.edgeType}`
+    if (e.transform !== undefined) line += ` transform ${JSON.stringify(e.transform)}`
+    line += ' ;'
+    return line
+  })
+  return `${nodePart}\n---edges---\n${edgeLines.join('\n')}`
 }
 
 function serializeNode(n: AuraNode): string {
@@ -242,10 +382,26 @@ export function validate(doc: AuraDocument): ValidationError[] {
 
 // ---- Diff / merge ----------------------------------------------------------
 
+/**
+ * DiffOp represents a single change operation.
+ * NOTE: The addition of add_edge / remove_edge / update_edge variants is a
+ * minor breaking change: any exhaustive switch(op.op) over the original three
+ * variants will need a `default` branch or explicit handling of the new cases.
+ */
 export type DiffOp =
-  | { op: 'add'; node: AuraNode }
-  | { op: 'remove'; id: string }
-  | { op: 'update'; id: string; patch: Partial<AuraNode> }
+  | { op: 'add';         node: AuraNode }
+  | { op: 'remove';      id: string }
+  | { op: 'update';      id: string; patch: Partial<AuraNode> }
+  | { op: 'add_edge';    edge: AuraEdge }
+  | { op: 'remove_edge'; edgeId: string }
+  | { op: 'update_edge'; edgeId: string; patch: Partial<AuraEdge> }
+
+// ---- Port registry (structural — avoids importing from widget-catalog) ----
+
+/** Structural port descriptor for use in validateV2. */
+export interface PortRegistryEntry { name: string; direction: 'input' | 'output' }
+/** Map from element-type string (e.g. 'table', 'step:query') to port list. */
+export type PortRegistry = Map<string, readonly PortRegistryEntry[]>
 
 /**
  * diff computes the minimal set of operations to go from `from` to `to`.
@@ -298,10 +454,158 @@ export function applyDiff(doc: AuraDocument, ops: DiffOp[]): AuraDocument {
         if (existing) map.set(op.id, { ...existing, ...op.patch })
         break
       }
+      default:
+        // add_edge / remove_edge / update_edge — not applicable for AuraDocument ops
+        break
     }
   }
 
   return Array.from(map.values())
+}
+
+/**
+ * validateV2 validates an AuraDocumentV2 including edge references and
+ * optional port-registry checks. Also detects reactive cycles via Kahn's
+ * algorithm (async-only cycles are permitted).
+ */
+export function validateV2(doc: AuraDocumentV2, portRegistry?: PortRegistry): ValidationError[] {
+  const errors = validate(doc.nodes)
+
+  const nodeIds = new Set(doc.nodes.map((n) => n.id))
+  const nodeElementMap = new Map(doc.nodes.map((n) => [n.id, n.element]))
+
+  for (const edge of doc.edges) {
+    if (!nodeIds.has(edge.fromNodeId)) {
+      errors.push({ nodeId: edge.id, message: `edge '${edge.id}' references unknown fromNodeId '${edge.fromNodeId}'` })
+    }
+    if (!nodeIds.has(edge.toNodeId)) {
+      errors.push({ nodeId: edge.id, message: `edge '${edge.id}' references unknown toNodeId '${edge.toNodeId}'` })
+    }
+
+    if (portRegistry) {
+      const fromElement = nodeElementMap.get(edge.fromNodeId)
+      if (fromElement) {
+        const fromPorts = portRegistry.get(fromElement)
+        if (fromPorts) {
+          const found = fromPorts.some((p) => p.name === edge.fromPort && p.direction === 'output')
+          if (!found) {
+            errors.push({ nodeId: edge.id, message: `edge '${edge.id}': port '${edge.fromPort}' not found as output on '${fromElement}'` })
+          }
+        }
+      }
+      const toElement = nodeElementMap.get(edge.toNodeId)
+      if (toElement) {
+        const toPorts = portRegistry.get(toElement)
+        if (toPorts) {
+          const found = toPorts.some((p) => p.name === edge.toPort && p.direction === 'input')
+          if (!found) {
+            errors.push({ nodeId: edge.id, message: `edge '${edge.id}': port '${edge.toPort}' not found as input on '${toElement}'` })
+          }
+        }
+      }
+    }
+  }
+
+  // Reactive cycle detection via Kahn's algorithm on reactive edges only
+  const reactiveEdges = doc.edges.filter((e) => e.edgeType === 'reactive')
+  if (reactiveEdges.length > 0) {
+    // Build adjacency for nodeIds involved in reactive edges
+    const inDegree = new Map<string, number>()
+    const adj = new Map<string, string[]>()
+
+    for (const e of reactiveEdges) {
+      if (!adj.has(e.fromNodeId)) adj.set(e.fromNodeId, [])
+      adj.get(e.fromNodeId)!.push(e.toNodeId)
+      inDegree.set(e.toNodeId, (inDegree.get(e.toNodeId) ?? 0) + 1)
+      if (!inDegree.has(e.fromNodeId)) inDegree.set(e.fromNodeId, 0)
+    }
+
+    const queue: string[] = []
+    for (const [node, deg] of inDegree) {
+      if (deg === 0) queue.push(node)
+    }
+    let processed = 0
+    while (queue.length > 0) {
+      const node = queue.shift()!
+      processed++
+      for (const neighbor of (adj.get(node) ?? [])) {
+        const newDeg = (inDegree.get(neighbor) ?? 0) - 1
+        inDegree.set(neighbor, newDeg)
+        if (newDeg === 0) queue.push(neighbor)
+      }
+    }
+
+    if (processed < inDegree.size) {
+      // Find edges involved in cycle (nodes with remaining non-zero in-degree)
+      const cycleNodes = new Set<string>()
+      for (const [node, deg] of inDegree) {
+        if (deg > 0) cycleNodes.add(node)
+      }
+      for (const e of reactiveEdges) {
+        if (cycleNodes.has(e.fromNodeId) || cycleNodes.has(e.toNodeId)) {
+          errors.push({ nodeId: e.id, message: `reactive cycle detected involving edge '${e.id}'` })
+        }
+      }
+    }
+  }
+
+  return errors
+}
+
+/**
+ * diffV2 computes the minimal set of V2 operations to go from `from` to `to`.
+ */
+export function diffV2(from: AuraDocumentV2, to: AuraDocumentV2, opts?: { force?: boolean }): DiffOp[] {
+  const ops: DiffOp[] = diff(from.nodes, to.nodes, opts)
+
+  const fromEdgeMap = new Map(from.edges.map((e) => [e.id, e]))
+  const toEdgeMap = new Map(to.edges.map((e) => [e.id, e]))
+
+  for (const [id, toEdge] of toEdgeMap) {
+    const fromEdge = fromEdgeMap.get(id)
+    if (!fromEdge) {
+      ops.push({ op: 'add_edge', edge: toEdge })
+    } else {
+      const patch = edgePatch(fromEdge, toEdge)
+      if (Object.keys(patch).length > 0) {
+        ops.push({ op: 'update_edge', edgeId: id, patch })
+      }
+    }
+  }
+  for (const id of fromEdgeMap.keys()) {
+    if (!toEdgeMap.has(id)) ops.push({ op: 'remove_edge', edgeId: id })
+  }
+
+  return ops
+}
+
+/**
+ * applyDiffV2 applies a set of DiffOps to an AuraDocumentV2.
+ */
+export function applyDiffV2(doc: AuraDocumentV2, ops: DiffOp[]): AuraDocumentV2 {
+  const nodes = applyDiff(doc.nodes, ops)
+  const edgeMap = new Map(doc.edges.map((e) => [e.id, { ...e }]))
+
+  for (const op of ops) {
+    switch (op.op) {
+      case 'add_edge':
+        edgeMap.set(op.edge.id, op.edge)
+        break
+      case 'remove_edge':
+        edgeMap.delete(op.edgeId)
+        break
+      case 'update_edge': {
+        const existing = edgeMap.get(op.edgeId)
+        if (existing) edgeMap.set(op.edgeId, { ...existing, ...op.patch })
+        break
+      }
+      default:
+        // Node ops handled by applyDiff above
+        break
+    }
+  }
+
+  return { nodes, edges: Array.from(edgeMap.values()) }
 }
 
 // ---- Internal helpers ------------------------------------------------------
@@ -311,6 +615,14 @@ export class ParseError extends Error {
     super(msg)
     this.name = 'ParseError'
   }
+}
+
+function tokeniseEdges(source: string): string[] {
+  return tokenise(source)
+}
+
+function consumeEdgeString(_tokens: string[], consume: () => string): string {
+  return decodeStringToken(consume())
 }
 
 function tokenise(source: string): string[] {
@@ -406,3 +718,18 @@ function nodePatch(a: AuraNode, b: AuraNode): Partial<AuraNode> {
   }
   return patch
 }
+
+function edgePatch(a: AuraEdge, b: AuraEdge): Partial<AuraEdge> {
+  const patch: Partial<AuraEdge> = {}
+  const keys = Object.keys(b) as (keyof AuraEdge)[]
+  for (const k of keys) {
+    if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) {
+      // @ts-expect-error dynamic key assignment
+      patch[k] = b[k]
+    }
+  }
+  return patch
+}
+
+// Re-export reactive runtime (dual-layer canvas Phase 1)
+export * from './reactive'
