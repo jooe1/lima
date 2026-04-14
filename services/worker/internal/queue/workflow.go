@@ -26,7 +26,7 @@ import (
 type workflowRunEvent struct {
 	RunID  string         `json:"run_id"`
 	AppID  string         `json:"app_id"`
-	Status string         `json:"status"`   // "step_completed" | "completed" | "failed" | "awaiting_approval"
+	Status string         `json:"status"` // "step_completed" | "completed" | "failed" | "awaiting_approval"
 	StepID string         `json:"step_id,omitempty"`
 	Output map[string]any `json:"output,omitempty"`
 }
