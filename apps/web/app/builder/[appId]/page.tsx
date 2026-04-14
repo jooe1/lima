@@ -3,7 +3,7 @@
 import React, { use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { parse, serialize, type AuraDocument, type AuraNode } from '@lima/aura-dsl'
+import { parseV2, serializeV2, createReactiveStore, type AuraDocumentV2, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { useAuth } from '../../../lib/auth'
 import {
@@ -15,10 +15,15 @@ import {
 } from '../../../lib/api'
 import { useDocumentHistory } from './hooks/useDocumentHistory'
 import { useAutosave } from './hooks/useAutosave'
+import { useAppSSE } from './hooks/useAppSSE'
+import { processRunEvent } from './processRunEvent'
 import { CanvasEditor } from './CanvasEditor'
 import { ChatPanel } from './ChatPanel'
+import { FlowCanvas } from './FlowCanvas'
 import { Inspector } from './Inspector'
+import { StepConfigPanel } from './StepConfigPanel'
 import { LayersPanel } from './LayersPanel'
+import { StepPalette } from './StepPalette'
 import { VersionHistory } from './VersionHistory'
 import { WorkflowCanvas } from './WorkflowCanvas'
 import { WorkflowEditor } from './WorkflowEditor'
@@ -61,6 +66,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
   const [nodeMetadata, setNodeMetadata] = useState<Record<string, { manuallyEdited: boolean }>>({})
   const [showAdvancedBuilderControls, setShowAdvancedBuilderControls] = useState(false)
+  const [canvasView, setCanvasView] = useState<'layout' | 'flow'>('layout')
   const [showAppSettings, setShowAppSettings] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
@@ -69,6 +75,25 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const router = useRouter()
 
   const history = useDocumentHistory()
+  const reactiveStore = useMemo(() => createReactiveStore(), [])
+
+  // SSE event pipeline — wires step_completed outputs to the reactive store
+  const { lastEvent: sseLastEvent } = useAppSSE(workspace?.id ?? '', appId, !loading && !loadError)
+  const docRef = useRef(history.doc)
+  docRef.current = history.doc
+  const [runErrorWidgetId, setRunErrorWidgetId] = useState<string | null>(null)
+  const errorClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (!sseLastEvent || sseLastEvent.type !== 'workflow_run_update') return
+    const { triggerNodeId } = processRunEvent(sseLastEvent, docRef.current.edges, reactiveStore)
+    if (triggerNodeId) {
+      setRunErrorWidgetId(triggerNodeId)
+      if (errorClearRef.current) clearTimeout(errorClearRef.current)
+      errorClearRef.current = setTimeout(() => setRunErrorWidgetId(null), 5000)
+    }
+  }, [sseLastEvent]) // eslint-disable-line react-hooks/exhaustive-deps
+  // docRef.current and reactiveStore are stable refs — intentionally omitted
 
   function hydrateLoadedApp(nextApp: App) {
     setApp(nextApp)
@@ -76,12 +101,12 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
     if (!nextApp.dsl_source) {
       setLoadError('')
-      history.reset([])
+      history.reset({ nodes: [], edges: [] })
       return
     }
 
     try {
-      history.reset(parse(nextApp.dsl_source))
+      history.reset(parseV2(nextApp.dsl_source))
       setLoadError('')
     } catch (error: unknown) {
       console.error(`Failed to parse saved DSL for app ${nextApp.id}`, error)
@@ -136,6 +161,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
       if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); history.undo() }
       if (e.key === 'z' && e.shiftKey)  { e.preventDefault(); history.redo() }
       if (e.key === 'y')                 { e.preventDefault(); history.redo() }
+      if (e.shiftKey && e.key === 'F')   { e.preventDefault(); setCanvasView(v => v === 'layout' ? 'flow' : 'layout') }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
@@ -146,7 +172,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     const meta = WIDGET_REGISTRY[element as WidgetType]
     const dw = meta?.defaultSize.w ?? 4
     const dh = meta?.defaultSize.h ?? 3
-    const existingCount = history.doc.filter(n => n.element === element).length
+    const existingCount = history.doc.nodes.filter(n => n.element === element).length
     const newId = `${element}${existingCount + 1}`
     const newNode: AuraNode = {
       element,
@@ -160,7 +186,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
       },
     }
     setLoadError('')
-    history.set([...history.doc, newNode])
+    history.set({ nodes: [...history.doc.nodes, newNode], edges: history.doc.edges })
     setSelectedId(newId)
     markManual([newId])
   }, [history, markManual])
@@ -172,14 +198,14 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     const dh = meta?.defaultSize.h ?? 3
 
     let maxBottom = 0
-    for (const n of history.doc) {
+    for (const n of history.doc.nodes) {
       const s = n.style ?? {}
       const y = parseInt(s.gridY ?? '0', 10) || 0
       const h = parseInt(s.gridH ?? String(dh), 10) || dh
       maxBottom = Math.max(maxBottom, y + h)
     }
 
-    const existingCount = history.doc.filter(n => n.element === element).length
+    const existingCount = history.doc.nodes.filter(n => n.element === element).length
     const newId = `${element}${existingCount + 1}`
 
     const newNode: AuraNode = {
@@ -194,7 +220,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
       },
     }
     setLoadError('')
-    history.set([...history.doc, newNode])
+    history.set({ nodes: [...history.doc.nodes, newNode], edges: history.doc.edges })
     setSelectedId(newId)
     markManual([newId])
   }, [history, markManual])
@@ -202,7 +228,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   // Delete widget
   const handleDeleteWidget = useCallback((id: string) => {
     setLoadError('')
-    history.set(history.doc.filter(n => n.id !== id))
+    history.set({ nodes: history.doc.nodes.filter(n => n.id !== id), edges: history.doc.edges })
     if (selectedId === id) setSelectedId(null)
     setNodeMetadata(prev => {
       const next = { ...prev }
@@ -214,15 +240,15 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   // Update node props (from inspector)
   const handleUpdateNode = useCallback((updated: AuraNode) => {
     setLoadError('')
-    history.set(history.doc.map(n => n.id === updated.id ? updated : n))
+    history.set({ nodes: history.doc.nodes.map(n => n.id === updated.id ? updated : n), edges: history.doc.edges })
     markManual([updated.id])
   }, [history, markManual])
 
   // Canvas drag/resize changes — detect which nodes moved/resized and mark them
-  const handleCanvasChange = useCallback((newDoc: AuraDocument) => {
-    const oldDoc = history.doc
+  const handleCanvasChange = useCallback((newWidgetNodes: AuraNode[]) => {
+    const oldDoc = history.doc.nodes
     const changedIds: string[] = []
-    for (const newNode of newDoc) {
+    for (const newNode of newWidgetNodes) {
       const oldNode = oldDoc.find(n => n.id === newNode.id)
       if (
         !oldNode ||
@@ -236,13 +262,14 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     }
     setLoadError('')
     if (changedIds.length > 0) markManual(changedIds)
-    history.set(newDoc)
+    const stepAndGroupNodes = history.doc.nodes.filter(n => n.element.startsWith('step:') || n.element === 'flow:group')
+    history.set({ nodes: [...newWidgetNodes, ...stepAndGroupNodes], edges: history.doc.edges })
   }, [history, markManual])
 
   // Apply a canvas starter template — loads its pre-built nodes and marks them all as manually edited
   const handleApplyTemplate = useCallback((nodes: AuraNode[]) => {
     setLoadError('')
-    history.set(nodes)
+    history.set({ nodes, edges: [] })
     markManual(nodes.map(n => n.id))
     setSelectedId(null)
   }, [history, markManual])
@@ -303,7 +330,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     setPublishing(true)
     setPublishError('')
     try {
-      const source = serialize(history.doc)
+      const source = serializeV2(history.doc)
       const audiences = Object.entries(publishAudienceSelections).reduce<PublicationAudience[]>((next, [groupId, capability]) => {
         if (capability === 'discover' || capability === 'use') {
           next.push({ group_id: groupId, capability })
@@ -311,7 +338,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         return next
       }, [])
 
-      await patchApp(workspace.id, appId, { dsl_source: source })
+      await patchApp(workspace.id, appId, { dsl_source: source, dsl_edges: history.doc.edges })
       const version = await publishApp(workspace.id, appId)
       setApp(prev => prev ? { ...prev, status: 'published' } : prev)
       if (audiences.length > 0) {
@@ -330,12 +357,12 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     }
   }
 
-  const selectedNode = history.doc.find(n => n.id === selectedId) ?? null
-  const publishIssues = useMemo(() => getAppProductionIssues(history.doc), [history.doc])
+  const selectedNode = history.doc.nodes.find(n => n.id === selectedId) ?? null
+  const publishIssues = useMemo(() => getAppProductionIssues(history.doc.nodes), [history.doc.nodes])
   const publishBlocked = publishIssues.length > 0
   const publishBlockerMessage = publishBlocked ? formatProductionIssues(publishIssues) : ''
-  const userFacingBlockers = useMemo(() => getUserFacingProductionIssues(history.doc), [history.doc])
-  const workflowTriggerTargets = history.doc
+  const userFacingBlockers = useMemo(() => getUserFacingProductionIssues(history.doc.nodes), [history.doc.nodes])
+  const workflowTriggerTargets = history.doc.nodes
     .filter(node => node.id !== 'root')
     .map(node => {
       const fields = node.element === 'form'
@@ -411,6 +438,30 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               ? `Saved ${savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
               : ''}
         </span>
+
+        {/* Canvas view toggle: Layout | Flow */}
+        <div style={{ display: 'flex', gap: 0 }}>
+          {(['layout', 'flow'] as const).map(view => (
+            <button
+              key={view}
+              onClick={() => setCanvasView(view)}
+              title={view === 'layout' ? 'Layout View' : 'Flow View (Ctrl+Shift+F)'}
+              style={{
+                padding: '3px 10px',
+                fontSize: '0.65rem',
+                fontWeight: 500,
+                background: canvasView === view ? '#161616' : 'transparent',
+                border: '1px solid #1e1e1e',
+                borderRadius: view === 'layout' ? '4px 0 0 4px' : '0 4px 4px 0',
+                color: canvasView === view ? '#e5e5e5' : '#555',
+                cursor: 'pointer',
+                borderBottom: canvasView === view ? '2px solid #3b82f6' : '1px solid #1e1e1e',
+              }}
+            >
+              {view === 'layout' ? '⊞ Layout' : '⟢ Flow'}
+            </button>
+          ))}
+        </div>
 
         {/* Publications */}
         <button
@@ -630,37 +681,62 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
       {/* ── Body ── */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
-        <LayersPanel
-          doc={history.doc}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onAdd={handleAddWidget}
-          onDelete={handleDeleteWidget}
-          workspaceId={workspace?.id ?? ''}
-        />
-        <CanvasEditor
-          doc={history.doc}
-          selectedId={selectedId}
-          onChange={handleCanvasChange}
-          onSelect={setSelectedId}
-          onApplyTemplate={handleApplyTemplate}
-          workspaceId={workspace?.id ?? ''}
-          highlightedWidgetIds={highlightedWidgetIds}
-          onDropWidget={handleDropWidget}
-        />
-        {/* Right panel: Inspector, AI Chat, or Workflows */}
-        {rightPanel === 'inspector' ? (
-          <Inspector
-            node={selectedNode}
-            doc={history.doc}
-            onUpdate={handleUpdateNode}
+        {canvasView === 'flow' ? (
+          <StepPalette />
+        ) : (
+          <LayersPanel
+            doc={history.doc.nodes}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onAdd={handleAddWidget}
             onDelete={handleDeleteWidget}
             workspaceId={workspace?.id ?? ''}
-            appId={appId}
-            pageId={appId}
-            onOpenCanvas={setCanvasWorkflowId}
-            onOpenSplitView={setSplitViewWorkflowId}
           />
+        )}
+        {canvasView === 'flow' ? (
+          <FlowCanvas
+            doc={history.doc}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onChange={d => history.set(d)}
+            workspaceId={workspace?.id ?? ''}
+            reactiveStore={reactiveStore}
+          />
+        ) : (
+          <CanvasEditor
+            doc={history.doc.nodes.filter(n => !n.element.startsWith('step:') && n.element !== 'flow:group')}
+            selectedId={selectedId}
+            onChange={handleCanvasChange}
+            onSelect={setSelectedId}
+            onApplyTemplate={handleApplyTemplate}
+            workspaceId={workspace?.id ?? ''}
+            highlightedWidgetIds={[...highlightedWidgetIds, ...(runErrorWidgetId ? [runErrorWidgetId] : [])]}
+            onDropWidget={handleDropWidget}
+          />
+        )}
+        {/* Right panel: Inspector, Step Config, AI Chat, or Workflows */}
+        {rightPanel === 'inspector' ? (
+          selectedNode?.element.startsWith('step:') ? (
+            <StepConfigPanel
+              node={selectedNode}
+              onUpdate={handleUpdateNode}
+              onDelete={id => { handleDeleteWidget(id); setSelectedId(null) }}
+              workspaceId={workspace?.id ?? ''}
+            />
+          ) : (
+            <Inspector
+              node={selectedNode}
+              doc={history.doc}
+              onUpdate={handleUpdateNode}
+              onDelete={handleDeleteWidget}
+              workspaceId={workspace?.id ?? ''}
+              appId={appId}
+              pageId={appId}
+              onOpenCanvas={setCanvasWorkflowId}
+              onOpenSplitView={setSplitViewWorkflowId}
+              onSwitchToFlowView={() => setCanvasView('flow')}
+            />
+          )
         ) : rightPanel === 'chat' && workspace ? (
           <div style={{ width: 280, flexShrink: 0 }}>
             <ChatPanel
@@ -669,7 +745,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               onDSLUpdate={src => {
                 try {
                   setLoadError('')
-                  history.set(parse(src))
+                  history.set(parseV2(src))
                 } catch {
                   /* ignore invalid DSL */
                 }
@@ -860,7 +936,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           pageId={appId}
           onClose={() => setSplitViewWorkflowId(null)}
           onPopOut={(wfId) => { setSplitViewWorkflowId(null); setFloatingPanelWorkflowId(wfId) }}
-          pageDocument={history.doc}
+          pageDocument={history.doc.nodes}
           isAdmin={user?.role === 'workspace_admin'}
           onBindingWidgetsChange={setHighlightedWidgetIds}
         />
@@ -873,7 +949,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           workspaceId={workspace.id}
           appId={appId}
           pageId={appId}
-          pageDocument={history.doc}
+          pageDocument={history.doc.nodes}
           isAdmin={user?.role === 'workspace_admin'}
           onClose={() => setFloatingPanelWorkflowId(null)}
           onSnapBack={() => { setSplitViewWorkflowId(floatingPanelWorkflowId); setFloatingPanelWorkflowId(null) }}

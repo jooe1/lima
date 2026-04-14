@@ -31,6 +31,7 @@ import {
   ApiError,
 } from '../../../lib/api'
 import { useAuth } from '../../../lib/auth'
+import { useAppSSE } from './hooks/useAppSSE'
 
 // ---- colour palette (matches the dark builder theme) -----------------------
 const C = {
@@ -350,16 +351,30 @@ export function WorkflowEditor({ appId, triggerTargets = [], onOpenCanvas, onOpe
     }
   }, [workspace, appId])
 
+  // SSE — real-time run status updates
+  const { connected: sseConnected, lastEvent: sseLastEvent } = useAppSSE(
+    workspace?.id ?? '',
+    appId,
+    !!selected?.id,
+  )
+
+  useEffect(() => {
+    if (!sseLastEvent || sseLastEvent.type !== 'workflow_run_update' || !selected?.id) return
+    void refreshRuns(selected.id, true)
+  }, [sseLastEvent, selected?.id, refreshRuns])
+
   useEffect(() => {
     if (!selected?.id) return
     if (!runs.some(run => ACTIVE_RUN_STATUSES.includes(run.status))) return
 
-    const intervalId = window.setInterval(() => {
-      void refreshRuns(selected.id, true)
-    }, 3000)
-
-    return () => window.clearInterval(intervalId)
-  }, [selected?.id, runs, refreshRuns])
+    // Fallback polling when SSE is disconnected and there are active runs
+    if (!sseConnected) {
+      const intervalId = window.setInterval(() => {
+        void refreshRuns(selected.id, true)
+      }, 5000)
+      return () => window.clearInterval(intervalId)
+    }
+  }, [selected?.id, runs, refreshRuns, sseConnected])
 
   // Create new workflow
   const handleCreate = useCallback(async () => {

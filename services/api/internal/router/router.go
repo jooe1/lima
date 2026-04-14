@@ -141,6 +141,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).
 							Get("/preview", handler.PreviewDraftApp(s, log))
 
+						// App event stream — end_user access (applied by outer middleware)
+						r.Get("/events", handler.AppEvents(s, rdb, log))
+
 						// Publications (Phase 7)
 						r.Route("/publications", func(r chi.Router) {
 							r.Get("/", handler.ListPublications(s, log))

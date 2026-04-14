@@ -47,7 +47,7 @@ func TestResumeWorkflowRunApprovedPostgresMutation(t *testing.T) {
 	approvalID := workflowIntegrationExecuteAndAwaitApproval(t, fixture)
 	workflowIntegrationSetApprovalStatus(t, fixture, approvalID, "approved")
 
-	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
+	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
 		t.Fatalf("resumeWorkflowRun() error = %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestResumeWorkflowRunApprovalNotApprovedFailsClosed(t *testing.T) {
 		approvalID := workflowIntegrationExecuteAndAwaitApproval(t, fixture)
 		workflowIntegrationSetApprovalStatus(t, fixture, approvalID, "rejected")
 
-		if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, approvalID, false); err != nil {
+		if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, approvalID, false); err != nil {
 			t.Fatalf("resumeWorkflowRun() error = %v", err)
 		}
 
@@ -118,7 +118,7 @@ func TestResumeWorkflowRunApprovalNotApprovedFailsClosed(t *testing.T) {
 
 		approvalID := workflowIntegrationExecuteAndAwaitApproval(t, fixture)
 
-		if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
+		if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
 			t.Fatalf("resumeWorkflowRun() error = %v", err)
 		}
 
@@ -137,7 +137,7 @@ func TestResumeWorkflowRunConnectorLookupFailureFailsClosed(t *testing.T) {
 	workflowIntegrationSetApprovalStatus(t, fixture, approvalID, "approved")
 	workflowIntegrationExec(t, fixture.ctx, fixture.pool, `DELETE FROM connectors WHERE id = $1`, fixture.ids.connector)
 
-	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
+	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
 		t.Fatalf("resumeWorkflowRun() error = %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestResumeWorkflowRunApprovalPayloadDecryptionFailureFailsClosed(t *testing
 		approvalID, []byte("short"),
 	)
 
-	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
+	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
 		t.Fatalf("resumeWorkflowRun() error = %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestResumeWorkflowRunApprovalPayloadRunIntegrityMismatchFailsClosed(t *test
 		}),
 	)
 
-	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
+	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
 		t.Fatalf("resumeWorkflowRun() error = %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestResumeWorkflowRunConnectorCredentialDecryptionFailureFailsClosed(t *tes
 		fixture.ids.connector, []byte("short"),
 	)
 
-	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
+	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
 		t.Fatalf("resumeWorkflowRun() error = %v", err)
 	}
 
@@ -230,7 +230,7 @@ func TestResumeWorkflowRunMutationFailureRollsBackAndPersistsRunFailure(t *testi
 	approvalID := workflowIntegrationExecuteAndAwaitApproval(t, fixture)
 	workflowIntegrationSetApprovalStatus(t, fixture, approvalID, "approved")
 
-	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
+	if err := resumeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, approvalID, true); err != nil {
 		t.Fatalf("resumeWorkflowRun() error = %v", err)
 	}
 
@@ -355,7 +355,7 @@ func workflowIntegrationOpenPool(t *testing.T) (context.Context, *pgxpool.Pool, 
 func workflowIntegrationExecuteAndAwaitApproval(t *testing.T, fixture *workflowIntegrationMutationFixture) string {
 	t.Helper()
 
-	if err := executeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, fixture.ids.workflow); err != nil {
+	if err := executeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, fixture.ids.workflow); err != nil {
 		t.Fatalf("executeWorkflowRun() error = %v", err)
 	}
 
@@ -632,7 +632,7 @@ type workflowIntegrationOutputBindingFixture struct {
 func TestExecuteWorkflowRunOutputBindingsStoredInOutputData(t *testing.T) {
 	fixture := workflowIntegrationNewOutputBindingFixture(t)
 
-	if err := executeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, zap.NewNop(), fixture.ids.run, fixture.ids.workflow); err != nil {
+	if err := executeWorkflowRun(fixture.ctx, fixture.cfg, fixture.pool, nil, zap.NewNop(), fixture.ids.run, fixture.ids.workflow); err != nil {
 		t.Fatalf("executeWorkflowRun() error = %v", err)
 	}
 

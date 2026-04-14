@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { serialize, type AuraDocument } from '@lima/aura-dsl'
+import { serializeV2, type AuraDocumentV2 } from '@lima/aura-dsl'
 
 type NodeMetadataMap = Record<string, { manuallyEdited: boolean }>
 
@@ -11,7 +11,7 @@ type NodeMetadataMap = Record<string, { manuallyEdited: boolean }>
  * loaded).
  */
 export function useAutosave(
-  doc: AuraDocument,
+  doc: AuraDocumentV2,
   nodeMetadata: NodeMetadataMap,
   onSave: ((source: string, nodeMetadata: NodeMetadataMap) => Promise<void>) | undefined,
   delay = 1500,
@@ -29,14 +29,14 @@ export function useAutosave(
 
   useEffect(() => {
     if (!onSaveRef.current) return
-    const source = serialize(doc)
+    const source = serializeV2(doc)
     const combined = source + '\x00' + JSON.stringify(nodeMetadata)
     if (combined === lastSavedRef.current) return
 
     if (timerRef.current) clearTimeout(timerRef.current)
 
     timerRef.current = setTimeout(async () => {
-      const currentSource = serialize(doc)
+      const currentSource = serializeV2(doc)
       const currentCombined = currentSource + '\x00' + JSON.stringify(nodeMetadataRef.current)
       if (currentCombined === lastSavedRef.current || !onSaveRef.current) return
       setSaving(true)

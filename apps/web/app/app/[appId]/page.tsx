@@ -2,7 +2,7 @@
 
 import { use, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { parse } from '@lima/aura-dsl'
+import { parseV2 } from '@lima/aura-dsl'
 import { useAuth } from '../../../lib/auth'
 import { getPublishedApp, type AppVersion, ApiError } from '../../../lib/api'
 import { RuntimeRenderer } from './RuntimeRenderer'
@@ -142,10 +142,14 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
   }
 
   let doc: import('@lima/aura-dsl').AuraDocument = []
+  let edges: import('@lima/aura-dsl').AuraEdge[] = []
   try {
-    doc = version.dsl_source ? parse(version.dsl_source) : []
+    const parsed = version.dsl_source ? parseV2(version.dsl_source) : { nodes: [], edges: [] }
+    doc = parsed.nodes
+    edges = parsed.edges
   } catch {
     doc = []
+    edges = []
   }
 
   return (
@@ -186,7 +190,7 @@ export default function RuntimeAppPage({ params }: { params: Promise<{ appId: st
 
       {/* Canvas */}
       <main id="runtime-content" style={{ flex: 1, overflow: 'auto', background: '#080808' }}>
-        <RuntimeRenderer doc={doc} workspaceId={activeWorkspaceId} appId={appId} />
+        <RuntimeRenderer doc={doc} edges={edges} workspaceId={activeWorkspaceId} appId={appId} />
       </main>
     </div>
   )

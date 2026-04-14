@@ -1,7 +1,7 @@
 'use client'
 
-import React, { useEffect, useState } from 'react'
-import { type AuraDocument, type AuraNode } from '@lima/aura-dsl'
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { type AuraDocument, type AuraEdge, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { runConnectorQuery, type DashboardQueryResponse } from '../../../lib/api'
 import { getMissingRequiredProps, hasConnectorBinding, isProductionReadyWidget, isSupportedChartType } from '../../../lib/appValidation'
@@ -14,8 +14,153 @@ const CELL = 40
 
 interface Props {
   doc: AuraDocument
+  edges: AuraEdge[]
   workspaceId: string
   appId: string
+}
+
+// ---- Client-side flow execution engine ------------------------------------
+
+/** portValues['widgetId']['portName'] = value written by the flow engine */
+type PortValues = Record<string, Record<string, unknown>>
+
+interface FlowEngine {
+  portValues: PortValues
+  /** Fire an output port (widget click, form submit, step output) and run downstream. */
+  firePort: (nodeId: string, portName: string, value: unknown) => Promise<void>
+}
+
+const FlowEngineContext = React.createContext<FlowEngine>({
+  portValues: {},
+  firePort: async () => {},
+})
+
+function useFlowEngine() {
+  return useContext(FlowEngineContext)
+}
+
+/** Safely evaluate a JS expression string with $input bound to the given value. */
+function evalExpression(expression: string, $input: unknown): unknown {
+  try {
+    // eslint-disable-next-line no-new-func
+    return new Function('$input', `return (${expression})`)($input)
+  } catch {
+    return $input
+  }
+}
+
+function FlowEngineProvider({
+  nodes,
+  edges,
+  workspaceId,
+  children,
+}: {
+  nodes: AuraNode[]
+  edges: AuraEdge[]
+  workspaceId: string
+  children: React.ReactNode
+}) {
+  const [portValues, setPortValues] = useState<PortValues>({})
+
+  // Build a lookup: "nodeId.portName" -> edges leaving that port
+  const edgeMap = useMemo(() => {
+    const map = new Map<string, AuraEdge[]>()
+    for (const edge of edges) {
+      const key = `${edge.fromNodeId}.${edge.fromPort}`
+      const list = map.get(key) ?? []
+      list.push(edge)
+      map.set(key, list)
+    }
+    return map
+  }, [edges])
+
+  // Node lookup by id
+  const nodeMap = useMemo(() => {
+    const map = new Map<string, AuraNode>()
+    for (const n of nodes) map.set(n.id, n)
+    return map
+  }, [nodes])
+
+  // firePort is stable across renders; use refs to access latest state
+  const edgeMapRef = useRef(edgeMap)
+  const nodeMapRef = useRef(nodeMap)
+  const workspaceIdRef = useRef(workspaceId)
+  useEffect(() => { edgeMapRef.current = edgeMap }, [edgeMap])
+  useEffect(() => { nodeMapRef.current = nodeMap }, [nodeMap])
+  useEffect(() => { workspaceIdRef.current = workspaceId }, [workspaceId])
+
+  const setPort = useCallback((nodeId: string, portName: string, value: unknown) => {
+    setPortValues(prev => ({
+      ...prev,
+      [nodeId]: { ...(prev[nodeId] ?? {}), [portName]: value },
+    }))
+  }, [])
+
+  const firePort = useCallback(async (nodeId: string, portName: string, value: unknown): Promise<void> => {
+    const downstreamEdges = edgeMapRef.current.get(`${nodeId}.${portName}`) ?? []
+    for (const edge of downstreamEdges) {
+      const targetNode = nodeMapRef.current.get(edge.toNodeId)
+      if (!targetNode) continue
+
+      if (targetNode.element.startsWith('step:')) {
+        // Execute the step and fire its output port(s)
+        const stepType = targetNode.element
+        const w = targetNode.with ?? {}
+
+        if (stepType === 'step:transform') {
+          const expression = String(w.expression ?? '$input')
+          const result = evalExpression(expression, value)
+          await firePort(targetNode.id, 'output', result)
+
+        } else if (stepType === 'step:query' || stepType === 'step:mutation') {
+          try {
+            const connectorId = String(w.connector ?? '')
+            const sql = String(w.sql ?? '')
+            if (connectorId && sql) {
+              const { runConnectorQuery: runQuery } = await import('../../../lib/api')
+              const res = await runQuery(workspaceIdRef.current, connectorId, { sql })
+              await firePort(targetNode.id, 'result', res.rows ?? [])
+            }
+          } catch { /* step error — stop chain */ }
+
+        } else if (stepType === 'step:http') {
+          try {
+            const method = String(w.method ?? 'GET')
+            const url = String(w.url ?? '')
+            if (url) {
+              const res = await fetch(url, {
+                method,
+                headers: w.headers ? JSON.parse(String(w.headers)) : undefined,
+                body: method !== 'GET' && w.body ? String(w.body) : undefined,
+              })
+              const json = await res.json().catch(() => null)
+              await firePort(targetNode.id, 'responseBody', json)
+              await firePort(targetNode.id, 'status', res.status)
+              await firePort(targetNode.id, res.ok ? 'ok' : 'error', json)
+            }
+          } catch { /* network error */ }
+
+        } else if (stepType === 'step:condition') {
+          const expression = String(w.expression ?? 'false')
+          const result = Boolean(evalExpression(expression, value))
+          await firePort(targetNode.id, result ? 'true' : 'false', value)
+        }
+        // step:approval_gate and step:notification have no client-side execution
+
+      } else {
+        // It's a widget — write the value to its incoming port
+        setPort(edge.toNodeId, edge.toPort, value)
+      }
+    }
+  }, [setPort])
+
+  const engine = useMemo(() => ({ portValues, firePort }), [portValues, firePort])
+
+  return (
+    <FlowEngineContext.Provider value={engine}>
+      {children}
+    </FlowEngineContext.Provider>
+  )
 }
 
 /** Reads grid placement from an AuraNode's style map. */
@@ -32,7 +177,7 @@ function getGrid(node: AuraNode) {
   }
 }
 
-export function RuntimeRenderer({ doc, workspaceId, appId }: Props) {
+export function RuntimeRenderer({ doc, edges, workspaceId, appId }: Props) {
   const canvasWidth = React.useMemo(() => {
     let maxRight = 10
     for (const n of doc) {
@@ -56,6 +201,7 @@ export function RuntimeRenderer({ doc, workspaceId, appId }: Props) {
   }
 
   return (
+    <FlowEngineProvider nodes={doc} edges={edges} workspaceId={workspaceId}>
     <DashboardFilterProvider>
       <div
         style={{
@@ -72,7 +218,7 @@ export function RuntimeRenderer({ doc, workspaceId, appId }: Props) {
             margin: '0 auto',
           }}
         >
-          {doc.map(node => {
+          {doc.filter(node => !node.element.startsWith('step:') && !node.element.startsWith('flow:')).map(node => {
             const g = getGrid(node)
             return (
               <div
@@ -96,6 +242,7 @@ export function RuntimeRenderer({ doc, workspaceId, appId }: Props) {
         </div>
       </div>
     </DashboardFilterProvider>
+    </FlowEngineProvider>
   )
 }
 
@@ -181,7 +328,9 @@ function RuntimeText({ node }: { node: AuraNode }) {
   const missing = getMissingRequiredProps(node)
   if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
 
-  const content = node.text ?? node.value ?? ''
+  const { portValues } = useFlowEngine()
+  const dynamicContent = portValues[node.id]?.['setContent']
+  const content = dynamicContent !== undefined ? String(dynamicContent) : (node.text ?? node.value ?? '')
   const variant = node.style?.variant ?? 'body'
   const fz = variant === 'heading1' ? '1.5rem' : variant === 'heading2' ? '1.125rem' : variant === 'caption' ? '0.75rem' : '0.875rem'
   const fw = variant === 'heading1' || variant === 'heading2' ? 700 : 400
@@ -200,6 +349,7 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
   const [status, setStatus] = useState<'idle' | 'pending' | 'done' | 'error'>('idle')
   const [statusMessage, setStatusMessage] = useState('')
   const { bumpRefreshSeq } = useDashboardFilters()
+  const { firePort } = useFlowEngine()
   const variant = node.style?.variant ?? 'primary'
   const bg = variant === 'danger' ? '#7f1d1d' : variant === 'secondary' ? '#1a1a1a' : '#1d4ed8'
   const hoverBg = variant === 'danger' ? '#991b1b' : variant === 'secondary' ? '#252525' : '#1e40af'
@@ -220,13 +370,9 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
           bumpRefreshSeq()
         }
       } else {
-        const { createApproval } = await import('../../../lib/api')
-        await createApproval(workspaceId, {
-          app_id: appId,
-          description: `Button action: ${node.text ?? node.id}`,
-          payload: { node_id: node.id, element: node.element, app_id: appId },
-        })
-        setStatusMessage('Submitted for review')
+        // Fire the flow engine for this button's clicked port
+        await firePort(node.id, 'clicked', true)
+        bumpRefreshSeq()
       }
       setStatus('done')
       setTimeout(() => { setStatus('idle'); setStatusMessage('') }, 3000)

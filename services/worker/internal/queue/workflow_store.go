@@ -68,6 +68,7 @@ type wfDefinition struct {
 	id               string
 	workspaceID      string
 	appID            string
+	dslVersion       int
 	requiresApproval bool
 	outputBindings   []outputBinding
 	steps            []wfStep
@@ -107,10 +108,13 @@ func getWorkflowDefinition(ctx context.Context, pool *pgxpool.Pool, workflowID s
 	var def wfDefinition
 	var outputBindingsBytes []byte
 	err := pool.QueryRow(ctx, `
-		SELECT id, workspace_id, app_id, requires_approval, output_bindings
-		FROM workflows WHERE id = $1`,
+		SELECT w.id, w.workspace_id, w.app_id, w.requires_approval, w.output_bindings,
+		       COALESCE(a.dsl_version, 1)
+		FROM workflows w
+		LEFT JOIN apps a ON a.id = w.app_id
+		WHERE w.id = $1`,
 		workflowID,
-	).Scan(&def.id, &def.workspaceID, &def.appID, &def.requiresApproval, &outputBindingsBytes)
+	).Scan(&def.id, &def.workspaceID, &def.appID, &def.requiresApproval, &outputBindingsBytes, &def.dslVersion)
 	if err != nil {
 		return nil, fmt.Errorf("get workflow %s: %w", workflowID, err)
 	}

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   parse, parseV2, serialize, serializeV2, validate, validateV2, diff, diffV2, applyDiff, applyDiffV2,
-  ParseError, type WidgetBinding, type OutputBinding, type AuraEdge, type AuraDocumentV2, type PortRegistry,
+  ParseError, STEP_ELEMENTS, migrateV1ToV2,
+  type WidgetBinding, type OutputBinding, type AuraEdge, type AuraDocumentV2, type PortRegistry, type V1Workflow,
 } from '../src/index'
 
 const SIMPLE_DSL = `
@@ -558,5 +559,198 @@ describe('V2 serializer / validator / diff', () => {
     const ops2 = diffV2(sampleDoc, from)
     const result2 = applyDiffV2(sampleDoc, ops2)
     expect(result2.edges).toHaveLength(0)
+  })
+})
+
+describe('validateV2 step element rules', () => {
+  it('accepts a node with element step:query in an otherwise valid doc', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [{ element: 'step:query', id: 'sq1', parentId: 'root' }],
+      edges: [],
+    }
+    const errs = validateV2(doc)
+    expect(errs).toHaveLength(0)
+  })
+
+  it('flags a node with an unknown step: prefix element', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [{ element: 'step:unknown_type', id: 'bad1', parentId: 'root' }],
+      edges: [],
+    }
+    const errs = validateV2(doc)
+    expect(errs.some((e) => e.message.includes('Unknown step element'))).toBe(true)
+  })
+
+  it('no error for async edge where toNodeId is a step node', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'form', id: 'frm1', parentId: 'root' },
+        { element: 'step:mutation', id: 'stp1', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'frm1', fromPort: 'submitted', toNodeId: 'stp1', toPort: 'params', edgeType: 'async' },
+      ],
+    }
+    const errs = validateV2(doc)
+    expect(errs.filter((e) => e.message.includes('must connect to at least one step node'))).toHaveLength(0)
+  })
+
+  it('flags async edge where both endpoints are widget nodes', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'form', id: 'frm1', parentId: 'root' },
+        { element: 'table', id: 'tbl1', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'frm1', fromPort: 'submitted', toNodeId: 'tbl1', toPort: 'refresh', edgeType: 'async' },
+      ],
+    }
+    const errs = validateV2(doc)
+    expect(errs.some((e) => e.message.includes('must connect to at least one step node'))).toBe(true)
+  })
+
+  it('no error for async edge where both endpoints are step nodes', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'step:query', id: 'sq1', parentId: 'root' },
+        { element: 'step:condition', id: 'sc1', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'sq1', fromPort: 'result', toNodeId: 'sc1', toPort: 'value', edgeType: 'async' },
+      ],
+    }
+    const errs = validateV2(doc)
+    expect(errs.filter((e) => e.message.includes('must connect to at least one step node'))).toHaveLength(0)
+  })
+
+  it('doc with only reactive edges and widget nodes passes async chain rule', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'table', id: 'tbl1', parentId: 'root' },
+        { element: 'text', id: 'txt1', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'tbl1', fromPort: 'selectedRow', toNodeId: 'txt1', toPort: 'content', edgeType: 'reactive' },
+      ],
+    }
+    const errs = validateV2(doc)
+    expect(errs.filter((e) => e.message.includes('must connect to at least one step node'))).toHaveLength(0)
+  })
+
+  it('STEP_ELEMENTS exports all 5 step node types', () => {
+    expect(STEP_ELEMENTS.size).toBe(5)
+    expect(STEP_ELEMENTS.has('step:query')).toBe(true)
+    expect(STEP_ELEMENTS.has('step:mutation')).toBe(true)
+    expect(STEP_ELEMENTS.has('step:condition')).toBe(true)
+    expect(STEP_ELEMENTS.has('step:approval_gate')).toBe(true)
+    expect(STEP_ELEMENTS.has('step:notification')).toBe(true)
+  })
+})
+
+describe('migrateV1ToV2', () => {
+  it('no workflows returns original nodes with empty edges', () => {
+    const doc = parse('form form1 @ root ;\ntable table1 @ root ;')
+    const result = migrateV1ToV2(doc, [])
+    expect(result.nodes).toEqual(doc)
+    expect(result.edges).toHaveLength(0)
+  })
+
+  it('single step with widget_bindings produces async edge from widget to step', () => {
+    const doc = parse('form form1 @ root ;')
+    const workflow: V1Workflow = {
+      id: 'wf1',
+      steps: [
+        { id: 'step1', element: 'step:query', widget_bindings: { query: 'form1.submit' } },
+      ],
+    }
+    const result = migrateV1ToV2(doc, [workflow])
+    expect(result.edges).toHaveLength(1)
+    expect(result.edges[0]).toMatchObject({
+      fromNodeId: 'form1',
+      fromPort: 'submit',
+      toNodeId: 'step1',
+      toPort: 'query',
+      edgeType: 'async',
+    })
+  })
+
+  it('single step with output_bindings produces async edge from step to widget', () => {
+    const doc = parse('table table1 @ root ;')
+    const workflow: V1Workflow = {
+      id: 'wf1',
+      steps: [
+        { id: 'step1', element: 'step:query', output_bindings: { result: 'table1.data' } },
+      ],
+    }
+    const result = migrateV1ToV2(doc, [workflow])
+    expect(result.edges).toHaveLength(1)
+    expect(result.edges[0]).toMatchObject({
+      fromNodeId: 'step1',
+      fromPort: 'result',
+      toNodeId: 'table1',
+      toPort: 'data',
+      edgeType: 'async',
+    })
+  })
+
+  it('deduplicates edges when two workflows contain the same step producing the same edge', () => {
+    const doc = parse('form form1 @ root ;')
+    const wf1: V1Workflow = {
+      id: 'wf1',
+      steps: [{ id: 'step1', element: 'step:query', widget_bindings: { q: 'form1.submit' } }],
+    }
+    const wf2: V1Workflow = {
+      id: 'wf2',
+      steps: [{ id: 'step1', element: 'step:query', widget_bindings: { q: 'form1.submit' } }],
+    }
+    const result = migrateV1ToV2(doc, [wf1, wf2])
+    // step1 in wf2 is skipped (ID collision); its edge would be duplicate — deduplicated
+    expect(result.edges).toHaveLength(1)
+  })
+
+  it('skips adding a step node when its ID collides with an existing node', () => {
+    const doc = parse('form form1 @ root ;')
+    const workflow: V1Workflow = {
+      id: 'wf1',
+      steps: [
+        { id: 'form1', element: 'step:query' }, // collides with existing node
+      ],
+    }
+    const result = migrateV1ToV2(doc, [workflow])
+    const form1Nodes = result.nodes.filter((n) => n.id === 'form1')
+    expect(form1Nodes).toHaveLength(1)
+  })
+
+  it('edge IDs follow the e_{fromNodeId}_{fromPort}_{toNodeId}_{toPort} pattern', () => {
+    const doc = parse('form widget1 @ root ;')
+    const workflow: V1Workflow = {
+      id: 'wf1',
+      steps: [
+        { id: 'step1', element: 'step:query', widget_bindings: { myPort: 'widget1.outputPort' } },
+      ],
+    }
+    const result = migrateV1ToV2(doc, [workflow])
+    expect(result.edges[0].id).toBe('e_widget1_outputPort_step1_myPort')
+  })
+
+  it('step with both widget_bindings and output_bindings produces two edges', () => {
+    const doc = parse('form form1 @ root ;\ntable table1 @ root ;')
+    const workflow: V1Workflow = {
+      id: 'wf1',
+      steps: [
+        {
+          id: 'step1',
+          element: 'step:query',
+          widget_bindings: { paramPort: 'form1.value' },
+          output_bindings: { result: 'table1.data' },
+        },
+      ],
+    }
+    const result = migrateV1ToV2(doc, [workflow])
+    expect(result.edges).toHaveLength(2)
+    const edgeToStep = result.edges.find((e) => e.toNodeId === 'step1')
+    const edgeFromStep = result.edges.find((e) => e.fromNodeId === 'step1')
+    expect(edgeToStep).toBeDefined()
+    expect(edgeFromStep).toBeDefined()
   })
 })

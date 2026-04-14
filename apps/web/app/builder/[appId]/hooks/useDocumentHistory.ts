@@ -1,19 +1,19 @@
 'use client'
 
 import { useCallback, useReducer } from 'react'
-import { type AuraDocument } from '@lima/aura-dsl'
+import { type AuraDocumentV2 } from '@lima/aura-dsl'
 
 const MAX_HISTORY = 50
 
 interface State {
-  past: AuraDocument[]
-  present: AuraDocument
-  future: AuraDocument[]
+  past: AuraDocumentV2[]
+  present: AuraDocumentV2
+  future: AuraDocumentV2[]
 }
 
 type Action =
-  | { type: 'SET'; doc: AuraDocument }
-  | { type: 'RESET'; doc: AuraDocument }
+  | { type: 'SET'; doc: AuraDocumentV2 }
+  | { type: 'RESET'; doc: AuraDocumentV2 }
   | { type: 'UNDO' }
   | { type: 'REDO' }
 
@@ -44,7 +44,9 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-export function useDocumentHistory(initial: AuraDocument = []) {
+const EMPTY_DOC: AuraDocumentV2 = { nodes: [], edges: [] }
+
+export function useDocumentHistory(initial: AuraDocumentV2 = EMPTY_DOC) {
   const [state, dispatch] = useReducer(reducer, {
     past: [],
     present: initial,
@@ -55,8 +57,8 @@ export function useDocumentHistory(initial: AuraDocument = []) {
     doc: state.present,
     canUndo: state.past.length > 0,
     canRedo: state.future.length > 0,
-    set: useCallback((doc: AuraDocument) => dispatch({ type: 'SET', doc }), []),
-    reset: useCallback((doc: AuraDocument) => dispatch({ type: 'RESET', doc }), []),
+    set: useCallback((doc: AuraDocumentV2) => dispatch({ type: 'SET', doc }), []),
+    reset: useCallback((doc: AuraDocumentV2) => dispatch({ type: 'RESET', doc }), []),
     undo: useCallback(() => dispatch({ type: 'UNDO' }), []),
     redo: useCallback(() => dispatch({ type: 'REDO' }), []),
   }

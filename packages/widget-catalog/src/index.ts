@@ -344,6 +344,8 @@ export type StepNodeType =
   | 'step:condition'
   | 'step:approval_gate'
   | 'step:notification'
+  | 'step:transform'
+  | 'step:http'
 
 export interface StepNodeMeta {
   type: StepNodeType
@@ -409,6 +411,29 @@ export const STEP_NODE_REGISTRY: Record<StepNodeType, StepNodeMeta> = {
       { name: 'message', direction: 'input', dataType: 'string', description: 'Notification message body' },
       { name: 'channel', direction: 'input', dataType: 'string', description: 'Target channel or recipient' },
       { name: 'sent', direction: 'output', dataType: 'trigger', description: 'Triggered after the notification is sent' },
+    ],
+  },
+  'step:transform': {
+    type: 'step:transform',
+    displayName: 'Transform',
+    description: 'Reshape or compute data with a JS expression',
+    icon: 'Braces',
+    ports: [
+      { name: 'input', direction: 'input', dataType: 'object', description: 'Data to transform' },
+      { name: 'output', direction: 'output', dataType: 'object', description: 'Transformed result' },
+    ],
+  },
+  'step:http': {
+    type: 'step:http',
+    displayName: 'HTTP Request',
+    description: 'Call an external REST API endpoint',
+    icon: 'Globe',
+    ports: [
+      { name: 'body', direction: 'input', dataType: 'object', description: 'Request body (JSON)' },
+      { name: 'responseBody', direction: 'output', dataType: 'object', description: 'Parsed JSON response body' },
+      { name: 'status', direction: 'output', dataType: 'number', description: 'HTTP response status code' },
+      { name: 'ok', direction: 'output', dataType: 'trigger', description: 'Triggered on 2xx response' },
+      { name: 'error', direction: 'output', dataType: 'trigger', description: 'Triggered on non-2xx or network error' },
     ],
   },
 }

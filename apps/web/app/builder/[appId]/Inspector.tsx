@@ -1,16 +1,15 @@
 'use client'
 
 import React, { useState, useEffect, useCallback } from 'react'
-import { type AuraNode, type AuraDocument } from '@lima/aura-dsl'
+import { type AuraNode, type AuraDocumentV2, type AuraEdge } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType, type PropDef } from '@lima/widget-catalog'
 import { getGrid, CELL, COLS } from './CanvasEditor'
-import { listConnectors, runConnectorQuery, listConnectorActions, createWorkflow, getWorkflow, type Connector, type ActionDefinition, type DashboardQueryResponse, type Workflow } from '../../../lib/api'
+import { listConnectors, runConnectorQuery, listConnectorActions, type Connector, type ActionDefinition, type DashboardQueryResponse } from '../../../lib/api'
 import { applyTableDataBinding, getConnectorQuerySQL, getConnectorSchemaColumns, mergeColumns } from '../../../lib/tableBinding'
-import { WorkflowSelector } from './widgets/WorkflowSelector'
 
 interface Props {
   node: AuraNode | null
-  doc: AuraDocument
+  doc: AuraDocumentV2
   onUpdate: (node: AuraNode) => void
   onDelete: (id: string) => void
   workspaceId: string
@@ -18,6 +17,7 @@ interface Props {
   pageId: string
   onOpenCanvas?: (workflowId: string) => void
   onOpenSplitView?: (workflowId: string) => void
+  onSwitchToFlowView?: () => void
 }
 
 /**
@@ -63,7 +63,31 @@ function setPropValue(node: AuraNode, propName: string, value: string): AuraNode
   return updated
 }
 
-export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, pageId, onOpenCanvas, onOpenSplitView }: Props) {
+// ---- Data flow summary helper --------------------------------------------
+
+function getDataFlowSummary(nodeId: string, edges: AuraEdge[]) {
+  const reactiveInputs: Array<{ toPort: string; fromNodeId: string; fromPort: string; edgeId: string }> = []
+  const reactiveOutputs: Array<{ fromPort: string; toNodeId: string; toPort: string; edgeId: string }> = []
+  const asyncTriggers: Array<{ fromPort: string; toNodeId: string; toPort: string; edgeId: string }> = []
+
+  for (const edge of edges) {
+    if (edge.edgeType === 'reactive') {
+      if (edge.toNodeId === nodeId) {
+        reactiveInputs.push({ toPort: edge.toPort, fromNodeId: edge.fromNodeId, fromPort: edge.fromPort, edgeId: edge.id })
+      } else if (edge.fromNodeId === nodeId) {
+        reactiveOutputs.push({ fromPort: edge.fromPort, toNodeId: edge.toNodeId, toPort: edge.toPort, edgeId: edge.id })
+      }
+    } else if (edge.edgeType === 'async') {
+      if (edge.fromNodeId === nodeId) {
+        asyncTriggers.push({ fromPort: edge.fromPort, toNodeId: edge.toNodeId, toPort: edge.toPort, edgeId: edge.id })
+      }
+    }
+  }
+
+  return { reactiveInputs, reactiveOutputs, asyncTriggers }
+}
+
+export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, pageId, onOpenCanvas, onOpenSplitView, onSwitchToFlowView }: Props) {
   const [activeTab, setActiveTab] = useState<'properties' | 'data' | 'layout'>('properties')
 
   // Reset to Properties whenever a different widget is selected.
@@ -85,7 +109,8 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, p
 
   const meta = WIDGET_REGISTRY[n.element as WidgetType]
   const g = getGrid(n)
-  const filterWidgets = doc
+  const dataFlowSummary = getDataFlowSummary(n.id, doc.edges)
+  const filterWidgets = doc.nodes
     .filter(candidate => candidate.element === 'filter' && candidate.id !== n.id)
     .map(candidate => ({
       id: candidate.id,
@@ -206,17 +231,11 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, p
                     <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4 }}>
                       {def.label}
                     </label>
-                    <WorkflowCard
-                      workspaceId={workspaceId}
-                      appId={appId}
-                      pageId={pageId}
-                      triggerType={n.element === 'form' ? 'form_submit' : 'button_click'}
+                    <FlowViewTriggerCard
                       widgetId={n.id}
-                      workflowId={n.action}
-                      onLink={workflowId => onUpdate({ ...n, manuallyEdited: true, action: workflowId })}
-                      onUnlink={() => onUpdate({ ...n, manuallyEdited: true, action: undefined })}
-                      onOpenCanvas={onOpenCanvas}
-                      onOpenSplitView={onOpenSplitView}
+                      element={n.element}
+                      edges={doc.edges}
+                      onSwitchToFlowView={onSwitchToFlowView}
                     />
                   </div>
                 ) : (
@@ -231,10 +250,74 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, p
               )}
             </Section>
           )}
+          {/* Data flow section */}
+          {(dataFlowSummary.reactiveInputs.length > 0 || dataFlowSummary.reactiveOutputs.length > 0 || dataFlowSummary.asyncTriggers.length > 0) && (
+            <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a' }}>
+              <div style={{ fontSize: '0.6rem', color: '#555', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Data flow</div>
+              {dataFlowSummary.reactiveInputs.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: '0.55rem', color: '#3b82f6', marginBottom: 4 }}>← Inputs</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {dataFlowSummary.reactiveInputs.map(item => (
+                      <button
+                        key={item.edgeId}
+                        onClick={() => onSwitchToFlowView?.()}
+                        style={{
+                          background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 4,
+                          fontSize: '0.6rem', fontFamily: 'monospace', color: '#93c5fd',
+                          padding: '2px 6px', cursor: onSwitchToFlowView ? 'pointer' : 'default',
+                        }}
+                      >
+                        {item.toPort} ← {item.fromNodeId}.{item.fromPort}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {dataFlowSummary.reactiveOutputs.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: '0.55rem', color: '#3b82f6', marginBottom: 4 }}>→ Outputs</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {dataFlowSummary.reactiveOutputs.map(item => (
+                      <button
+                        key={item.edgeId}
+                        onClick={() => onSwitchToFlowView?.()}
+                        style={{
+                          background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 4,
+                          fontSize: '0.6rem', fontFamily: 'monospace', color: '#93c5fd',
+                          padding: '2px 6px', cursor: onSwitchToFlowView ? 'pointer' : 'default',
+                        }}
+                      >
+                        {item.fromPort} → {item.toNodeId}.{item.toPort}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {dataFlowSummary.asyncTriggers.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: '0.55rem', color: '#f97316', marginBottom: 4 }}>⚡ Async</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {dataFlowSummary.asyncTriggers.map(item => (
+                      <button
+                        key={item.edgeId}
+                        onClick={() => onSwitchToFlowView?.()}
+                        style={{
+                          background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 4,
+                          fontSize: '0.6rem', fontFamily: 'monospace', color: '#fdba74',
+                          padding: '2px 6px', cursor: onSwitchToFlowView ? 'pointer' : 'default',
+                        }}
+                      >
+                        {item.fromPort} → {item.toNodeId}.{item.toPort}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
-
-      {/* Data tab: connector selector + query builder + preview */}
       {activeTab === 'data' && (
         <>
           {n.element === 'filter' && (
@@ -1447,64 +1530,23 @@ function FilterDataSourceEditor({
   )
 }
 
-/* ---- WorkflowCard: widget-centric workflow binding ----------------------- */
+/* ---- FlowViewTriggerCard: replaces the legacy WorkflowCard --------------- */
 
-interface WorkflowCardProps {
-  workspaceId: string
-  appId: string
-  pageId: string
-  triggerType: 'form_submit' | 'button_click'
+function FlowViewTriggerCard({
+  widgetId, element, edges, onSwitchToFlowView,
+}: {
   widgetId: string
-  workflowId?: string
-  onLink: (workflowId: string) => void
-  onUnlink: () => void
-  onOpenCanvas?: (workflowId: string) => void
-  onOpenSplitView?: (workflowId: string) => void
-}
+  element: string
+  edges: AuraEdge[]
+  onSwitchToFlowView?: () => void
+}) {
+  // Determine the trigger output port for this widget type.
+  const triggerPort = element === 'form' ? 'submitted' : 'clicked'
 
-function WorkflowCard({
-  workspaceId, appId, pageId, triggerType, widgetId,
-  workflowId, onLink, onUnlink, onOpenCanvas, onOpenSplitView,
-}: WorkflowCardProps) {
-  const [workflow, setWorkflow] = React.useState<Workflow | null>(null)
-  const [creating, setCreating] = React.useState(false)
-  const [linkExpanded, setLinkExpanded] = React.useState(false)
-  const [error, setError] = React.useState('')
-
-  // Load bound workflow details when workflowId changes.
-  React.useEffect(() => {
-    if (!workflowId || !workspaceId || !appId) { setWorkflow(null); return }
-    let cancelled = false
-    getWorkflow(workspaceId, appId, workflowId)
-      .then(wf => { if (!cancelled) setWorkflow(wf) })
-      .catch(() => { if (!cancelled) setWorkflow(null) })
-    return () => { cancelled = true }
-  }, [workflowId, workspaceId, appId])
-
-  const handleCreate = async () => {
-    if (creating) return
-    setCreating(true)
-    setError('')
-    try {
-      const label = triggerType === 'form_submit' ? 'Form' : 'Button'
-      const wf = await createWorkflow(workspaceId, appId, {
-        name: `${label} Workflow`,
-        trigger_type: triggerType,
-        trigger_config: { widget_id: widgetId },
-        requires_approval: true,
-        steps: [],
-        source_widget_id: widgetId,
-        source_page_id: pageId,
-      })
-      onLink(wf.id)
-      setWorkflow(wf)
-      onOpenSplitView?.(wf.id)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create workflow')
-    } finally {
-      setCreating(false)
-    }
-  }
+  // Async edges originating from this widget's trigger port.
+  const wiredEdges = edges.filter(
+    e => e.edgeType === 'async' && e.fromNodeId === widgetId && e.fromPort === triggerPort,
+  )
 
   const cardStyle: React.CSSProperties = {
     background: '#111',
@@ -1513,7 +1555,7 @@ function WorkflowCard({
     padding: '8px 10px',
   }
 
-  const smallBtn = (primary = false): React.CSSProperties => ({
+  const btnStyle = (primary = false): React.CSSProperties => ({
     background: primary ? '#1d4ed8' : '#1a1a1a',
     color: primary ? '#bfdbfe' : '#aaa',
     border: primary ? 'none' : '1px solid #1e1e1e',
@@ -1521,69 +1563,42 @@ function WorkflowCard({
     padding: '3px 9px',
     fontSize: '0.68rem',
     cursor: 'pointer',
+    width: '100%',
+    textAlign: 'center' as const,
   })
-
-  if (workflow) {
-    const statusColor = workflow.status === 'active' ? '#4ade80' : workflow.status === 'archived' ? '#555' : '#fbbf24'
-    return (
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#e5e5e5', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {workflow.name}
-          </span>
-          <span style={{ fontSize: '0.58rem', padding: '1px 6px', borderRadius: 99, background: statusColor + '22', color: statusColor, flexShrink: 0 }}>
-            {workflow.status}
-          </span>
-        </div>
-        <div style={{ display: 'flex', gap: 5 }}>
-          <button
-            style={smallBtn(true)}
-            onClick={() => (onOpenSplitView ?? onOpenCanvas)?.(workflow.id)}
-          >
-            Edit workflow
-          </button>
-          <button
-            style={smallBtn()}
-            onClick={onUnlink}
-          >
-            Unlink
-          </button>
-        </div>
-        {error && <div style={{ fontSize: '0.65rem', color: '#fca5a5', marginTop: 5 }}>{error}</div>}
-      </div>
-    )
-  }
 
   return (
     <div style={cardStyle}>
-      <button
-        style={{ ...smallBtn(true), width: '100%', textAlign: 'center' }}
-        onClick={handleCreate}
-        disabled={creating}
-      >
-        {creating ? 'Creating…' : '+ Create Workflow'}
-      </button>
-
-      {/* Link existing — advanced / escape hatch */}
-      <button
-        style={{ ...smallBtn(), width: '100%', textAlign: 'center', marginTop: 5 }}
-        onClick={() => setLinkExpanded(e => !e)}
-      >
-        {linkExpanded ? '▴ Link existing' : '▾ Link existing'}
-      </button>
-
-      {linkExpanded && (
-        <div style={{ marginTop: 5 }}>
-          <WorkflowSelector
-            workspaceId={workspaceId}
-            appId={appId}
-            triggerType={triggerType}
-            value={workflowId}
-            onChange={id => { if (id) onLink(id) }}
-          />
-        </div>
+      {wiredEdges.length > 0 ? (
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+            {wiredEdges.map(e => (
+              <span
+                key={e.id}
+                style={{
+                  background: '#1a1a1a', border: '1px solid #f97316', borderRadius: 4,
+                  fontSize: '0.6rem', fontFamily: 'monospace', color: '#fdba74',
+                  padding: '2px 6px',
+                }}
+              >
+                {triggerPort} → {e.toNodeId}.{e.toPort}
+              </span>
+            ))}
+          </div>
+          <button style={btnStyle(true)} onClick={() => onSwitchToFlowView?.()}>
+            Edit in Flow View
+          </button>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: '0.65rem', color: '#555', marginBottom: 8 }}>
+            No connections yet. Wire this trigger to a step node in Flow View.
+          </div>
+          <button style={btnStyle(true)} onClick={() => onSwitchToFlowView?.()}>
+            Wire in Flow View
+          </button>
+        </>
       )}
-      {error && <div style={{ fontSize: '0.65rem', color: '#fca5a5', marginTop: 5 }}>{error}</div>}
     </div>
   )
 }

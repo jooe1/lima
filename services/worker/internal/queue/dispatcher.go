@@ -85,7 +85,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 	startPool(JobGeneration, d.cfg.GenerationWorkers, handleGeneration(d.cfg, d.pool, d.log))
 	startPool(JobSchema, d.cfg.SchemaWorkers, handleSchema(d.cfg, d.pool, d.log))
-	startPool(JobWorkflow, 1, handleWorkflow(d.cfg, d.pool, d.log)) // single-threaded for safety
+	startPool(JobWorkflow, 1, handleWorkflow(d.cfg, d.pool, d.client, d.log)) // single-threaded for safety
 
 	<-ctx.Done()
 	d.log.Info("draining workers")

@@ -1,6 +1,7 @@
 import type { ConnectorChatResponse } from '@lima/sdk-connectors'
+import type { AuraEdge } from '@lima/aura-dsl'
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
 
 function getToken(): string | null {
   if (typeof window === 'undefined') return null
@@ -284,6 +285,7 @@ export interface App {
   description?: string
   status: 'draft' | 'published' | 'archived'
   dsl_source: string
+  dsl_edges?: AuraEdge[]
   node_metadata?: Record<string, { manuallyEdited: boolean }>
   created_by: string
   created_at: string
@@ -318,7 +320,7 @@ export function getApp(workspaceId: string, appId: string) {
 export function patchApp(
   workspaceId: string,
   appId: string,
-  patch: { name?: string; description?: string; dsl_source?: string; node_metadata?: Record<string, { manuallyEdited: boolean }> },
+  patch: { name?: string; description?: string; dsl_source?: string; dsl_edges?: AuraEdge[]; node_metadata?: Record<string, { manuallyEdited: boolean }> },
 ) {
   return request<App>(`/v1/workspaces/${workspaceId}/apps/${appId}/`, {
     method: 'PATCH',

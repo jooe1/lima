@@ -10,17 +10,21 @@ import (
 	"github.com/lima/api/internal/model"
 )
 
-const appVersionCols = `id, app_id, version_num, dsl_source, node_metadata, published_by, published_at`
-const appVersionColsQualified = `v.id, v.app_id, v.version_num, v.dsl_source, v.node_metadata, v.published_by, v.published_at`
+const appVersionCols = `id, app_id, version_num, dsl_source, dsl_edges, node_metadata, published_by, published_at`
+const appVersionColsQualified = `v.id, v.app_id, v.version_num, v.dsl_source, v.dsl_edges, v.node_metadata, v.published_by, v.published_at`
 
 func scanAppVersionRow(row pgx.Row) (*model.AppVersion, error) {
 	v := &model.AppVersion{}
 	var nodeMetaRaw []byte
-	if err := row.Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &nodeMetaRaw, &v.PublishedBy, &v.PublishedAt); err != nil {
+	var dslEdgesRaw []byte
+	if err := row.Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &dslEdgesRaw, &nodeMetaRaw, &v.PublishedBy, &v.PublishedAt); err != nil {
 		return nil, err
 	}
 	if nodeMetaRaw != nil {
 		_ = json.Unmarshal(nodeMetaRaw, &v.NodeMetadata)
+	}
+	if len(dslEdgesRaw) > 0 {
+		_ = json.Unmarshal(dslEdgesRaw, &v.DslEdges)
 	}
 	return v, nil
 }
@@ -182,10 +186,11 @@ func (s *Store) PublishApp(ctx context.Context, workspaceID, appID, publisherID 
 	// Lock the app row.
 	var dslSource string
 	var appMetaRaw []byte
+	var dslEdgesRaw []byte
 	err = tx.QueryRow(ctx,
-		`SELECT dsl_source, node_metadata FROM apps WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+		`SELECT dsl_source, node_metadata, dsl_edges FROM apps WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
 		appID, workspaceID,
-	).Scan(&dslSource, &appMetaRaw)
+	).Scan(&dslSource, &appMetaRaw, &dslEdgesRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -200,20 +205,24 @@ func (s *Store) PublishApp(ctx context.Context, workspaceID, appID, publisherID 
 		appID,
 	).Scan(&maxVer)
 
-	// Insert the version snapshot (including node_metadata).
+	// Insert the version snapshot (including node_metadata and dsl_edges).
 	v := &model.AppVersion{}
 	var vMetaRaw []byte
+	var vEdgesRaw []byte
 	err = tx.QueryRow(ctx,
-		`INSERT INTO app_versions (app_id, version_num, dsl_source, node_metadata, published_by)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, app_id, version_num, dsl_source, node_metadata, published_by, published_at`,
-		appID, maxVer+1, dslSource, appMetaRaw, publisherID,
-	).Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &vMetaRaw, &v.PublishedBy, &v.PublishedAt)
+		`INSERT INTO app_versions (app_id, version_num, dsl_source, node_metadata, dsl_edges, published_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, app_id, version_num, dsl_source, node_metadata, dsl_edges, published_by, published_at`,
+		appID, maxVer+1, dslSource, appMetaRaw, dslEdgesRaw, publisherID,
+	).Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &vMetaRaw, &vEdgesRaw, &v.PublishedBy, &v.PublishedAt)
 	if err != nil {
 		return nil, fmt.Errorf("publish app insert version: %w", err)
 	}
 	if vMetaRaw != nil {
 		_ = json.Unmarshal(vMetaRaw, &v.NodeMetadata)
+	}
+	if len(vEdgesRaw) > 0 {
+		_ = json.Unmarshal(vEdgesRaw, &v.DslEdges)
 	}
 
 	// Update app status.
@@ -241,11 +250,12 @@ func (s *Store) RollbackApp(ctx context.Context, workspaceID, appID string, vers
 
 	var dslSource string
 	var versionMetaRaw []byte
+	var versionEdgesRaw []byte
 	err = tx.QueryRow(ctx,
-		`SELECT dsl_source, node_metadata FROM app_versions
+		`SELECT dsl_source, node_metadata, dsl_edges FROM app_versions
 		 WHERE app_id = $1 AND version_num = $2`,
 		appID, versionNum,
-	).Scan(&dslSource, &versionMetaRaw)
+	).Scan(&dslSource, &versionMetaRaw, &versionEdgesRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -255,15 +265,18 @@ func (s *Store) RollbackApp(ctx context.Context, workspaceID, appID string, vers
 	if versionMetaRaw == nil {
 		versionMetaRaw = []byte("{}")
 	}
+	if versionEdgesRaw == nil {
+		versionEdgesRaw = []byte("[]")
+	}
 
 	a := &model.App{}
 	var appMetaRaw []byte
 	var dslEdgesRaw []byte
 	err = tx.QueryRow(ctx,
-		`UPDATE apps SET dsl_source = $3, node_metadata = $4, status = 'draft', updated_at = now()
+		`UPDATE apps SET dsl_source = $3, node_metadata = $4, dsl_edges = $5, status = 'draft', updated_at = now()
 		 WHERE id = $1 AND workspace_id = $2
 		 RETURNING id, workspace_id, name, description, status, dsl_source, node_metadata, dsl_edges, dsl_version, created_by, created_at, updated_at`,
-		appID, workspaceID, dslSource, versionMetaRaw,
+		appID, workspaceID, dslSource, versionMetaRaw, versionEdgesRaw,
 	).Scan(&a.ID, &a.WorkspaceID, &a.Name, &a.Description, &a.Status, &a.DSLSource, &appMetaRaw, &dslEdgesRaw, &a.DslVersion, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -287,7 +300,7 @@ func (s *Store) RollbackApp(ctx context.Context, workspaceID, appID string, vers
 // ListAppVersions returns all published versions for an app, newest first.
 func (s *Store) ListAppVersions(ctx context.Context, appID string) ([]model.AppVersion, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, app_id, version_num, dsl_source, node_metadata, published_by, published_at
+		`SELECT id, app_id, version_num, dsl_source, dsl_edges, node_metadata, published_by, published_at
 		 FROM app_versions WHERE app_id = $1 ORDER BY version_num DESC`,
 		appID,
 	)
@@ -299,11 +312,15 @@ func (s *Store) ListAppVersions(ctx context.Context, appID string) ([]model.AppV
 	for rows.Next() {
 		var v model.AppVersion
 		var nodeMetaRaw []byte
-		if err := rows.Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &nodeMetaRaw, &v.PublishedBy, &v.PublishedAt); err != nil {
+		var edgesRaw []byte
+		if err := rows.Scan(&v.ID, &v.AppID, &v.VersionNum, &v.DSLSource, &edgesRaw, &nodeMetaRaw, &v.PublishedBy, &v.PublishedAt); err != nil {
 			return nil, fmt.Errorf("list app versions scan: %w", err)
 		}
 		if nodeMetaRaw != nil {
 			_ = json.Unmarshal(nodeMetaRaw, &v.NodeMetadata)
+		}
+		if len(edgesRaw) > 0 {
+			_ = json.Unmarshal(edgesRaw, &v.DslEdges)
 		}
 		versions = append(versions, v)
 	}

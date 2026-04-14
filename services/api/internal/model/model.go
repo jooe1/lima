@@ -205,6 +205,7 @@ type AppVersion struct {
 	AppID        string              `json:"app_id"`
 	VersionNum   int                 `json:"version_num"`
 	DSLSource    string              `json:"dsl_source"`
+	DslEdges     []AuraEdge          `json:"dsl_edges"`
 	NodeMetadata map[string]NodeMeta `json:"node_metadata,omitempty"`
 	PublishedBy  string              `json:"published_by"`
 	PublishedAt  time.Time           `json:"published_at"`

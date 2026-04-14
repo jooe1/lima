@@ -463,6 +463,14 @@ export function applyDiff(doc: AuraDocument, ops: DiffOp[]): AuraDocument {
   return Array.from(map.values())
 }
 
+const ALLOWED_ELEMENTS = new Set([
+  'table', 'form', 'button', 'text', 'kpi', 'chart', 'filter', 'markdown', 'modal', 'tabs', 'container',
+])
+
+export const STEP_ELEMENTS = new Set([
+  'step:query', 'step:mutation', 'step:condition', 'step:approval_gate', 'step:notification',
+])
+
 /**
  * validateV2 validates an AuraDocumentV2 including edge references and
  * optional port-registry checks. Also detects reactive cycles via Kahn's
@@ -470,6 +478,18 @@ export function applyDiff(doc: AuraDocument, ops: DiffOp[]): AuraDocument {
  */
 export function validateV2(doc: AuraDocumentV2, portRegistry?: PortRegistry): ValidationError[] {
   const errors = validate(doc.nodes)
+
+  // Element validation: step elements and allowed widget elements
+  for (const node of doc.nodes) {
+    const { element, id } = node
+    if (element.startsWith('step:')) {
+      if (!STEP_ELEMENTS.has(element)) {
+        errors.push({ nodeId: id, message: `Unknown step element '${element}'` })
+      }
+    } else if (!ALLOWED_ELEMENTS.has(element)) {
+      errors.push({ nodeId: id, message: `Unknown element '${element}'` })
+    }
+  }
 
   const nodeIds = new Set(doc.nodes.map((n) => n.id))
   const nodeElementMap = new Map(doc.nodes.map((n) => [n.id, n.element]))
@@ -503,6 +523,14 @@ export function validateV2(doc: AuraDocumentV2, portRegistry?: PortRegistry): Va
           }
         }
       }
+    }
+  }
+
+  // Async chain rule: every async edge must touch at least one step node
+  const stepNodeIds = new Set(doc.nodes.filter((n) => STEP_ELEMENTS.has(n.element)).map((n) => n.id))
+  for (const edge of doc.edges) {
+    if (edge.edgeType === 'async' && !stepNodeIds.has(edge.fromNodeId) && !stepNodeIds.has(edge.toNodeId)) {
+      errors.push({ nodeId: edge.id, message: `Async edge '${edge.id}' must connect to at least one step node` })
     }
   }
 
@@ -729,6 +757,88 @@ function edgePatch(a: AuraEdge, b: AuraEdge): Partial<AuraEdge> {
     }
   }
   return patch
+}
+
+// ---- V1 migration types ----------------------------------------------------
+
+export interface V1WorkflowStep {
+  id: string
+  name?: string
+  element: string            // e.g. 'step:query', 'step:mutation', etc.
+  action?: string            // e.g. 'run_query', 'send_notification'
+  connector?: string         // connector id or name
+  widget_bindings?: Record<string, string>  // portName → widgetId.portName
+  output_bindings?: Record<string, string>  // portName → widgetId.portName
+  position?: { x: number; y: number }
+}
+
+export interface V1WorkflowOutputBinding {
+  stepId: string
+  portName: string
+  targetWidgetId: string
+  targetPortName: string
+}
+
+export interface V1Workflow {
+  id: string                 // workflow id
+  steps: V1WorkflowStep[]
+}
+
+/**
+ * migrateV1ToV2 converts an existing v1 AuraDocument and a list of V1Workflow
+ * objects into an AuraDocumentV2, creating step AuraNodes and AuraEdges from
+ * the workflow steps and their bindings.
+ *
+ * - Existing nodes from `doc` are preserved as-is.
+ * - Step nodes whose ID already exists in `doc` are skipped (idempotent).
+ * - Edges are deduplicated by their deterministic ID: e_{from}_{fromPort}_{to}_{toPort}.
+ */
+export function migrateV1ToV2(doc: AuraDocument, workflows: V1Workflow[]): AuraDocumentV2 {
+  const existingIds = new Set(doc.map((n) => n.id))
+  const nodes: AuraNode[] = [...doc]
+  const edges: AuraEdge[] = []
+  const edgeIds = new Set<string>()
+
+  for (const workflow of workflows) {
+    for (const step of workflow.steps) {
+      // Add step node only if its ID does not collide with an existing node
+      if (!existingIds.has(step.id)) {
+        const withProps: Record<string, string> = {
+          action: step.action ?? '',
+          connector: step.connector ?? '',
+          ...(step.widget_bindings ?? {}),
+        }
+        nodes.push({ id: step.id, element: step.element, parentId: 'root', with: withProps })
+        existingIds.add(step.id)
+      }
+
+      // widget_bindings (inputs): portName → "widgetId.portName" → async edge widget→step
+      for (const [portName, widgetPortPair] of Object.entries(step.widget_bindings ?? {})) {
+        const firstDot = widgetPortPair.indexOf('.')
+        const widgetId = firstDot === -1 ? widgetPortPair : widgetPortPair.slice(0, firstDot)
+        const widgetPortName = firstDot === -1 ? '' : widgetPortPair.slice(firstDot + 1)
+        const id = `e_${widgetId}_${widgetPortName}_${step.id}_${portName}`
+        if (!edgeIds.has(id)) {
+          edgeIds.add(id)
+          edges.push({ id, fromNodeId: widgetId, fromPort: widgetPortName, toNodeId: step.id, toPort: portName, edgeType: 'async' })
+        }
+      }
+
+      // output_bindings (outputs): portName → "widgetId.portName" → async edge step→widget
+      for (const [portName, widgetPortPair] of Object.entries(step.output_bindings ?? {})) {
+        const firstDot = widgetPortPair.indexOf('.')
+        const widgetId = firstDot === -1 ? widgetPortPair : widgetPortPair.slice(0, firstDot)
+        const widgetPortName = firstDot === -1 ? '' : widgetPortPair.slice(firstDot + 1)
+        const id = `e_${step.id}_${portName}_${widgetId}_${widgetPortName}`
+        if (!edgeIds.has(id)) {
+          edgeIds.add(id)
+          edges.push({ id, fromNodeId: step.id, fromPort: portName, toNodeId: widgetId, toPort: widgetPortName, edgeType: 'async' })
+        }
+      }
+    }
+  }
+
+  return { nodes, edges }
 }
 
 // Re-export reactive runtime (dual-layer canvas Phase 1)

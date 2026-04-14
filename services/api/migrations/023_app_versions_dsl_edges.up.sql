@@ -1,0 +1,1 @@
+ALTER TABLE app_versions ADD COLUMN IF NOT EXISTS dsl_edges JSONB NOT NULL DEFAULT '[]';

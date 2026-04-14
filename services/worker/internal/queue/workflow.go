@@ -18,8 +18,32 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lima/worker/internal/config"
 	"github.com/lima/worker/internal/cryptoutil"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
+
+// workflowRunEvent is the JSON payload published to Redis for each workflow lifecycle event.
+type workflowRunEvent struct {
+	RunID  string         `json:"run_id"`
+	AppID  string         `json:"app_id"`
+	Status string         `json:"status"`   // "step_completed" | "completed" | "failed" | "awaiting_approval"
+	StepID string         `json:"step_id,omitempty"`
+	Output map[string]any `json:"output,omitempty"`
+}
+
+// publishStepEvent marshals event to JSON and publishes it to the Redis channel
+// "app:{appID}:events". A nil rdb or marshal/publish failure is silently ignored —
+// publish is best-effort and must never cause a workflow execution to fail.
+func publishStepEvent(ctx context.Context, rdb *redis.Client, event workflowRunEvent) {
+	if rdb == nil {
+		return
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	_ = rdb.Publish(ctx, "app:"+event.AppID+":events", payload)
+}
 
 type restCreds struct {
 	BaseURL      string `json:"base_url"`
@@ -168,7 +192,7 @@ func collectTriggeredOutputBindings(def *wfDefinition, stepResults map[string]an
 }
 
 // handleWorkflow returns a jobHandler that executes or resumes workflow runs.
-func handleWorkflow(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) jobHandler {
+func handleWorkflow(cfg *config.Config, pool *pgxpool.Pool, rdb *redis.Client, log *zap.Logger) jobHandler {
 	return func(ctx context.Context, payload []byte) error {
 		var p combinedWorkflowPayload
 		if err := json.Unmarshal(payload, &p); err != nil {
@@ -182,14 +206,33 @@ func handleWorkflow(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) job
 		}
 
 		if p.ApprovalID != "" {
-			return resumeWorkflowRun(ctx, cfg, pool, log, p.RunID, p.ApprovalID, p.Approved)
+			return resumeWorkflowRun(ctx, cfg, pool, rdb, log, p.RunID, p.ApprovalID, p.Approved)
 		}
-		return executeWorkflowRun(ctx, cfg, pool, log, p.RunID, p.WorkflowID)
+		return executeWorkflowRun(ctx, cfg, pool, rdb, log, p.RunID, p.WorkflowID)
 	}
 }
 
+// hydrateDSLSteps replaces def.steps with the DSL-derived step graph when
+// dsl_version >= 2. It is a no-op for V1 workflows.
+func hydrateDSLSteps(ctx context.Context, pool *pgxpool.Pool, def *wfDefinition) error {
+	if def.dslVersion < 2 {
+		return nil
+	}
+	dslSource, edges, _, appID, err := getAppDSLForWorkflow(ctx, pool, def.id)
+	if err != nil {
+		return fmt.Errorf("load DSL for workflow %s: %w", def.id, err)
+	}
+	steps, err := buildStepsFromDSL(def.id, dslSource, edges)
+	if err != nil {
+		return fmt.Errorf("build step graph for workflow %s: %w", def.id, err)
+	}
+	def.steps = steps
+	def.appID = appID
+	return nil
+}
+
 // executeWorkflowRun starts fresh execution of a workflow run.
-func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger, runID, workflowID string) error {
+func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *redis.Client, log *zap.Logger, runID, workflowID string) error {
 	log.Info("workflow run starting", zap.String("run_id", runID))
 
 	run, err := getWorkflowRun(ctx, pool, runID)
@@ -208,6 +251,13 @@ func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 		return fmt.Errorf("fetch workflow definition: %w", err)
 	}
 
+	if err := hydrateDSLSteps(ctx, pool, def); err != nil {
+		errStr := err.Error()
+		_ = setRunStatus(ctx, pool, runID, runStatusFailed, run.outputData, &errStr, nil)
+		log.Error("failed to hydrate DSL steps", zap.String("run_id", runID), zap.Error(err))
+		return nil
+	}
+
 	// Mark as running.
 	if err := setRunStatus(ctx, pool, runID, runStatusRunning, run.outputData, nil, nil); err != nil {
 		return fmt.Errorf("set running status: %w", err)
@@ -222,11 +272,12 @@ func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 		stepResults = map[string]any{}
 	}
 
-	if err := runStepGraph(ctx, cfg, pool, log, run, def, stepResults); err != nil {
+	if err := runStepGraph(ctx, cfg, pool, rdb, log, run, def, stepResults); err != nil {
 		// runStepGraph returns nil for paused (awaiting_approval) — only non-nil on hard error.
 		errStr := err.Error()
 		output["steps"] = stepResults
 		_ = setRunStatus(ctx, pool, runID, runStatusFailed, output, &errStr, nil)
+		publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: def.appID, Status: "failed"})
 		log.Error("workflow run failed", zap.String("run_id", runID), zap.Error(err))
 		return nil // don't propagate — run is marked failed in DB
 	}
@@ -244,6 +295,7 @@ func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 	}
 	if paused {
 		_ = setRunStatus(ctx, pool, runID, runStatusAwaitingApproval, output, nil, nil)
+		publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: def.appID, Status: "awaiting_approval"})
 		log.Info("workflow run paused awaiting approval", zap.String("run_id", runID))
 		return nil
 	}
@@ -252,6 +304,7 @@ func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 		output["__output_bindings__"] = triggered
 	}
 	_ = setRunStatus(ctx, pool, runID, runStatusCompleted, output, nil, nil)
+	publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: def.appID, Status: "completed"})
 	log.Info("workflow run completed", zap.String("run_id", runID))
 	return nil
 }
@@ -260,7 +313,7 @@ func executeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.P
 // It returns nil when the run has completed or been paused (awaiting_approval via a step result).
 // It returns a non-nil error only on hard infrastructure failures.
 func runStepGraph(
-	ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger,
+	ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *redis.Client, log *zap.Logger,
 	run *wfRun, def *wfDefinition, stepResults map[string]any,
 ) error {
 	if len(def.steps) == 0 {
@@ -308,6 +361,20 @@ func runStepGraph(
 			return nil
 		}
 
+		publishStepEvent(ctx, rdb, workflowRunEvent{
+			RunID:  run.id,
+			AppID:  def.appID,
+			Status: "step_completed",
+			StepID: current.id,
+			Output: func() map[string]any {
+				if sr, ok := stepResults[current.id]; ok {
+					if m, ok := sr.(map[string]any); ok {
+						return m
+					}
+				}
+				return nil
+			}(),
+		})
 		current = nextStep(current, stepResults, byID, def.steps)
 	}
 	return nil
@@ -361,7 +428,7 @@ func nextStep(step *wfStep, stepResults map[string]any, byID map[string]*wfStep,
 }
 
 // resumeWorkflowRun continues a run that was blocked on an approval gate.
-func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger,
+func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, rdb *redis.Client, log *zap.Logger,
 	runID, approvalID string, approved bool,
 ) error {
 	log.Info("workflow run resuming",
@@ -380,6 +447,7 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 	if !approved {
 		reason := "workflow approval rejected"
 		_ = setRunStatus(ctx, pool, runID, runStatusFailed, run.outputData, &reason, nil)
+		publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: "", Status: "failed"})
 		log.Info("workflow run rejected", zap.String("run_id", runID))
 		return nil
 	}
@@ -387,6 +455,14 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 	def, err := getWorkflowDefinition(ctx, pool, run.workflowID)
 	if err != nil {
 		return fmt.Errorf("fetch workflow definition for resume: %w", err)
+	}
+
+	if err := hydrateDSLSteps(ctx, pool, def); err != nil {
+		errStr := err.Error()
+		_ = setRunStatus(ctx, pool, runID, runStatusFailed, run.outputData, &errStr, nil)
+		publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: def.appID, Status: "failed"})
+		log.Error("failed to hydrate DSL steps", zap.String("run_id", runID), zap.Error(err))
+		return nil
 	}
 
 	// Mark as running again.
@@ -406,6 +482,7 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 		errMsg := err.Error()
 		output["steps"] = stepResults
 		_ = setRunStatus(ctx, pool, runID, runStatusFailed, output, &errMsg, nil)
+		publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: def.appID, Status: "failed"})
 		log.Error("failed to resolve approved step — run failed",
 			zap.String("run_id", runID), zap.String("approval_id", approvalID), zap.Error(err))
 		return nil
@@ -416,10 +493,11 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 	}
 
 	// Continue execution from where we left off (graph-aware).
-	if err := runStepGraph(ctx, cfg, pool, log, run, def, stepResults); err != nil {
+	if err := runStepGraph(ctx, cfg, pool, rdb, log, run, def, stepResults); err != nil {
 		errStr := err.Error()
 		output["steps"] = stepResults
 		_ = setRunStatus(ctx, pool, runID, runStatusFailed, output, &errStr, nil)
+		publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: def.appID, Status: "failed"})
 		log.Error("workflow run failed on resume", zap.String("run_id", runID), zap.Error(err))
 		return nil
 	}
@@ -437,6 +515,7 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 	}
 	if pausedAgain {
 		_ = setRunStatus(ctx, pool, runID, runStatusAwaitingApproval, output, nil, nil)
+		publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: def.appID, Status: "awaiting_approval"})
 		log.Info("workflow run paused again awaiting approval", zap.String("run_id", runID))
 		return nil
 	}
@@ -445,6 +524,7 @@ func resumeWorkflowRun(ctx context.Context, cfg *config.Config, pool *pgxpool.Po
 		output["__output_bindings__"] = triggered
 	}
 	_ = setRunStatus(ctx, pool, runID, runStatusCompleted, output, nil, nil)
+	publishStepEvent(ctx, rdb, workflowRunEvent{RunID: runID, AppID: def.appID, Status: "completed"})
 	log.Info("workflow run completed after resume", zap.String("run_id", runID))
 	return nil
 }
@@ -567,6 +647,7 @@ var (
 	wfCTEMutationRe         = regexp.MustCompile(`(?is)^\s*WITH\b[\s\S]*\b(INSERT\s+INTO|UPDATE\b|DELETE\s+FROM|MERGE\b|REPLACE\b)\b`)
 	workflowInputRefRe      = regexp.MustCompile(`\{\{input\.([a-zA-Z0-9_.-]+)\}\}`)
 	workflowStepRefRe       = regexp.MustCompile(`\{\{step\.([^.}]+)\.([^}]+)\}\}`)
+	workflowWidgetRefRe     = regexp.MustCompile(`\{\{([a-zA-Z0-9_][a-zA-Z0-9_-]*)\.([a-zA-Z0-9_.]+)\}\}`)
 	workflowGraphQLMutation = regexp.MustCompile(`(?is)^\s*mutation\b`)
 )
 
@@ -908,6 +989,21 @@ func evaluateCondition(config map[string]any, inputData map[string]any, stepResu
 // interpolated into the surrounding string.
 func resolveInputRef(expr string, inputData map[string]any, stepResults map[string]any) any {
 	expr = strings.TrimSpace(expr)
+
+	// Exact match: single {{widgetId.portName}} spanning the entire expression.
+	// Handles widget-to-step input bindings from DSL V2 (DL-47).
+	// Skip reserved prefixes "input" and "step" which are handled by the dedicated regexes below.
+	if wm := workflowWidgetRefRe.FindStringSubmatchIndex(expr); wm != nil && wm[0] == 0 && wm[1] == len(expr) {
+		widgetID := expr[wm[2]:wm[3]]
+		if widgetID != "input" && widgetID != "step" {
+			key := widgetID + "." + expr[wm[4]:wm[5]]
+			if value, ok := inputData[key]; ok {
+				return value
+			}
+			// Key not found — fall through to return the expression unchanged.
+			return expr
+		}
+	}
 
 	// Exact match: single {{step.ID.FIELDPATH}} spanning the entire expression.
 	if sm := workflowStepRefRe.FindStringSubmatchIndex(expr); sm != nil && sm[0] == 0 && sm[1] == len(expr) {
