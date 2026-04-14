@@ -383,13 +383,17 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
     }
   }
 
-  const label = status === 'pending' ? 'Submitting…' : (status !== 'idle' && statusMessage) ? statusMessage : (node.text ?? '')
+  const { portValues } = useFlowEngine()
+  const dynamicLabel = portValues[node.id]?.['setLabel']
+  const dynamicDisabled = portValues[node.id]?.['setDisabled']
+  const baseLabel = dynamicLabel !== undefined ? String(dynamicLabel) : (node.text ?? '')
+  const label = status === 'pending' ? 'Submitting…' : (status !== 'idle' && statusMessage) ? statusMessage : baseLabel
 
   return (
     <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem' }}>
       <button
         onClick={handleClick}
-        disabled={status === 'pending'}
+        disabled={status === 'pending' || Boolean(dynamicDisabled)}
         style={{
           background: bg,
           border: variant === 'secondary' ? '1px solid #333' : 'none',
@@ -436,6 +440,24 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const hasBinding = hasConnectorBinding(node)
   const querySql = getConnectorQuerySQL(connectorType, sql)
   const { values: dashboardFilters, refreshSeq } = useDashboardFilters()
+  const { portValues } = useFlowEngine()
+  const tablePorts = portValues[node.id] ?? {}
+
+  // refresh port — trigger a re-fetch
+  const [localRefreshSeq, setLocalRefreshSeq] = useState(0)
+  const prevTableRefreshRef = useRef<unknown>(undefined)
+  useEffect(() => {
+    const trigger = tablePorts['refresh']
+    if (trigger !== undefined && trigger !== prevTableRefreshRef.current) {
+      prevTableRefreshRef.current = trigger
+      setLocalRefreshSeq(s => s + 1)
+    }
+  })
+
+  // setRows port — override displayed rows entirely
+  const overrideRows = tablePorts['setRows'] as Array<Record<string, unknown>> | undefined
+  // setFilter port — apply additional {column: value} filter pairs
+  const overrideFilter = tablePorts['setFilter'] as Record<string, string> | undefined
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -470,10 +492,17 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [workspaceId, connectorId, connectorType, querySql, refreshSeq])
+  }, [workspaceId, connectorId, connectorType, querySql, refreshSeq, localRefreshSeq])
 
-  const boundData = applyTableDataBinding(data, {
-    filters: filterLinks.map(link => ({ column: link.column, value: dashboardFilters[link.widgetId] ?? '' })),
+  const effectiveTableData: DashboardQueryResponse | null = overrideRows
+    ? { rows: overrideRows, columns: overrideRows.length > 0 ? Object.keys(overrideRows[0]) : [] }
+    : data
+
+  const boundData = applyTableDataBinding(effectiveTableData, {
+    filters: [
+      ...filterLinks.map(link => ({ column: link.column, value: dashboardFilters[link.widgetId] ?? '' })),
+      ...(overrideFilter ? Object.entries(overrideFilter).map(([column, value]) => ({ column, value })) : []),
+    ],
     filterColumn: node.with?.filterColumn,
     filterValue: node.with?.filterValue,
     aggregate: node.with?.aggregate,
@@ -533,9 +562,43 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
   const rawFields = node.style?.fields ?? node.with?.fields ?? ''
   const fields = rawFields.split(',').map((f: string) => f.trim()).filter(Boolean)
   const [values, setValues] = useState<Record<string, string>>({})
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<'idle' | 'pending' | 'done' | 'error'>('idle')
   const [statusMessage, setStatusMessage] = useState('')
   const { bumpRefreshSeq } = useDashboardFilters()
+  const { portValues, firePort } = useFlowEngine()
+  const formPorts = portValues[node.id] ?? {}
+
+  // setValues port — populate fields programmatically
+  const inboundFormValues = formPorts['setValues'] as Record<string, string> | undefined
+  const prevInboundFormRef = useRef<unknown>(undefined)
+  useEffect(() => {
+    if (inboundFormValues && inboundFormValues !== prevInboundFormRef.current) {
+      prevInboundFormRef.current = inboundFormValues
+      setValues(prev => ({ ...prev, ...inboundFormValues }))
+    }
+  })
+
+  // setErrors port — show per-field validation errors
+  const inboundFormErrors = formPorts['setErrors'] as Record<string, string> | undefined
+  const prevFormErrorsRef = useRef<unknown>(undefined)
+  useEffect(() => {
+    if (inboundFormErrors && inboundFormErrors !== prevFormErrorsRef.current) {
+      prevFormErrorsRef.current = inboundFormErrors
+      setFieldErrors(inboundFormErrors)
+    }
+  })
+
+  // reset port — clear all fields and errors
+  const formResetTrigger = formPorts['reset']
+  const prevFormResetRef = useRef<unknown>(undefined)
+  useEffect(() => {
+    if (formResetTrigger !== undefined && formResetTrigger !== prevFormResetRef.current) {
+      prevFormResetRef.current = formResetTrigger
+      setValues({})
+      setFieldErrors({})
+    }
+  })
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -555,13 +618,9 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
         }
         setValues({})
       } else {
-        const { createApproval } = await import('../../../lib/api')
-        await createApproval(workspaceId, {
-          app_id: appId,
-          description: `Form submission: ${node.id}`,
-          payload: { node_id: node.id, element: 'form', values, app_id: appId },
-        })
-        setStatusMessage('Submitted for review')
+        // Fire the flow engine 'submitted' port with form values
+        await firePort(node.id, 'submitted', { ...values })
+        bumpRefreshSeq()
         setValues({})
       }
       setStatus('done')
@@ -594,11 +653,15 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
             onChange={e => setValues(prev => ({ ...prev, [field]: e.target.value }))}
             style={{
               width: '100%', boxSizing: 'border-box',
-              background: '#141414', border: '1px solid #2a2a2a',
+              background: '#141414',
+              border: fieldErrors[field] ? '1px solid #f87171' : '1px solid #2a2a2a',
               borderRadius: 4, color: '#e5e5e5', fontSize: '0.8rem',
               padding: '0.4rem 0.5rem',
             }}
           />
+          {fieldErrors[field] && (
+            <p style={{ color: '#f87171', fontSize: '0.7rem', margin: '2px 0 0' }}>{fieldErrors[field]}</p>
+          )}
         </div>
       ))}
       {status === 'error' && (
@@ -625,15 +688,23 @@ function RuntimeKPI({ node }: { node: AuraNode }) {
   if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
 
   const label = node.style?.label ?? node.text ?? ''
-  const value = node.value ?? ''
+  const { portValues } = useFlowEngine()
+  const kpiPorts = portValues[node.id] ?? {}
+  const value = kpiPorts['setValue'] !== undefined ? String(kpiPorts['setValue']) : (node.value ?? '')
   const prefix = node.style?.prefix ?? ''
   const suffix = node.style?.suffix ?? ''
+  const trend = kpiPorts['setTrend'] !== undefined ? String(kpiPorts['setTrend']) : (node.style?.trend ?? '')
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '1rem 1.25rem' }}>
       <p style={{ margin: '0 0 0.25rem', color: '#666', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
       <p style={{ margin: 0, color: '#e5e5e5', fontSize: '1.75rem', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
         {prefix}{value}{suffix}
       </p>
+      {trend && (
+        <p style={{ margin: '0.25rem 0 0', fontSize: '0.75rem', color: trend.startsWith('-') ? '#f87171' : '#4ade80' }}>
+          {trend}
+        </p>
+      )}
     </div>
   )
 }
@@ -654,6 +725,18 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
   const supportedType = isSupportedChartType(chartType)
   const querySql = getConnectorQuerySQL(connectorType, sql)
   const { values: dashboardFilters, refreshSeq } = useDashboardFilters()
+  const { portValues } = useFlowEngine()
+  const chartPorts = portValues[node.id] ?? {}
+  const overrideChartData = chartPorts['setData'] as Array<Record<string, unknown>> | undefined
+  const [chartLocalRefreshSeq, setChartLocalRefreshSeq] = useState(0)
+  const prevChartRefreshRef = useRef<unknown>(undefined)
+  useEffect(() => {
+    const trigger = chartPorts['refresh']
+    if (trigger !== undefined && trigger !== prevChartRefreshRef.current) {
+      prevChartRefreshRef.current = trigger
+      setChartLocalRefreshSeq(s => s + 1)
+    }
+  })
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -686,10 +769,14 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
       .catch(err => { if (!cancelled) setError(String(err?.message ?? err)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [workspaceId, connectorId, connectorType, querySql, refreshSeq])
+  }, [workspaceId, connectorId, connectorType, querySql, refreshSeq, chartLocalRefreshSeq])
+
+  const effectiveChartData: DashboardQueryResponse | null = overrideChartData
+    ? { rows: overrideChartData, columns: overrideChartData.length > 0 ? Object.keys(overrideChartData[0]) : [] }
+    : data
 
   const series = React.useMemo(
-    () => buildChartSeries(data, {
+    () => buildChartSeries(effectiveChartData, {
       labelCol,
       valueCol,
       aggregate,
@@ -704,7 +791,7 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
         },
       ],
     }),
-    [aggregate, dashboardFilters, data, labelCol, pointLimit, sortBy, sortDirection, valueCol, node.with?.filterColumn, node.with?.filterValue, node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn],
+    [aggregate, dashboardFilters, effectiveChartData, labelCol, pointLimit, sortBy, sortDirection, valueCol, node.with?.filterColumn, node.with?.filterValue, node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn],
   )
   const maxValue = Math.max(...series.points.map(point => Math.abs(point.value)), 1)
 
@@ -813,8 +900,24 @@ function RuntimeFilter({ node, workspaceId }: { node: AuraNode; workspaceId: str
 
   const label = node.text ?? node.style?.label ?? 'Filter'
   const placeholder = node.style?.placeholder ?? 'Type to filter…'
-  const options = parseFilterOptions(node.style?.options)
+  const staticOptions = parseFilterOptions(node.style?.options)
   const { values, setFilterValue } = useDashboardFilters()
+  const { portValues } = useFlowEngine()
+  const filterPortValues = portValues[node.id] ?? {}
+
+  // setValue port — set the current filter value programmatically
+  const inboundFilterValue = filterPortValues['setValue'] as string | undefined
+  const prevFilterValueRef = useRef<unknown>(undefined)
+  useEffect(() => {
+    if (inboundFilterValue !== undefined && inboundFilterValue !== prevFilterValueRef.current) {
+      prevFilterValueRef.current = inboundFilterValue
+      setFilterValue(node.id, inboundFilterValue)
+    }
+  })
+
+  // setOptions port — override dropdown options
+  const inboundOptions = filterPortValues['setOptions'] as string[] | undefined
+
   const value = values[node.id] ?? ''
 
   const optionsConnectorId = node.with?.optionsConnector ?? ''
@@ -851,7 +954,7 @@ function RuntimeFilter({ node, workspaceId }: { node: AuraNode; workspaceId: str
     return () => { cancelled = true }
   }, [workspaceId, optionsConnectorId, optionsColumn, optionsConnectorType, optionsEndpoint])
 
-  const resolvedOptions = dynamicOptions.length > 0 ? dynamicOptions : options
+  const resolvedOptions = inboundOptions ?? (dynamicOptions.length > 0 ? dynamicOptions : staticOptions)
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0.75rem', gap: '0.4rem' }}>
@@ -910,7 +1013,9 @@ function RuntimeMarkdown({ node }: { node: AuraNode }) {
   const missing = getMissingRequiredProps(node)
   if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
 
-  const content = node.style?.content ?? node.text ?? ''
+  const { portValues } = useFlowEngine()
+  const dynamicMarkdownContent = portValues[node.id]?.['setContent']
+  const content = dynamicMarkdownContent !== undefined ? String(dynamicMarkdownContent) : (node.style?.content ?? node.text ?? '')
   // Minimal markdown rendering without a library — just paragraphs
   const lines = content.split('\n')
   return (

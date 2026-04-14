@@ -227,15 +227,37 @@ func fetchWorkspaceConnectors(ctx context.Context, pool *pgxpool.Pool, workspace
 		if err := rows.Scan(&c.id, &c.name, &c.cType, &schemaRaw); err != nil {
 			return nil, fmt.Errorf("scan connector: %w", err)
 		}
-		if c.cType == "csv" && len(schemaRaw) > 0 {
-			var sch struct {
-				Columns []struct {
-					Name string `json:"name"`
-				} `json:"columns"`
-			}
-			if jsonErr := json.Unmarshal(schemaRaw, &sch); jsonErr == nil {
-				for _, col := range sch.Columns {
-					c.columns = append(c.columns, col.Name)
+		if len(schemaRaw) > 0 {
+			switch c.cType {
+			case "csv", "managed":
+				var sch struct {
+					Columns []struct {
+						Name string `json:"name"`
+					} `json:"columns"`
+				}
+				if jsonErr := json.Unmarshal(schemaRaw, &sch); jsonErr == nil {
+					for _, col := range sch.Columns {
+						c.columns = append(c.columns, col.Name)
+					}
+				}
+			case "postgres", "mysql", "mssql":
+				var sch struct {
+					Tables map[string]struct {
+						Columns []struct {
+							Name string `json:"name"`
+						} `json:"columns"`
+					} `json:"tables"`
+				}
+				if jsonErr := json.Unmarshal(schemaRaw, &sch); jsonErr == nil {
+					seen := map[string]bool{}
+					for _, tbl := range sch.Tables {
+						for _, col := range tbl.Columns {
+							if !seen[col.Name] {
+								c.columns = append(c.columns, col.Name)
+								seen[col.Name] = true
+							}
+						}
+					}
 				}
 			}
 		}

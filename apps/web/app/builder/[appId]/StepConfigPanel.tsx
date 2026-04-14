@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react'
 import { type AuraNode } from '@lima/aura-dsl'
-import { listConnectors, type Connector } from '../../../lib/api'
+import { listConnectors, runConnectorQuery, type Connector, type DashboardQueryResponse } from '../../../lib/api'
 
 interface Props {
   node: AuraNode
@@ -116,7 +116,242 @@ const STEP_META: Record<string, { icon: string; label: string; color: string }> 
   'step:http':          { icon: '🌐', label: 'HTTP Request', color: '#38bdf8' },
 }
 
+// ---- SQL builder helpers ---------------------------------------------------
+
+interface SchemaTable {
+  name: string
+  columns: Array<{ name: string; type: string }>
+}
+
+/** Extract table → columns from whatever shape schema_cache was stored in. */
+function extractTables(connector: Connector | undefined): SchemaTable[] {
+  const cache = connector?.schema_cache
+  if (!cache) return []
+
+  // SQL connectors: { tables: { tableName: { Columns: [{Name,Type}] } } }
+  if (cache.tables && typeof cache.tables === 'object') {
+    return Object.entries(cache.tables as Record<string, unknown>).map(([name, tbl]) => {
+      const t = tbl as Record<string, unknown>
+      const cols = Array.isArray(t.Columns) ? t.Columns : (Array.isArray(t.columns) ? t.columns : [])
+      return {
+        name,
+        columns: cols.map((c: unknown) => {
+          const col = c as Record<string, unknown>
+          return { name: String(col.Name ?? col.name ?? ''), type: String(col.Type ?? col.type ?? '') }
+        }).filter(c => c.name),
+      }
+    })
+  }
+
+  // Managed connectors: { columns: [{name,col_type}] }
+  if (Array.isArray(cache.columns)) {
+    const cols = (cache.columns as Array<Record<string, unknown>>).map(c => ({
+      name: String(c.name ?? ''),
+      type: String(c.col_type ?? c.type ?? ''),
+    })).filter(c => c.name)
+    return [{ name: 'data', columns: cols }]
+  }
+
+  return []
+}
+
+type WhereOp = '=' | '!=' | 'LIKE' | '>' | '<' | '>=' | '<='
+interface WhereClause { col: string; op: WhereOp; val: string }
+interface SetClause { col: string; val: string }
+type MutationOp = 'INSERT' | 'UPDATE' | 'DELETE'
+
+interface GuidedState {
+  table: string
+  whereClauses: WhereClause[]
+  limit: string
+  // mutation-only
+  mutationOp: MutationOp
+  setClauses: SetClause[]
+}
+
+function defaultGuided(): GuidedState {
+  return { table: '', whereClauses: [], limit: '50', mutationOp: 'INSERT', setClauses: [{ col: '', val: '' }] }
+}
+
+function sqlFromGuided(state: GuidedState, isQuery: boolean): string {
+  const { table, whereClauses, limit, mutationOp, setClauses } = state
+  if (!table) return ''
+
+  const whereStr = whereClauses.length > 0
+    ? ' WHERE ' + whereClauses
+        .filter(w => w.col)
+        .map(w => {
+          const val = w.val.startsWith('{{') ? w.val : `'${w.val}'`
+          return `${w.col} ${w.op} ${val}`
+        }).join(' AND ')
+    : ''
+
+  if (isQuery) {
+    const limitStr = limit ? ` LIMIT ${limit}` : ''
+    return `SELECT * FROM ${table}${whereStr}${limitStr}`
+  }
+
+  if (mutationOp === 'DELETE') return `DELETE FROM ${table}${whereStr}`
+
+  const validSets = setClauses.filter(s => s.col)
+  if (mutationOp === 'INSERT') {
+    const cols = validSets.map(s => s.col).join(', ')
+    const vals = validSets.map(s => s.val.startsWith('{{') ? s.val : `'${s.val}'`).join(', ')
+    return cols ? `INSERT INTO ${table} (${cols}) VALUES (${vals})` : `INSERT INTO ${table} DEFAULT VALUES`
+  }
+
+  // UPDATE
+  const setStr = validSets.map(s => `${s.col} = ${s.val.startsWith('{{') ? s.val : `'${s.val}'`}`).join(', ')
+  return setStr ? `UPDATE ${table} SET ${setStr}${whereStr}` : ''
+}
+
+/**
+ * Try to parse a simple SQL query into guided state.
+ * Returns null when the SQL is too complex to represent.
+ */
+function tryParseSQL(sql: string, isQuery: boolean): GuidedState | null {
+  const s = sql.trim()
+  if (!s) return defaultGuided()
+
+  const WHERE_CLAUSE_RE = /(\w+)\s*(=|!=|LIKE|>=|<=|>|<)\s*('([^']*)'|({{[^}]+}}))/gi
+  const whereMatch = (str: string): WhereClause[] => {
+    const result: WhereClause[] = []
+    let m
+    const re = new RegExp(WHERE_CLAUSE_RE.source, 'gi')
+    while ((m = re.exec(str)) !== null) {
+      result.push({ col: m[1], op: m[2] as WhereOp, val: m[4] !== undefined ? m[4] : m[5] })
+    }
+    return result
+  }
+
+  if (isQuery) {
+    const m = s.match(/^SELECT\s+[*\w,\s]+\s+FROM\s+(\w+)(.*?)(?:LIMIT\s+(\d+))?$/i)
+    if (!m) return null
+    const table = m[1]
+    const rest = m[2] ?? ''
+    const limit = m[3] ?? '50'
+    const whereMatch_ = rest.match(/WHERE\s+(.*)/i)
+    const whereClauses = whereMatch_ ? whereMatch(whereMatch_[1]) : []
+    return { table, whereClauses, limit, mutationOp: 'INSERT', setClauses: [{ col: '', val: '' }] }
+  }
+
+  // INSERT
+  const ins = s.match(/^INSERT\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i)
+  if (ins) {
+    const table = ins[1]
+    const cols = ins[2].split(',').map(c => c.trim())
+    const vals = ins[3].split(',').map(v => v.trim().replace(/^'|'$/g, ''))
+    const setClauses: SetClause[] = cols.map((col, i) => ({ col, val: vals[i] ?? '' }))
+    return { table, setClauses, whereClauses: [], limit: '50', mutationOp: 'INSERT' }
+  }
+
+  // UPDATE
+  const upd = s.match(/^UPDATE\s+(\w+)\s+SET\s+(.*?)(?:\s+WHERE\s+(.*))?$/i)
+  if (upd) {
+    const table = upd[1]
+    const setClauses: SetClause[] = upd[2].split(',').map(part => {
+      const eq = part.indexOf('=')
+      return { col: part.slice(0, eq).trim(), val: part.slice(eq + 1).trim().replace(/^'|'$/g, '') }
+    })
+    const whereClauses = upd[3] ? whereMatch(upd[3]) : []
+    return { table, setClauses, whereClauses, limit: '50', mutationOp: 'UPDATE' }
+  }
+
+  // DELETE
+  const del = s.match(/^DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+(.*))?$/i)
+  if (del) {
+    const table = del[1]
+    const whereClauses = del[2] ? whereMatch(del[2]) : []
+    return { table, whereClauses, setClauses: [{ col: '', val: '' }], limit: '50', mutationOp: 'DELETE' }
+  }
+
+  return null
+}
+
 // ---- Sub-editors per step type ---------------------------------------------
+
+const WHERE_OPS: WhereOp[] = ['=', '!=', 'LIKE', '>', '<', '>=', '<=']
+
+function WhereBuilder({
+  clauses, columns, onChange,
+}: {
+  clauses: WhereClause[]
+  columns: string[]
+  onChange: (next: WhereClause[]) => void
+}) {
+  const add = () => onChange([...clauses, { col: columns[0] ?? '', op: '=', val: '' }])
+  const remove = (i: number) => onChange(clauses.filter((_, idx) => idx !== i))
+  const update = (i: number, patch: Partial<WhereClause>) =>
+    onChange(clauses.map((c, idx) => idx === i ? { ...c, ...patch } : c))
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={labelStyle}>Where (filters)</span>
+        <button onClick={add} style={{ fontSize: '0.6rem', color: '#555', background: 'none', border: 'none', cursor: 'pointer' }}>+ Add filter</button>
+      </div>
+      {clauses.length === 0 && (
+        <div style={{ fontSize: '0.6rem', color: '#333', fontStyle: 'italic' }}>No filters — returns all rows.</div>
+      )}
+      {clauses.map((clause, i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 60px 1fr 18px', gap: 4, alignItems: 'center' }}>
+          {columns.length > 0 ? (
+            <select style={selectStyle} value={clause.col} onChange={e => update(i, { col: e.target.value })}>
+              <option value="">Column…</option>
+              {columns.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          ) : (
+            <input style={inputStyle} value={clause.col} placeholder="column" onChange={e => update(i, { col: e.target.value })} />
+          )}
+          <select style={selectStyle} value={clause.op} onChange={e => update(i, { op: e.target.value as WhereOp })}>
+            {WHERE_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+          </select>
+          <input style={inputStyle} value={clause.val} placeholder="value or {{widget.port}}" onChange={e => update(i, { val: e.target.value })} />
+          <button onClick={() => remove(i)} style={{ fontSize: '0.7rem', color: '#555', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>✕</button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PreviewResults({ result, error, loading }: { result: DashboardQueryResponse | null; error: string; loading: boolean }) {
+  if (loading) return <div style={{ fontSize: '0.65rem', color: '#555', padding: '6px 0' }}>Running…</div>
+  if (error) return <div style={{ fontSize: '0.65rem', color: '#ef4444', padding: '4px 0' }}>{error}</div>
+  if (!result) return null
+
+  const cols = result.columns ?? []
+  const rows = result.rows ?? []
+
+  return (
+    <div style={{ overflowX: 'auto', marginTop: 4 }}>
+      <div style={{ fontSize: '0.6rem', color: '#444', marginBottom: 4 }}>
+        {result.row_count} row{result.row_count !== 1 ? 's' : ''} — showing up to 10
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.6rem' }}>
+        <thead>
+          <tr>
+            {cols.map(c => (
+              <th key={c} style={{ textAlign: 'left', padding: '2px 6px', background: '#0c0c0c', color: '#555', borderBottom: '1px solid #1a1a1a', whiteSpace: 'nowrap' }}>
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} style={{ borderBottom: '1px solid #111' }}>
+              {cols.map(c => (
+                <td key={c} style={{ padding: '2px 6px', color: '#666', whiteSpace: 'nowrap', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {String(row[c] ?? '')}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
 
 function SqlStepEditor({
   node, onUpdate, workspaceId,
@@ -125,7 +360,14 @@ function SqlStepEditor({
   onUpdate: (node: AuraNode) => void
   workspaceId: string
 }) {
+  const isQuery = node.element === 'step:query'
   const [connectors, setConnectors] = useState<Connector[]>([])
+  const [mode, setMode] = useState<'guided' | 'sql'>('guided')
+  const [guided, setGuided] = useState<GuidedState>(defaultGuided)
+  const [parseWarning, setParseWarning] = useState('')
+  const [preview, setPreview] = useState<DashboardQueryResponse | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState('')
 
   useEffect(() => {
     if (!workspaceId) return
@@ -133,26 +375,96 @@ function SqlStepEditor({
   }, [workspaceId])
 
   const with_ = node.with ?? {}
+  const connectorId = String(with_.connector ?? '')
+  const currentSql = String(with_.sql ?? '')
+  const selectedConnector = connectors.find(c => c.id === connectorId)
+  const tables = extractTables(selectedConnector)
 
-  const set = (key: string, value: string) => {
+  // When the connector changes, reset guided state to defaults for that connector
+  const prevConnectorRef = React.useRef(connectorId)
+  useEffect(() => {
+    if (connectorId !== prevConnectorRef.current) {
+      prevConnectorRef.current = connectorId
+      setGuided(defaultGuided())
+      setPreview(null)
+    }
+  }, [connectorId])
+
+  // When the mode switches to guided, try to parse current SQL
+  const switchToGuided = () => {
+    const parsed = tryParseSQL(currentSql, isQuery)
+    if (!parsed) {
+      setParseWarning('This SQL is too complex for guided mode — editing in SQL.')
+      return
+    }
+    setParseWarning('')
+    setGuided(parsed)
+    setMode('guided')
+  }
+
+  const switchToSql = () => {
+    // Flush guided state → SQL
+    const sql = sqlFromGuided(guided, isQuery)
+    if (sql && !currentSql) {
+      setWith('sql', sql)
+    }
+    setMode('sql')
+  }
+
+  const setWith = (key: string, value: string) => {
     onUpdate({
       ...node,
-      with: {
-        ...with_,
-        ...(value ? { [key]: value } : {}),
-        ...(value ? {} : Object.fromEntries(Object.entries(with_).filter(([k]) => k !== key))),
-      },
+      with: { ...(node.with ?? {}), [key]: value },
     })
   }
 
+  const clearWith = (key: string) => {
+    const next = { ...(node.with ?? {}) }
+    delete next[key]
+    onUpdate({ ...node, with: next })
+  }
+
+  // Sync guided state → node when guided changes
+  const updateGuided = (patch: Partial<GuidedState>) => {
+    const next = { ...guided, ...patch }
+    setGuided(next)
+    const sql = sqlFromGuided(next, isQuery)
+    if (sql) setWith('sql', sql)
+    else clearWith('sql')
+  }
+
+  const selectedTable = tables.find(t => t.name === guided.table)
+  const tableColumns = selectedTable?.columns.map(c => c.name) ?? []
+
+  const handlePreview = async () => {
+    const sql = mode === 'guided' ? sqlFromGuided(guided, isQuery) : currentSql
+    if (!connectorId || !sql) return
+    setPreviewLoading(true)
+    setPreviewError('')
+    setPreview(null)
+    try {
+      const res = await runConnectorQuery(workspaceId, connectorId, { sql, limit: 10 })
+      if (res.error) setPreviewError(res.error)
+      else setPreview(res)
+    } catch (e) {
+      setPreviewError(e instanceof Error ? e.message : 'Query failed')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const effectiveSql = mode === 'guided' ? sqlFromGuided(guided, isQuery) : currentSql
+  const canPreview = Boolean(connectorId && effectiveSql && isQuery)
+
   return (
     <>
+      {/* Connector */}
       <div>
         <label style={labelStyle}>Connector</label>
         <select
           style={selectStyle}
-          value={with_.connector ?? ''}
-          onChange={e => set('connector', e.target.value)}
+          value={connectorId}
+          onChange={e => setWith('connector', e.target.value)}
         >
           <option value="">Select a connector…</option>
           {connectors.map(c => (
@@ -160,18 +472,194 @@ function SqlStepEditor({
           ))}
         </select>
       </div>
-      <Field
-        label="SQL"
-        type="textarea"
-        value={String(with_.sql ?? '')}
-        placeholder={node.element === 'step:query'
-          ? 'SELECT * FROM table WHERE id = {{widget.port}}'
-          : 'INSERT INTO table (col) VALUES ({{widget.port}})'}
-        onChange={v => set('sql', v)}
-      />
-      <div style={{ fontSize: '0.6rem', color: '#444', fontStyle: 'italic' }}>
-        Use <code style={{ color: '#555' }}>{'{{widgetId.portName}}'}</code> to reference widget values.
+
+      {/* Mode toggle */}
+      <div style={{ display: 'flex', gap: 0, borderRadius: 4, overflow: 'hidden', border: '1px solid #1e1e1e' }}>
+        {(['guided', 'sql'] as const).map(m => (
+          <button
+            key={m}
+            onClick={() => m === 'guided' ? switchToGuided() : switchToSql()}
+            style={{
+              flex: 1,
+              padding: '4px 0',
+              fontSize: '0.65rem',
+              background: mode === m ? '#1a1a1a' : 'transparent',
+              color: mode === m ? '#e5e5e5' : '#555',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: mode === m ? 600 : 400,
+              textTransform: 'capitalize',
+            }}
+          >
+            {m === 'guided' ? 'Guided' : 'SQL'}
+          </button>
+        ))}
       </div>
+
+      {parseWarning && (
+        <div style={{ fontSize: '0.6rem', color: '#fb923c', fontStyle: 'italic' }}>{parseWarning}</div>
+      )}
+
+      {/* Guided mode */}
+      {mode === 'guided' && (
+        <>
+          {/* Table */}
+          <div>
+            <label style={labelStyle}>Table</label>
+            {tables.length > 0 ? (
+              <select style={selectStyle} value={guided.table} onChange={e => updateGuided({ table: e.target.value })}>
+                <option value="">Select a table…</option>
+                {tables.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+              </select>
+            ) : (
+              <input
+                style={inputStyle}
+                value={guided.table}
+                placeholder="table_name"
+                onChange={e => updateGuided({ table: e.target.value })}
+              />
+            )}
+          </div>
+
+          {/* Mutation operation selector */}
+          {!isQuery && (
+            <div>
+              <label style={labelStyle}>Operation</label>
+              <div style={{ display: 'flex', gap: 0, borderRadius: 4, overflow: 'hidden', border: '1px solid #1e1e1e' }}>
+                {(['INSERT', 'UPDATE', 'DELETE'] as MutationOp[]).map(op => (
+                  <button
+                    key={op}
+                    onClick={() => updateGuided({ mutationOp: op })}
+                    style={{
+                      flex: 1, padding: '4px 0', fontSize: '0.6rem',
+                      background: guided.mutationOp === op ? '#1a1a1a' : 'transparent',
+                      color: guided.mutationOp === op ? '#e5e5e5' : '#555',
+                      border: 'none', cursor: 'pointer',
+                    }}
+                  >
+                    {op}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* SET clauses — INSERT / UPDATE */}
+          {!isQuery && guided.mutationOp !== 'DELETE' && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <label style={labelStyle}>{guided.mutationOp === 'INSERT' ? 'Columns to set' : 'Fields to update'}</label>
+                <button
+                  onClick={() => updateGuided({ setClauses: [...guided.setClauses, { col: '', val: '' }] })}
+                  style={{ fontSize: '0.6rem', color: '#555', background: 'none', border: 'none', cursor: 'pointer' }}
+                >
+                  + Add field
+                </button>
+              </div>
+              {guided.setClauses.map((s, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 18px', gap: 4, marginBottom: 4, alignItems: 'center' }}>
+                  {tableColumns.length > 0 ? (
+                    <select style={selectStyle} value={s.col} onChange={e => {
+                      const next = guided.setClauses.map((sc, idx) => idx === i ? { ...sc, col: e.target.value } : sc)
+                      updateGuided({ setClauses: next })
+                    }}>
+                      <option value="">Column…</option>
+                      {tableColumns.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  ) : (
+                    <input style={inputStyle} value={s.col} placeholder="column" onChange={e => {
+                      const next = guided.setClauses.map((sc, idx) => idx === i ? { ...sc, col: e.target.value } : sc)
+                      updateGuided({ setClauses: next })
+                    }} />
+                  )}
+                  <input style={inputStyle} value={s.val} placeholder="value or {{widget.port}}" onChange={e => {
+                    const next = guided.setClauses.map((sc, idx) => idx === i ? { ...sc, val: e.target.value } : sc)
+                    updateGuided({ setClauses: next })
+                  }} />
+                  <button
+                    onClick={() => updateGuided({ setClauses: guided.setClauses.filter((_, idx) => idx !== i) })}
+                    style={{ fontSize: '0.7rem', color: '#555', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                  >✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* WHERE clauses */}
+          <WhereBuilder
+            clauses={guided.whereClauses}
+            columns={tableColumns}
+            onChange={whereClauses => updateGuided({ whereClauses })}
+          />
+
+          {/* LIMIT — queries only */}
+          {isQuery && (
+            <Field
+              label="Row limit"
+              value={guided.limit}
+              placeholder="50"
+              onChange={limit => updateGuided({ limit })}
+            />
+          )}
+
+          {/* Generated SQL preview */}
+          {effectiveSql && (
+            <div>
+              <label style={labelStyle}>Generated SQL</label>
+              <div style={{
+                fontSize: '0.6rem', fontFamily: 'monospace', color: '#3b82f6',
+                background: '#0a0a0a', borderRadius: 4, padding: '6px 8px',
+                wordBreak: 'break-all', lineHeight: 1.5, border: '1px solid #1a1a1a',
+              }}>
+                {effectiveSql}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* SQL mode */}
+      {mode === 'sql' && (
+        <>
+          <Field
+            label="SQL"
+            type="textarea"
+            value={currentSql}
+            placeholder={isQuery
+              ? 'SELECT * FROM users WHERE status = {{form1.status}}'
+              : 'INSERT INTO orders (user_id, amount) VALUES ({{form1.userId}}, {{form1.amount}})'}
+            onChange={v => setWith('sql', v)}
+          />
+          <div style={{ fontSize: '0.6rem', color: '#444', fontStyle: 'italic' }}>
+            Use <code style={{ color: '#555' }}>{'{{widgetId.portName}}'}</code> to reference widget values.
+          </div>
+        </>
+      )}
+
+      {/* Preview — queries only */}
+      {isQuery && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <label style={labelStyle}>Preview results</label>
+            <button
+              disabled={!canPreview || previewLoading}
+              onClick={handlePreview}
+              style={{
+                fontSize: '0.6rem',
+                padding: '3px 8px',
+                borderRadius: 4,
+                background: canPreview ? '#1a2a1a' : 'transparent',
+                color: canPreview ? '#4ade80' : '#333',
+                border: `1px solid ${canPreview ? '#1e3a1e' : '#1a1a1a'}`,
+                cursor: canPreview ? 'pointer' : 'default',
+              }}
+            >
+              {previewLoading ? 'Running…' : 'Run preview'}
+            </button>
+          </div>
+          <PreviewResults result={preview} error={previewError} loading={previewLoading} />
+        </div>
+      )}
     </>
   )
 }
