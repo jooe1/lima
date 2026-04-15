@@ -345,16 +345,23 @@ Each widget declaration looks like:
 
 ## Available Widget Types
 
-- container: layout wrapper
+- container: flex layout container — use as a visual background or grouping panel.
+  - Required with keys: none.
+  - Optional with keys: direction ("row" or "column", default "column"), gap (CSS value, default "16px").
+  - All other widgets that sit inside it visually still use @ root as their parent (the canvas is always flat).
+  - Do NOT set other widgets' parent to a container id — they must stay @ root.
 - text: static or dynamic label
 - button: clickable action
 - table: data grid
-- form: input form
+- form: data-entry form — MUST include a fields key listing every input field name.
+  - Required with keys: fields (comma-separated field names, e.g. with fields="name,email,phone").
+  - Optional with keys: submitLabel (button text, default "Submit").
+  - Optional with keys: onSubmit (workflow ID to trigger on submit).
 - chart: chart widget
 - kpi: single metric display
 - filter: filter control
-- modal: overlay dialog
-- tabs: tabbed container
+- modal: overlay dialog (not yet supported in the production runtime — do not use)
+- tabs: tabbed container (not yet supported in the production runtime — do not use)
 - markdown: rich text block
 
 ## Data Binding (with clause)
@@ -425,6 +432,41 @@ table leadsTable @ root
 
 Replace CONNECTOR_ID with the actual connector id provided in the context.
 
+## Worked example: form widget
+
+A form that collects name, email, and message fields:
+
+` + "```aura" + `
+form contactForm @ root
+  text "Contact Us"
+  with fields="name,email,message"
+       submitLabel="Send"
+  style { gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
+;
+` + "```" + `
+
+The fields key is REQUIRED for every form widget. It must be a comma-separated list of
+field names. Omitting it produces an empty form with no inputs.
+
+## Worked example: container as a background panel
+
+A container used as a background card behind a set of KPI tiles:
+
+` + "```aura" + `
+container kpiBackground @ root
+  with direction="row" gap="16px"
+  style { gridX: "0"; gridY: "0"; gridW: "24"; gridH: "4" }
+;
+kpi activeUsers @ root
+  text "Active Users"
+  value "{{query.count}}"
+  style { gridX: "1"; gridY: "1"; gridW: "6"; gridH: "2" }
+;
+` + "```" + `
+
+Note: child widgets always use @ root, never @ containerId.
+The container is purely a visual layer placed behind other widgets via grid position.
+
 ## Rules
 
 1. Always return the complete updated DSL document, not just a diff.
@@ -436,6 +478,9 @@ Replace CONNECTOR_ID with the actual connector id provided in the context.
 7. Keep IDs short and descriptive.
 8. Always use the exact connector IDs from the provided connector list. Do not invent IDs.
 9. If the user references a connector by name, match it to the closest name in the available connectors list.
+10. Every form widget MUST include with fields="..." listing at least one field name. A form without fields is invalid.
+11. Every widget's parent must be @ root. Never use a container's id as a parent — all widgets are siblings at the root level. Use grid coordinates to position widgets on top of or next to a container.
+12. Do not use modal or tabs widgets — they are not yet supported in the production runtime.
 `
 
 func fetchAppAndMessages(ctx context.Context, pool *pgxpool.Pool, payload GenerationPayload) (appRow, []msgRow, error) {

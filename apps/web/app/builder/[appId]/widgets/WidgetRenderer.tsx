@@ -178,7 +178,28 @@ function renderBody(node: AuraNode, workspaceId: string): React.ReactNode {
     }
 
     case 'container': {
-      return <BuilderUnsupportedPreview node={node} />
+      const direction = node.with?.direction ?? node.style?.direction ?? 'column'
+      const gap = node.with?.gap ?? node.style?.gap ?? '16px'
+      return (
+        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: '0.6rem', color: '#444', fontFamily: 'monospace' }}>
+            direction: {direction} &nbsp;|&nbsp; gap: {gap}
+          </div>
+          <div style={{
+            flex: 1,
+            border: '1px dashed #2a2a2a',
+            borderRadius: 3,
+            display: 'flex',
+            flexDirection: direction as React.CSSProperties['flexDirection'],
+            gap: '4px',
+            padding: '4px',
+            alignItems: 'stretch',
+          }}>
+            <div style={{ flex: 1, background: '#151515', borderRadius: 2, minHeight: 14 }} />
+            <div style={{ flex: 1, background: '#151515', borderRadius: 2, minHeight: 14 }} />
+          </div>
+        </div>
+      )
     }
 
     case 'modal': {

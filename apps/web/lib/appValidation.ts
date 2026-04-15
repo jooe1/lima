@@ -1,7 +1,7 @@
 import { type AuraDocument, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 
-export const PRODUCTION_UNSUPPORTED_WIDGETS = ['container', 'modal', 'tabs'] as const
+export const PRODUCTION_UNSUPPORTED_WIDGETS = ['modal', 'tabs'] as const
 const unsupportedWidgetSet = new Set<WidgetType>(PRODUCTION_UNSUPPORTED_WIDGETS)
 
 export const SUPPORTED_CHART_TYPES = ['bar'] as const
