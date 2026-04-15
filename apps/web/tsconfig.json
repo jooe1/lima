@@ -18,6 +18,15 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@lima/aura-dsl": [
+        "../../packages/aura-dsl/src/index.ts"
+      ],
+      "@lima/widget-catalog": [
+        "../../packages/widget-catalog/src/index.ts"
+      ],
+      "@lima/sdk-connectors": [
+        "../../packages/sdk-connectors/src/index.ts"
       ]
     },
     "allowJs": true,

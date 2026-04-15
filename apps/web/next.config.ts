@@ -1,9 +1,16 @@
 import type { NextConfig } from 'next'
 import createNextIntlPlugin from 'next-intl/plugin'
+import path from 'path'
 
 const withNextIntl = createNextIntlPlugin('./i18n/request.ts')
 
 const isDev = process.env.NODE_ENV === 'development'
+
+const workspacePackageAliases = {
+  '@lima/aura-dsl': path.resolve(__dirname, '../../packages/aura-dsl/src/index.ts'),
+  '@lima/widget-catalog': path.resolve(__dirname, '../../packages/widget-catalog/src/index.ts'),
+  '@lima/sdk-connectors': path.resolve(__dirname, '../../packages/sdk-connectors/src/index.ts'),
+}
 
 const config: NextConfig = {
   // Keep dev output separate from production builds so switching between
@@ -26,6 +33,14 @@ const config: NextConfig = {
     serverActions: {
       bodySizeLimit: '10mb',
     },
+  },
+  webpack(config) {
+    config.resolve.alias = {
+      ...(config.resolve.alias ?? {}),
+      ...workspacePackageAliases,
+    }
+
+    return config
   },
 }
 

@@ -13,6 +13,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './'),
+      '@lima/aura-dsl': path.resolve(__dirname, '../../packages/aura-dsl/src/index.ts'),
+      '@lima/widget-catalog': path.resolve(__dirname, '../../packages/widget-catalog/src/index.ts'),
+      '@lima/sdk-connectors': path.resolve(__dirname, '../../packages/sdk-connectors/src/index.ts'),
     },
   },
 })
