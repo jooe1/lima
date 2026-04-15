@@ -341,6 +341,15 @@ func ReviewStep(s *store.Store, log *zap.Logger) http.HandlerFunc {
 // workflows the run is still created so builders can test the flow manually.
 // If the execution job cannot be queued after retries, the run is cleaned up
 // and the request fails.
+//
+// Approval gating rules:
+//   - workspace_admin and app_builder always enqueue immediately.
+//   - For any other role: if the workflow has mutation steps the caller must
+//     hold a "mutate" resource grant on every mutation-step connector.
+//     • Has mutate grant on all  → enqueue immediately.
+//     • Missing mutate grant but workflow has mutation steps → approval gate (awaiting_approval).
+//     • No grant at all on a required connector → 403 mutate_grant_required.
+//   - Workflows with no mutation steps always enqueue immediately for everyone.
 func TriggerWorkflow(cfg *config.Config, s triggerWorkflowStore, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		workspaceID := chi.URLParam(r, "workspaceID")
@@ -355,65 +364,93 @@ func TriggerWorkflow(cfg *config.Config, s triggerWorkflowStore, enq *queue.Enqu
 			req.InputData = map[string]any{}
 		}
 
-		// Determine the caller's workspace role to decide the execution path.
+		// Determine the caller's workspace role.
 		callerRole, err := s.GetMemberRole(r.Context(), workspaceID, claims.UserID)
 		if err != nil {
 			respondErr(w, http.StatusForbidden, "not_a_member", "you are not a member of this workspace")
 			return
 		}
 
-		// end_user path: enforce per-connector mutate grants and force approval gating.
-		if callerRole == model.RoleEndUser {
-			run, trigErr := triggerEndUserWorkflowRun(
-				r.Context(), s, cfg.CredentialsEncryptionKey,
-				claims.CompanyID, workspaceID, workflowID, claims.UserID, req.InputData,
-			)
-			if trigErr != nil {
-				var grantErr *errMutateGrantRequired
-				if errors.As(trigErr, &grantErr) {
-					respond(w, http.StatusForbidden, map[string]string{
-						"error":        "mutate_grant_required",
-						"connector_id": grantErr.ConnectorID,
-					})
-					return
-				}
-				log.Error("end_user trigger workflow", zap.Error(trigErr))
-				respondErr(w, http.StatusInternalServerError, "internal_error", "failed to trigger workflow")
+		// workspace_admin and app_builder always bypass grant checks and approval gating.
+		if callerRole != model.RoleEndUser {
+			run, err := s.CreateWorkflowRun(r.Context(), workspaceID, workflowID, &claims.UserID, req.InputData)
+			if err != nil {
+				log.Error("trigger workflow", zap.Error(err))
+				respondErr(w, http.StatusInternalServerError, "db_error", "failed to create workflow run")
 				return
 			}
-			respond(w, http.StatusAccepted, run)
-			return
-		}
-
-		// app_builder / workspace_admin path: existing behavior — enqueue immediately.
-		run, err := s.CreateWorkflowRun(r.Context(), workspaceID, workflowID, &claims.UserID, req.InputData)
-		if err != nil {
-			log.Error("trigger workflow", zap.Error(err))
-			respondErr(w, http.StatusInternalServerError, "db_error", "failed to create workflow run")
-			return
-		}
-
-		payload := model.WorkflowJobPayload{
-			RunID:       run.ID,
-			WorkflowID:  workflowID,
-			WorkspaceID: workspaceID,
-		}
-		if err := enqueueWorkflowJob(r.Context(), workflowEnqueueAttempts, workflowEnqueueRetryDelay, func(ctx context.Context) error {
-			if enq == nil {
-				return errWorkflowQueueUnavailable
+			payload := model.WorkflowJobPayload{
+				RunID:       run.ID,
+				WorkflowID:  workflowID,
+				WorkspaceID: workspaceID,
 			}
-			return enq.EnqueueWorkflow(ctx, payload)
-		}); err != nil {
-			log.Warn("workflow job enqueue failed after retries", zap.String("run_id", run.ID), zap.Error(err))
-			if cleanupErr := cleanupTriggeredWorkflowRun(r.Context(), s, workspaceID, run.ID); cleanupErr != nil {
-				log.Error("workflow run cleanup failed after enqueue error",
-					zap.String("run_id", run.ID), zap.Error(cleanupErr))
+			if err := enqueueWorkflowJob(r.Context(), workflowEnqueueAttempts, workflowEnqueueRetryDelay, func(ctx context.Context) error {
+				if enq == nil {
+					return errWorkflowQueueUnavailable
+				}
+				return enq.EnqueueWorkflow(ctx, payload)
+			}); err != nil {
+				log.Warn("workflow job enqueue failed after retries", zap.String("run_id", run.ID), zap.Error(err))
+				if cleanupErr := cleanupTriggeredWorkflowRun(r.Context(), s, workspaceID, run.ID); cleanupErr != nil {
+					log.Error("workflow run cleanup failed after enqueue error",
+						zap.String("run_id", run.ID), zap.Error(cleanupErr))
+				}
+				respondErr(w, http.StatusServiceUnavailable, "queue_unavailable", "workflow trigger unavailable")
+				return
 			}
-			respondErr(w, http.StatusServiceUnavailable, "queue_unavailable", "workflow trigger unavailable")
+			respond(w, http.StatusCreated, run)
 			return
 		}
 
-		respond(w, http.StatusCreated, run)
+		// end_user path: grant-based decision.
+		// Has mutate grant on all mutation-step connectors → enqueue immediately.
+		// Has access but not mutate grant                  → approval gate.
+		// Has no grant on a required connector             → 403.
+		run, trigErr := triggerEndUserWorkflowRun(
+			r.Context(), s, cfg.CredentialsEncryptionKey,
+			claims.CompanyID, workspaceID, workflowID, claims.UserID, req.InputData,
+		)
+		if trigErr != nil {
+			var grantErr *errMutateGrantRequired
+			if errors.As(trigErr, &grantErr) {
+				respond(w, http.StatusForbidden, map[string]string{
+					"error":        "mutate_grant_required",
+					"connector_id": grantErr.ConnectorID,
+				})
+				return
+			}
+			log.Error("end_user trigger workflow", zap.Error(trigErr))
+			respondErr(w, http.StatusInternalServerError, "internal_error", "failed to trigger workflow")
+			return
+		}
+		// 201 if run was enqueued immediately, 202 if it is awaiting approval.
+		statusCode := http.StatusCreated
+		if run.Status == model.RunStatusAwaitingApproval {
+			statusCode = http.StatusAccepted
+		} else {
+			// pending: enqueue the job for immediate execution.
+			payload := model.WorkflowJobPayload{
+				RunID:       run.ID,
+				WorkflowID:  workflowID,
+				WorkspaceID: workspaceID,
+			}
+			if enqErr := enqueueWorkflowJob(r.Context(), workflowEnqueueAttempts, workflowEnqueueRetryDelay, func(ctx context.Context) error {
+				if enq == nil {
+					return errWorkflowQueueUnavailable
+				}
+				return enq.EnqueueWorkflow(ctx, payload)
+			}); enqErr != nil {
+				log.Warn("workflow job enqueue failed after retries", zap.String("run_id", run.ID), zap.Error(enqErr))
+				if cleanupErr := cleanupTriggeredWorkflowRun(r.Context(), s, workspaceID, run.ID); cleanupErr != nil {
+					log.Error("workflow run cleanup failed after enqueue error",
+						zap.String("run_id", run.ID), zap.Error(cleanupErr))
+				}
+				respondErr(w, http.StatusServiceUnavailable, "queue_unavailable", "workflow trigger unavailable")
+				return
+			}
+		}
+		respond(w, statusCode, run)
+		return
 	}
 }
 
@@ -691,7 +728,13 @@ func triggerEndUserWorkflowRun(
 		return nil, fmt.Errorf("load workflow: %w", err)
 	}
 
-	// Verify the caller has a mutate grant for every mutation-step connector.
+	// Walk mutation steps and determine whether the caller holds a mutate grant
+	// on every connector involved.
+	//
+	//   allHaveMutate=true  → enqueue immediately, no approval needed.
+	//   allHaveMutate=false, no missing access → approval gate.
+	//   any connector lacks even a query grant → 403.
+	allHaveMutate := true
 	for _, step := range wf.Steps {
 		if step.StepType != model.StepTypeMutation {
 			continue
@@ -700,12 +743,21 @@ func triggerEndUserWorkflowRun(
 		if connID == "" {
 			continue
 		}
-		ok, err := s.HasResourceGrant(ctx, companyID, "connector", connID, "user", userID, "mutate")
+		hasMutate, err := s.HasResourceGrant(ctx, companyID, "connector", connID, "user", userID, "mutate")
 		if err != nil {
-			return nil, fmt.Errorf("check resource grant: %w", err)
+			return nil, fmt.Errorf("check mutate grant: %w", err)
 		}
-		if !ok {
-			return nil, &errMutateGrantRequired{ConnectorID: connID}
+		if !hasMutate {
+			// Check whether the user has at least read (query) access.
+			hasQuery, err := s.HasResourceGrant(ctx, companyID, "connector", connID, "user", userID, "query")
+			if err != nil {
+				return nil, fmt.Errorf("check query grant: %w", err)
+			}
+			if !hasQuery {
+				// No access at all — reject.
+				return nil, &errMutateGrantRequired{ConnectorID: connID}
+			}
+			allHaveMutate = false
 		}
 	}
 
@@ -715,7 +767,14 @@ func triggerEndUserWorkflowRun(
 		return nil, fmt.Errorf("create workflow run: %w", err)
 	}
 
-	// Transition to awaiting_approval so the worker does not pick it up.
+	// If the caller has full mutate access (or the workflow has no mutation
+	// steps), return the pending run so the caller can enqueue it immediately.
+	if allHaveMutate {
+		return run, nil
+	}
+
+	// The caller has read-only (query) access to at least one mutation-step
+	// connector: gate behind approval.
 	if err := s.UpdateWorkflowRunStatus(ctx, run.ID, model.RunStatusAwaitingApproval); err != nil {
 		_ = s.DeleteWorkflowRun(ctx, workspaceID, run.ID)
 		return nil, fmt.Errorf("set run awaiting approval: %w", err)
