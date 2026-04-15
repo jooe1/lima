@@ -346,9 +346,9 @@ func ReviewStep(s *store.Store, log *zap.Logger) http.HandlerFunc {
 //   - workspace_admin and app_builder always enqueue immediately.
 //   - For any other role: if the workflow has mutation steps the caller must
 //     hold a "mutate" resource grant on every mutation-step connector.
-//     • Has mutate grant on all  → enqueue immediately.
-//     • Missing mutate grant but workflow has mutation steps → approval gate (awaiting_approval).
-//     • No grant at all on a required connector → 403 mutate_grant_required.
+//   - Has mutate grant on all  → enqueue immediately.
+//   - Missing mutate grant but workflow has mutation steps → approval gate (awaiting_approval).
+//   - No grant at all on a required connector → 403 mutate_grant_required.
 //   - Workflows with no mutation steps always enqueue immediately for everyone.
 func TriggerWorkflow(cfg *config.Config, s triggerWorkflowStore, enq *queue.Enqueuer, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
