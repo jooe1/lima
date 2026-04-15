@@ -34,6 +34,9 @@ docs/
 ## Quick start (local dev)
 
 ```bash
+# 0. Install workspace dependencies
+pnpm install
+
 # 1. Start Postgres, Redis, OTEL collector, and Jaeger
 cd deploy/docker-compose
 docker compose up postgres redis otel-collector jaeger -d
