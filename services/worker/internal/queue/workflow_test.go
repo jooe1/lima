@@ -693,3 +693,313 @@ func TestCollectTriggeredOutputBindings(t *testing.T) {
 		}
 	})
 }
+// ---- evaluateCondition tests ------------------------------------------------
+
+func TestEvaluateConditionEqNeq(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]any{"status": "active"}
+
+	got := evaluateCondition(map[string]any{"left": "{{input.status}}", "op": "eq", "right": "active"}, input, nil)
+	m, _ := got.(map[string]any)
+	if m["result"] != true {
+		t.Fatalf("eq active == active: result = %v, want true", m["result"])
+	}
+
+	got = evaluateCondition(map[string]any{"left": "{{input.status}}", "op": "eq", "right": "inactive"}, input, nil)
+	m, _ = got.(map[string]any)
+	if m["result"] != false {
+		t.Fatalf("eq active == inactive: result = %v, want false", m["result"])
+	}
+
+	got = evaluateCondition(map[string]any{"left": "{{input.status}}", "op": "neq", "right": "inactive"}, input, nil)
+	m, _ = got.(map[string]any)
+	if m["result"] != true {
+		t.Fatalf("neq active != inactive: result = %v, want true", m["result"])
+	}
+}
+
+func TestEvaluateConditionNumericComparisons(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		left   any
+		op     string
+		right  string
+		want   bool
+	}{
+		{name: "gt true",  left: 10,   op: "gt",  right: "5",  want: true},
+		{name: "gt false", left: 3,    op: "gt",  right: "5",  want: false},
+		{name: "gt equal", left: 5,    op: "gt",  right: "5",  want: false},
+		{name: "lt true",  left: 3,    op: "lt",  right: "5",  want: true},
+		{name: "lt false", left: 10,   op: "lt",  right: "5",  want: false},
+		{name: "lt equal", left: 5,    op: "lt",  right: "5",  want: false},
+		{name: "gte equal", left: 5,   op: "gte", right: "5",  want: true},
+		{name: "gte greater", left: 6, op: "gte", right: "5",  want: true},
+		{name: "gte less", left: 4,    op: "gte", right: "5",  want: false},
+		{name: "lte equal", left: 5,   op: "lte", right: "5",  want: true},
+		{name: "lte less", left: 4,    op: "lte", right: "5",  want: true},
+		{name: "lte greater", left: 6, op: "lte", right: "5",  want: false},
+		{name: "float gt",  left: 1.5, op: "gt", right: "1.2", want: true},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := map[string]any{"val": tc.left}
+			got := evaluateCondition(
+				map[string]any{"left": "{{input.val}}", "op": tc.op, "right": tc.right},
+				input, nil,
+			)
+			m, _ := got.(map[string]any)
+			if m["result"] != tc.want {
+				t.Fatalf("op=%s left=%v right=%s: result = %v, want %v",
+					tc.op, tc.left, tc.right, m["result"], tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateConditionUnknownOpReturnsFalse(t *testing.T) {
+	t.Parallel()
+
+	got := evaluateCondition(
+		map[string]any{"left": "{{input.x}}", "op": "contains", "right": "foo"},
+		map[string]any{"x": "foobar"}, nil,
+	)
+	m, _ := got.(map[string]any)
+	if m["result"] != false {
+		t.Fatalf("unknown op: result = %v, want false", m["result"])
+	}
+	if _, hasNote := m["note"]; !hasNote {
+		t.Fatal("unknown op: expected a 'note' field in result")
+	}
+}
+
+// ---- executeTransformStep tests --------------------------------------------
+
+func TestExecuteTransformStep(t *testing.T) {
+	t.Parallel()
+
+	step := wfStep{
+		name: "reshape",
+		config: map[string]any{
+			"mapping": map[string]any{
+				"full_name": "{{input.first}} {{input.last}}",
+				"user_id":   "{{input.id}}",
+				"active":    "{{input.active}}",
+			},
+		},
+	}
+	input := map[string]any{"first": "Ada", "last": "Lovelace", "id": 42, "active": true}
+
+	result, err := executeTransformStep(step, input, nil)
+	if err != nil {
+		t.Fatalf("executeTransformStep() error = %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", result)
+	}
+	if got := m["full_name"]; got != "Ada Lovelace" {
+		t.Fatalf("full_name = %#v, want Ada Lovelace", got)
+	}
+	if got := m["user_id"]; got != 42 {
+		t.Fatalf("user_id = %#v, want 42", got)
+	}
+	if got := m["active"]; got != true {
+		t.Fatalf("active = %#v, want true", got)
+	}
+}
+
+func TestExecuteTransformStepMissingMapping(t *testing.T) {
+	t.Parallel()
+
+	step := wfStep{name: "bad-transform", config: map[string]any{}}
+	if _, err := executeTransformStep(step, nil, nil); err == nil {
+		t.Fatal("executeTransformStep() error = nil, want error for missing mapping")
+	}
+}
+
+func TestExecuteTransformStepNonObjectMapping(t *testing.T) {
+	t.Parallel()
+
+	step := wfStep{
+		name:   "bad-transform",
+		config: map[string]any{"mapping": "just a string"},
+	}
+	if _, err := executeTransformStep(step, nil, nil); err == nil {
+		t.Fatal("executeTransformStep() error = nil, want error for non-object mapping")
+	}
+}
+
+func TestExecuteTransformStepUsesStepResults(t *testing.T) {
+	t.Parallel()
+
+	step := wfStep{
+		name: "enrich",
+		config: map[string]any{
+			"mapping": map[string]any{
+				"rows": "{{step.query1.result.rows}}",
+			},
+		},
+	}
+	stepResults := map[string]any{
+		"query1": map[string]any{
+			"status": "completed",
+			"result": map[string]any{"rows": []any{map[string]any{"id": 1}}},
+		},
+	}
+	result, err := executeTransformStep(step, nil, stepResults)
+	if err != nil {
+		t.Fatalf("executeTransformStep() error = %v", err)
+	}
+	m, _ := result.(map[string]any)
+	rows, ok := m["rows"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("rows = %#v, want slice of length 1", m["rows"])
+	}
+}
+
+// ---- executeHTTPStep tests -------------------------------------------------
+
+func TestExecuteHTTPStep(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("X-Trace-ID"); got != "trace-42" {
+			t.Errorf("X-Trace-ID = %q, want trace-42", got)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if payload["name"] != "Ada" {
+			t.Errorf("name = %#v, want Ada", payload["name"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"created":true}`))
+	}))
+	defer server.Close()
+
+	step := wfStep{
+		name: "call-api",
+		config: map[string]any{
+			"url":    server.URL + "/v1/users",
+			"method": "POST",
+			"headers": map[string]any{
+				"X-Trace-ID": "{{input.trace_id}}",
+			},
+			"body": map[string]any{
+				"name": "{{input.name}}",
+			},
+		},
+	}
+	input := map[string]any{"name": "Ada", "trace_id": "trace-42"}
+
+	result, err := executeHTTPStep(context.Background(), zap.NewNop(), step, input, nil)
+	if err != nil {
+		t.Fatalf("executeHTTPStep() error = %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", result)
+	}
+	if got := m["status_code"]; got != http.StatusOK {
+		t.Fatalf("status_code = %#v, want %d", got, http.StatusOK)
+	}
+	body, ok := m["response_body"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_body type = %T, want map[string]any", m["response_body"])
+	}
+	if body["created"] != true {
+		t.Fatalf("response_body.created = %#v, want true", body["created"])
+	}
+}
+
+func TestExecuteHTTPStepGetNoBody(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	defer server.Close()
+
+	step := wfStep{
+		name:   "list",
+		config: map[string]any{"url": server.URL + "/v1/items"},
+	}
+	result, err := executeHTTPStep(context.Background(), zap.NewNop(), step, nil, nil)
+	if err != nil {
+		t.Fatalf("executeHTTPStep() error = %v", err)
+	}
+	m, _ := result.(map[string]any)
+	if got := m["status_code"]; got != http.StatusOK {
+		t.Fatalf("status_code = %v, want 200", got)
+	}
+}
+
+func TestExecuteHTTPStepFailsOnNon2xx(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"error":"validation failed"}`))
+	}))
+	defer server.Close()
+
+	step := wfStep{
+		name:   "bad-call",
+		config: map[string]any{"url": server.URL + "/v1/things", "method": "POST", "body": map[string]any{"x": 1}},
+	}
+	_, err := executeHTTPStep(context.Background(), zap.NewNop(), step, nil, nil)
+	if err == nil {
+		t.Fatal("executeHTTPStep() error = nil, want error on 422")
+	}
+	if !strings.Contains(err.Error(), "HTTP 422") {
+		t.Fatalf("error = %q, want HTTP 422", err.Error())
+	}
+}
+
+func TestExecuteHTTPStepMissingURL(t *testing.T) {
+	t.Parallel()
+
+	step := wfStep{name: "no-url", config: map[string]any{}}
+	if _, err := executeHTTPStep(context.Background(), zap.NewNop(), step, nil, nil); err == nil {
+		t.Fatal("executeHTTPStep() error = nil, want error for missing url")
+	}
+}
+
+func TestExecuteHTTPStepRejectsNonHTTPScheme(t *testing.T) {
+	t.Parallel()
+
+	step := wfStep{
+		name:   "file-scheme",
+		config: map[string]any{"url": "file:///etc/passwd"},
+	}
+	_, err := executeHTTPStep(context.Background(), zap.NewNop(), step, nil, nil)
+	if err == nil {
+		t.Fatal("executeHTTPStep() error = nil, want error for file:// url")
+	}
+	if !strings.Contains(err.Error(), "http or https") {
+		t.Fatalf("error = %q, want http or https scheme error", err.Error())
+	}
+}

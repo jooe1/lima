@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -566,8 +567,16 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 
 	case stepTypeMutation:
 		// When requires_approval is false on the workflow, execute immediately.
-		// Otherwise (or when triggered by an end-user) gate through approval.
-		if !def.requiresApproval {
+		// workspace_admin and app_builder callers also bypass the approval gate —
+		// only end_users (or system runs with no triggered_by) are gated.
+		skipApproval := !def.requiresApproval
+		if !skipApproval && run.triggeredBy != nil {
+			role, roleErr := getTriggeredByRole(stepCtx, pool, def.workspaceID, *run.triggeredBy)
+			if roleErr == nil && (role == "workspace_admin" || role == "app_builder") {
+				skipApproval = true
+			}
+		}
+		if skipApproval {
 			mutResult, execErr := executeMutationStep(stepCtx, cfg, pool, log, step, run.inputData, requestedBy, results)
 			if execErr != nil {
 				return false, fmt.Errorf("mutation step %q failed: %w", step.name, execErr)
@@ -626,14 +635,30 @@ func executeStep(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, lo
 	case stepTypeNotification:
 		// Notification steps are logged; external delivery (email, webhook) is a future extension.
 		msg, _ := step.config["message"].(string)
+		channel, _ := step.config["channel"].(string)
 		log.Info("workflow notification step",
-			zap.String("run_id", run.id), zap.String("step", step.name), zap.String("message", msg))
-		results[step.id] = map[string]any{"status": "completed", "message": msg}
+			zap.String("run_id", run.id), zap.String("step", step.name),
+			zap.String("message", msg), zap.String("channel", channel))
+		results[step.id] = map[string]any{"status": "completed", "message": msg, "channel": channel}
+
+	case stepTypeTransform:
+		result, execErr := executeTransformStep(step, run.inputData, results)
+		if execErr != nil {
+			results[step.id] = map[string]any{"status": "failed", "error": execErr.Error()}
+			return false, fmt.Errorf("transform step %q failed: %w", step.name, execErr)
+		}
+		results[step.id] = map[string]any{"status": "completed", "result": result}
+
+	case stepTypeHTTP:
+		result, execErr := executeHTTPStep(stepCtx, log, step, run.inputData, results)
+		if execErr != nil {
+			results[step.id] = map[string]any{"status": "failed", "error": execErr.Error()}
+			return false, fmt.Errorf("http step %q failed: %w", step.name, execErr)
+		}
+		results[step.id] = map[string]any{"status": "completed", "result": result}
 
 	default:
-		log.Warn("unknown step type — skipping",
-			zap.String("run_id", run.id), zap.String("type", string(step.stepType)))
-		results[step.id] = map[string]any{"status": "skipped", "reason": "unknown step type"}
+		return false, fmt.Errorf("step %q has unknown type %q — cannot execute", step.name, step.stepType)
 	}
 
 	return false, nil
@@ -959,8 +984,127 @@ func runMSSQLQueryStep(ctx context.Context, creds relationalCreds, query string,
 
 // ---- condition evaluation --------------------------------------------------
 
+// executeTransformStep processes a mapping config, resolving all value
+// expressions against inputData and prior step results, and returns the
+// resulting object as the step output.
+//
+// Config shape:
+//
+//	{ "mapping": { "targetKey": "{{input.sourceKey}}", ... } }
+//
+// The mapping values support the same {{input.x}} / {{step.ID.x}} template
+// syntax used everywhere else in the workflow engine.
+func executeTransformStep(step wfStep, inputData map[string]any, stepResults map[string]any) (any, error) {
+	rawMapping, ok := step.config["mapping"]
+	if !ok {
+		return nil, fmt.Errorf("transform step %q missing mapping in config", step.name)
+	}
+	resolved := resolveWorkflowValue(rawMapping, inputData, stepResults)
+	output, ok := resolved.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("transform step %q: mapping must resolve to an object, got %T", step.name, resolved)
+	}
+	return output, nil
+}
+
+// executeHTTPStep calls an arbitrary HTTP/HTTPS endpoint.
+//
+// Config shape:
+//
+//	{
+//	  "url":     "https://api.example.com/v1/users/{{input.user_id}}",
+//	  "method":  "POST",                       // default: GET
+//	  "headers": { "X-Custom": "{{input.token}}" },  // optional
+//	  "body":    { "name": "{{input.name}}" }  // optional; omitted for GET
+//	}
+//
+// The step fails (and the workflow fails) on a non-2xx response or a network
+// error, consistent with every other step type.
+func executeHTTPStep(ctx context.Context, log *zap.Logger,
+	step wfStep, inputData map[string]any, stepResults map[string]any,
+) (any, error) {
+	rawURL := resolveWorkflowString(step.config["url"], inputData, stepResults)
+	if rawURL == "" {
+		return nil, fmt.Errorf("http step %q missing url in config", step.name)
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("http step %q: url must be an http or https URL, got %q", step.name, rawURL)
+	}
+
+	method := strings.ToUpper(resolveWorkflowString(step.config["method"], inputData, stepResults))
+	if method == "" {
+		method = http.MethodGet
+	}
+
+	var bodyReader io.Reader
+	var contentType string
+	if bodyVal, hasBody := step.config["body"]; hasBody && method != http.MethodGet {
+		bodyResolved := resolveWorkflowValue(bodyVal, inputData, stepResults)
+		if !workflowValueIsEmpty(bodyResolved) {
+			bodyReader, contentType, err = encodeMutationRequestBody(bodyResolved)
+			if err != nil {
+				return nil, fmt.Errorf("http step %q: encode body: %w", step.name, err)
+			}
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("http step %q: build request: %w", step.name, err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+
+	// Apply per-step custom headers from config.
+	if rawHeaders, ok := step.config["headers"]; ok {
+		resolvedHeaders := resolveWorkflowValue(rawHeaders, inputData, stepResults)
+		if headersMap, ok := resolvedHeaders.(map[string]any); ok {
+			for k, v := range headersMap {
+				if sv, ok := v.(string); ok && sv != "" {
+					req.Header.Set(k, sv)
+				}
+			}
+		}
+	}
+
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http step %q: request failed: %w", step.name, err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := readWorkflowHTTPResponse(resp)
+	if err != nil {
+		return nil, fmt.Errorf("http step %q: read response: %w", step.name, err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("http step %q returned HTTP %d: %s",
+			step.name, resp.StatusCode, summarizeWorkflowHTTPBody(responseBody))
+	}
+
+	result := map[string]any{
+		"status":      resp.Status,
+		"status_code": resp.StatusCode,
+	}
+	if responseBody != nil {
+		result["response_body"] = responseBody
+	}
+	log.Debug("workflow http step completed",
+		zap.String("url", rawURL),
+		zap.String("method", method),
+		zap.Int("status_code", resp.StatusCode),
+	)
+	return result, nil
+}
+
+// ---- condition evaluation --------------------------------------------------
+
 // evaluateCondition resolves a simple equality/comparison condition.
-// Config supports: { "left": "{{input.field}}", "op": "eq|neq|gt|lt", "right": "value" }
+// Config supports: { "left": "{{input.field}}", "op": "eq|neq|gt|lt|gte|lte", "right": "value" }
 // Returns true/false as a boolean, or a "skipped" note if config is missing.
 func evaluateCondition(config map[string]any, inputData map[string]any, stepResults map[string]any) any {
 	left, _ := config["left"].(string)
@@ -979,8 +1123,39 @@ func evaluateCondition(config map[string]any, inputData map[string]any, stepResu
 		return map[string]any{"result": fmt.Sprintf("%v", resolved) == right}
 	case "neq":
 		return map[string]any{"result": fmt.Sprintf("%v", resolved) != right}
+	case "gt", "lt", "gte", "lte":
+		leftStr := fmt.Sprintf("%v", resolved)
+		leftFloat, leftErr := strconv.ParseFloat(leftStr, 64)
+		rightFloat, rightErr := strconv.ParseFloat(right, 64)
+		if leftErr == nil && rightErr == nil {
+			var result bool
+			switch op {
+			case "gt":
+				result = leftFloat > rightFloat
+			case "lt":
+				result = leftFloat < rightFloat
+			case "gte":
+				result = leftFloat >= rightFloat
+			case "lte":
+				result = leftFloat <= rightFloat
+			}
+			return map[string]any{"result": result}
+		}
+		// Lexicographic string fallback when values aren't numeric.
+		var result bool
+		switch op {
+		case "gt":
+			result = leftStr > right
+		case "lt":
+			result = leftStr < right
+		case "gte":
+			result = leftStr >= right
+		case "lte":
+			result = leftStr <= right
+		}
+		return map[string]any{"result": result}
 	default:
-		return map[string]any{"result": true, "note": "unsupported op: " + op}
+		return map[string]any{"result": false, "note": "unsupported op: " + op}
 	}
 }
 

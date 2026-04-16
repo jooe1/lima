@@ -19,6 +19,8 @@ const (
 	stepTypeCondition    workflowStepType = "condition"
 	stepTypeApprovalGate workflowStepType = "approval_gate"
 	stepTypeNotification workflowStepType = "notification"
+	stepTypeTransform    workflowStepType = "transform"
+	stepTypeHTTP         workflowStepType = "http"
 )
 
 type workflowRunStatus string
@@ -218,6 +220,20 @@ func createApprovalForRun(ctx context.Context, pool *pgxpool.Pool,
 	}
 
 	return approvalID, nil
+}
+
+// getTriggeredByRole returns the workspace role of the user who triggered a run.
+// Returns ("", nil) when triggered_by is nil (system-triggered run).
+func getTriggeredByRole(ctx context.Context, pool *pgxpool.Pool, workspaceID, userID string) (string, error) {
+	var role string
+	err := pool.QueryRow(ctx,
+		`SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`,
+		workspaceID, userID,
+	).Scan(&role)
+	if err != nil {
+		return "", fmt.Errorf("get role for user %s in workspace %s: %w", userID, workspaceID, err)
+	}
+	return role, nil
 }
 
 // fetchConnectorForRun retrieves a connector record for step execution.

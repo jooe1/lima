@@ -210,10 +210,10 @@ func (s *endUserTriggerStoreStub) DeleteWorkflowRun(_ context.Context, _, runID 
 	return s.deleteErr
 }
 
-// TestTriggerEndUserWorkflowRunMutateGrantRunsImmediately verifies that when the
-// caller has a mutate grant on every mutation-step connector, the helper returns
-// a run with status=pending (queued immediately) and does NOT create an approval.
-func TestTriggerEndUserWorkflowRunMutateGrantRunsImmediately(t *testing.T) {
+// TestTriggerEndUserWorkflowRunMutateGrantAlwaysGated verifies that even when the
+// caller has a mutate grant on every mutation-step connector, end users are always
+// approval-gated: status=awaiting_approval with a linked approval record.
+func TestTriggerEndUserWorkflowRunMutateGrantAlwaysGated(t *testing.T) {
 	wf := &model.WorkflowWithSteps{
 		Workflow: model.Workflow{ID: "wf-1", AppID: "app-1"},
 		Steps: []model.WorkflowStep{
@@ -222,52 +222,10 @@ func TestTriggerEndUserWorkflowRunMutateGrantRunsImmediately(t *testing.T) {
 		},
 	}
 	run := &model.WorkflowRun{ID: "run-1", Status: model.RunStatusPending}
+	approval := &model.Approval{ID: "apv-1"}
 	stub := &endUserTriggerStoreStub{
 		wf:       wf,
 		grantMap: map[string]bool{"conn-1": true},
-		run:      run,
-	}
-
-	got, err := triggerEndUserWorkflowRun(
-		context.Background(), stub, "test-enc-key",
-		"company-1", "ws-1", "wf-1", "user-1", map[string]any{"k": "v"},
-	)
-	if err != nil {
-		t.Fatalf("triggerEndUserWorkflowRun() error = %v, want nil", err)
-	}
-	if got.Status != model.RunStatusPending {
-		t.Errorf("run.Status = %q, want %q (should run immediately)", got.Status, model.RunStatusPending)
-	}
-	if got.ApprovalID != nil {
-		t.Errorf("run.ApprovalID = %v, want nil (no approval should be created)", got.ApprovalID)
-	}
-	if stub.setApprovalID != "" {
-		t.Errorf("SetWorkflowRunApproval called unexpectedly with %q", stub.setApprovalID)
-	}
-	if len(stub.deletedRunIDs) != 0 {
-		t.Errorf("DeleteWorkflowRun called unexpectedly: %v", stub.deletedRunIDs)
-	}
-}
-
-// TestTriggerEndUserWorkflowRunQueryOnlyGrant verifies that when the caller has
-// only a query (read) grant on a mutation-step connector, the run is gated behind
-// approval: status=awaiting_approval with a linked approval record.
-func TestTriggerEndUserWorkflowRunQueryOnlyGrant(t *testing.T) {
-	wf := &model.WorkflowWithSteps{
-		Workflow: model.Workflow{ID: "wf-1", AppID: "app-1"},
-		Steps: []model.WorkflowStep{
-			{StepType: model.StepTypeMutation, Config: map[string]any{"connector_id": "conn-1"}},
-		},
-	}
-	run := &model.WorkflowRun{ID: "run-1", Status: model.RunStatusPending}
-	approval := &model.Approval{ID: "apv-1"}
-	stub := &endUserTriggerStoreStub{
-		wf: wf,
-		// conn-1 has query access but NOT mutate access.
-		grantByAction: map[string]bool{
-			"conn-1:mutate": false,
-			"conn-1:query":  true,
-		},
 		run:      run,
 		approval: approval,
 	}
@@ -280,13 +238,51 @@ func TestTriggerEndUserWorkflowRunQueryOnlyGrant(t *testing.T) {
 		t.Fatalf("triggerEndUserWorkflowRun() error = %v, want nil", err)
 	}
 	if got.Status != model.RunStatusAwaitingApproval {
-		t.Errorf("run.Status = %q, want %q", got.Status, model.RunStatusAwaitingApproval)
+		t.Errorf("run.Status = %q, want %q (end users are always approval-gated)", got.Status, model.RunStatusAwaitingApproval)
 	}
 	if got.ApprovalID == nil || *got.ApprovalID != "apv-1" {
 		t.Errorf("run.ApprovalID = %v, want \"apv-1\"", got.ApprovalID)
 	}
 	if len(stub.deletedRunIDs) != 0 {
 		t.Errorf("DeleteWorkflowRun called unexpectedly: %v", stub.deletedRunIDs)
+	}
+}
+
+// TestTriggerEndUserWorkflowRunQueryOnlyGrant verifies that when the caller has
+// only a query (read) grant — but not mutate — on a mutation-step connector, the
+// submit is rejected with errMutateGrantRequired (403). A run must not be created.
+func TestTriggerEndUserWorkflowRunQueryOnlyGrant(t *testing.T) {
+	wf := &model.WorkflowWithSteps{
+		Workflow: model.Workflow{ID: "wf-1", AppID: "app-1"},
+		Steps: []model.WorkflowStep{
+			{StepType: model.StepTypeMutation, Config: map[string]any{"connector_id": "conn-1"}},
+		},
+	}
+	stub := &endUserTriggerStoreStub{
+		wf: wf,
+		// conn-1 has query access but NOT mutate access.
+		grantByAction: map[string]bool{
+			"conn-1:mutate": false,
+			"conn-1:query":  true,
+		},
+	}
+
+	_, err := triggerEndUserWorkflowRun(
+		context.Background(), stub, "test-enc-key",
+		"company-1", "ws-1", "wf-1", "user-1", map[string]any{"k": "v"},
+	)
+	if err == nil {
+		t.Fatal("triggerEndUserWorkflowRun() error = nil, want *errMutateGrantRequired")
+	}
+	var grantErr *errMutateGrantRequired
+	if !errors.As(err, &grantErr) {
+		t.Fatalf("error type = %T, want *errMutateGrantRequired", err)
+	}
+	if grantErr.ConnectorID != "conn-1" {
+		t.Errorf("ConnectorID = %q, want \"conn-1\"", grantErr.ConnectorID)
+	}
+	if stub.createdRun {
+		t.Error("CreateWorkflowRun must not be called when mutate grant is missing")
 	}
 }
 
@@ -386,10 +382,10 @@ func buildTriggerTestRouter(t *testing.T, cfg *config.Config, stub *triggerWorkf
 	return r
 }
 
-// TestTriggerWorkflow_EndUserWithQueryOnlyGrant verifies that an end_user who has
-// only a query (read) grant on a mutation-step connector receives HTTP 202 and a
-// run with status=awaiting_approval (approval gate).
-func TestTriggerWorkflow_EndUserWithQueryOnlyGrant(t *testing.T) {
+// TestTriggerWorkflow_EndUserWithMutateGrant verifies that an end_user who has a
+// mutate grant on a mutation-step connector receives HTTP 202 with
+// status=awaiting_approval — end users are always approval-gated.
+func TestTriggerWorkflow_EndUserWithMutateGrant(t *testing.T) {
 	wf := &model.WorkflowWithSteps{
 		Workflow: model.Workflow{ID: "wf-1", AppID: "app-1"},
 		Steps: []model.WorkflowStep{
@@ -404,8 +400,7 @@ func TestTriggerWorkflow_EndUserWithQueryOnlyGrant(t *testing.T) {
 		endUserTriggerStoreStub: endUserTriggerStoreStub{
 			wf: wf,
 			grantByAction: map[string]bool{
-				"conn-1:mutate": false,
-				"conn-1:query":  true,
+				"conn-1:mutate": true,
 			},
 			run:      run,
 			approval: approval,
@@ -435,6 +430,53 @@ func TestTriggerWorkflow_EndUserWithQueryOnlyGrant(t *testing.T) {
 	}
 	if got := resp["approval_id"]; got != "apv-1" {
 		t.Errorf("run.approval_id = %v, want \"apv-1\"", got)
+	}
+}
+
+// TestTriggerWorkflow_EndUserWithQueryOnlyGrant verifies that an end_user who has
+// only a query (read) grant — but not mutate — on a mutation-step connector
+// receives HTTP 403 with error=mutate_grant_required.
+func TestTriggerWorkflow_EndUserWithQueryOnlyGrant(t *testing.T) {
+	wf := &model.WorkflowWithSteps{
+		Workflow: model.Workflow{ID: "wf-1", AppID: "app-1"},
+		Steps: []model.WorkflowStep{
+			{StepType: model.StepTypeMutation, Config: map[string]any{"connector_id": "conn-1"}},
+		},
+	}
+
+	stub := &triggerWorkflowStoreStub{
+		memberRole: model.RoleEndUser,
+		endUserTriggerStoreStub: endUserTriggerStoreStub{
+			wf: wf,
+			grantByAction: map[string]bool{
+				"conn-1:mutate": false,
+				"conn-1:query":  true,
+			},
+		},
+	}
+
+	cfg := &config.Config{CredentialsEncryptionKey: testJWTSecret}
+	h := buildTriggerTestRouter(t, cfg, stub)
+
+	body := bytes.NewBufferString(`{"input_data":{"key":"val"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/workflows/wf-1/trigger", body)
+	req.Header.Set("Authorization", "Bearer "+makeTestJWT(t, "user-1", "company-1"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d (403 Forbidden)", w.Code, http.StatusForbidden)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := resp["error"]; got != "mutate_grant_required" {
+		t.Errorf("error = %v, want \"mutate_grant_required\"", got)
+	}
+	if stub.createdRun {
+		t.Error("CreateWorkflowRun must not be called when a grant check fails")
 	}
 }
 

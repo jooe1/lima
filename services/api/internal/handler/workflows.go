@@ -112,7 +112,7 @@ func CreateWorkflow(s *store.Store, log *zap.Logger) http.HandlerFunc {
 			return
 		}
 		req.TriggerConfig = normalizedTriggerConfig
-		requiresApproval := true
+		requiresApproval := false
 		if req.RequiresApproval != nil {
 			requiresApproval = *req.RequiresApproval
 		}
@@ -728,13 +728,9 @@ func triggerEndUserWorkflowRun(
 		return nil, fmt.Errorf("load workflow: %w", err)
 	}
 
-	// Walk mutation steps and determine whether the caller holds a mutate grant
-	// on every connector involved.
-	//
-	//   allHaveMutate=true  → enqueue immediately, no approval needed.
-	//   allHaveMutate=false, no missing access → approval gate.
-	//   any connector lacks even a query grant → 403.
-	allHaveMutate := true
+	// Walk mutation steps and check that the caller holds at least a "mutate"
+	// resource grant on every connector involved. End users are always
+	// approval-gated — the grant check is access control only (no grant → 403).
 	for _, step := range wf.Steps {
 		if step.StepType != model.StepTypeMutation {
 			continue
@@ -748,16 +744,7 @@ func triggerEndUserWorkflowRun(
 			return nil, fmt.Errorf("check mutate grant: %w", err)
 		}
 		if !hasMutate {
-			// Check whether the user has at least read (query) access.
-			hasQuery, err := s.HasResourceGrant(ctx, companyID, "connector", connID, "user", userID, "query")
-			if err != nil {
-				return nil, fmt.Errorf("check query grant: %w", err)
-			}
-			if !hasQuery {
-				// No access at all — reject.
-				return nil, &errMutateGrantRequired{ConnectorID: connID}
-			}
-			allHaveMutate = false
+			return nil, &errMutateGrantRequired{ConnectorID: connID}
 		}
 	}
 
@@ -767,14 +754,7 @@ func triggerEndUserWorkflowRun(
 		return nil, fmt.Errorf("create workflow run: %w", err)
 	}
 
-	// If the caller has full mutate access (or the workflow has no mutation
-	// steps), return the pending run so the caller can enqueue it immediately.
-	if allHaveMutate {
-		return run, nil
-	}
-
-	// The caller has read-only (query) access to at least one mutation-step
-	// connector: gate behind approval.
+	// End users are always approval-gated regardless of grant level.
 	if err := s.UpdateWorkflowRunStatus(ctx, run.ID, model.RunStatusAwaitingApproval); err != nil {
 		_ = s.DeleteWorkflowRun(ctx, workspaceID, run.ID)
 		return nil, fmt.Errorf("set run awaiting approval: %w", err)

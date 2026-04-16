@@ -366,7 +366,7 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
         if (run.status === 'awaiting_approval') {
           setStatusMessage('Submitted for approval')
         } else {
-          setStatusMessage('Processing…')
+          setStatusMessage('Done')
           bumpRefreshSeq()
         }
       } else {
@@ -635,7 +635,7 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
   if (status === 'done') {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4ade80', fontSize: '0.875rem' }}>
-        {statusMessage || 'Submitted for review'}
+        {statusMessage}
       </div>
     )
   }
