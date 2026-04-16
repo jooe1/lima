@@ -178,7 +178,7 @@ func splitSQLList(s string) []string {
 	result := make([]string, 0, len(parts))
 	for _, p := range parts {
 		t := strings.TrimSpace(p)
-		t = strings.Trim(t, `"` + "`")
+		t = strings.Trim(t, `"`+"`")
 		if t != "" {
 			result = append(result, t)
 		}
@@ -189,7 +189,7 @@ func splitSQLList(s string) []string {
 // parseSQLValues parses the inner content of a VALUES clause (without the
 // surrounding parentheses) into a slice of string values.
 //
-// Single-quoted string literals are unquoted; '' inside a string is treated as
+// Single-quoted string literals are unquoted; ” inside a string is treated as
 // an escaped single quote. NULL and unquoted identifiers are passed through as
 // strings.
 func parseSQLValues(s string) []string {
