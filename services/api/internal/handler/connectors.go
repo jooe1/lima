@@ -1171,3 +1171,89 @@ func extractRESTColumns(rows []map[string]any) []string {
 	sort.Strings(cols)
 	return cols
 }
+
+// RunMutation executes a DML statement (INSERT, UPDATE, or DELETE) against a
+// connector and returns the number of affected rows. For managed (Lima Table)
+// connectors only INSERT is supported; the values must be fully resolved before
+// sending (no template substitution happens server-side).
+//
+// Security: the endpoint validates that the SQL starts with a recognised DML
+// keyword. DDL and SELECT are rejected. Credentials are decrypted in-process
+// and never logged.
+func RunMutation(cfg *config.Config, s *store.Store, log *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID := chi.URLParam(r, "workspaceID")
+		connectorID := chi.URLParam(r, "connectorID")
+		claims, _ := ClaimsFromContext(r.Context())
+
+		var req struct {
+			SQL string `json:"sql"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			respondErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			return
+		}
+		if strings.TrimSpace(req.SQL) == "" {
+			respondErr(w, http.StatusBadRequest, "bad_request", "sql is required")
+			return
+		}
+		if !sqlDMLRe.MatchString(req.SQL) {
+			respondErr(w, http.StatusUnprocessableEntity, "dml_required",
+				"only INSERT, UPDATE, or DELETE statements are permitted")
+			return
+		}
+
+		rec, err := s.GetConnectorRecord(r.Context(), workspaceID, connectorID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+
+		plainCreds, err := cryptoutil.Decrypt(cfg.CredentialsEncryptionKey, rec.EncryptedCredentials)
+		if err != nil {
+			log.Error("decrypt connector credentials for mutation", zap.Error(err))
+			respondErr(w, http.StatusInternalServerError, "internal_error", "credential decryption failed")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		var affected int64
+		switch rec.Type {
+		case model.ConnectorTypePostgres, model.ConnectorTypeMySQL, model.ConnectorTypeMSSQL:
+			var creds model.RelationalCredentials
+			if err := json.Unmarshal(plainCreds, &creds); err != nil {
+				respondErr(w, http.StatusUnprocessableEntity, "invalid_credentials",
+					fmt.Sprintf("cannot parse %s credentials", rec.Type))
+				return
+			}
+			affected, err = executeRelationalMutation(ctx, rec.Type, creds, req.SQL)
+			if err != nil {
+				log.Warn("relational mutation failed",
+					zap.String("connector_id", connectorID),
+					zap.String("type", string(rec.Type)),
+					zap.Error(err))
+				respondErr(w, http.StatusInternalServerError, "mutation_error", err.Error())
+				return
+			}
+
+		case model.ConnectorTypeManaged:
+			affected, err = executeManagedMutation(ctx, s, connectorID, req.SQL, claims.UserID)
+			if err != nil {
+				log.Warn("managed mutation failed",
+					zap.String("connector_id", connectorID),
+					zap.Error(err))
+				respondErr(w, http.StatusInternalServerError, "mutation_error", err.Error())
+				return
+			}
+
+		default:
+			respondErr(w, http.StatusUnprocessableEntity, "unsupported",
+				fmt.Sprintf("mutations are not supported for %s connectors", rec.Type))
+			return
+		}
+
+		respond(w, http.StatusOK, &MutationResult{AffectedRows: affected})
+	}
+}

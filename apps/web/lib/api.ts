@@ -741,6 +741,28 @@ export function runConnectorQuery(
   )
 }
 
+export interface ConnectorMutationRequest {
+  sql: string
+}
+
+export interface ConnectorMutationResponse {
+  affected_rows: number
+}
+
+/** Execute a DML statement (INSERT, UPDATE, DELETE) against a connector.
+ *  The SQL must be fully resolved before calling — no template substitution
+ *  is performed server-side. */
+export function runConnectorMutation(
+  workspaceId: string,
+  connectorId: string,
+  req: ConnectorMutationRequest,
+) {
+  return request<ConnectorMutationResponse>(
+    `/v1/workspaces/${workspaceId}/connectors/${connectorId}/mutate`,
+    { method: 'POST', body: JSON.stringify(req) },
+  )
+}
+
 // ---- Connectors (Phase 4) --------------------------------------------------
 
 export type ConnectorType = 'postgres' | 'mysql' | 'mssql' | 'rest' | 'graphql' | 'managed' | 'csv'

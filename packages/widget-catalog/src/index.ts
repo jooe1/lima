@@ -411,6 +411,7 @@ export const STEP_NODE_REGISTRY: Record<StepNodeType, StepNodeMeta> = {
       { name: 'message', direction: 'input', dataType: 'string', description: 'Notification message body' },
       { name: 'channel', direction: 'input', dataType: 'string', description: 'Target channel or recipient' },
       { name: 'sent', direction: 'output', dataType: 'trigger', description: 'Triggered after the notification is sent' },
+      { name: 'failed', direction: 'output', dataType: 'trigger', description: 'Triggered when notification delivery fails or the channel is unreachable' },
     ],
   },
   'step:transform': {

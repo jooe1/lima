@@ -186,14 +186,26 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
         {/* Input ports on the left */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 0' }}>
           {inputPorts.map(port => (
-            <div key={port.name} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
+            <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
               <Handle
                 type="target"
                 position={Position.Left}
                 id={port.name}
-                style={{ width: 8, height: 8, background: '#3b82f6', border: '1px solid #2a2a2a', left: -4 }}
+                style={{
+                  width: 8, height: 8,
+                  background: '#3b82f6',
+                  border: '1px solid #2a2a2a',
+                  left: -4,
+                  outline: port.dynamic ? '1.5px dashed #3b82f6' : 'none',
+                  outlineOffset: '2px',
+                }}
               />
-              <span style={{ fontSize: '0.55rem', color: '#666', marginLeft: 6 }}>{port.name}</span>
+              <span style={{ fontSize: '0.65rem', color: '#888', marginLeft: 6 }}>
+                {port.name}{port.dynamic ? ' +' : ''}
+              </span>
+              <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>
+                {dataTypeBadge(port.dataType)}
+              </span>
             </div>
           ))}
         </div>
@@ -201,13 +213,25 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
         {/* Output ports on the right */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 0', alignItems: 'flex-end' }}>
           {outputPorts.map(port => (
-            <div key={port.name} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
-              <span style={{ fontSize: '0.55rem', color: '#666', marginRight: 6 }}>{port.name}</span>
+            <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
+              <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
+                {dataTypeBadge(port.dataType)}
+              </span>
+              <span style={{ fontSize: '0.65rem', color: '#888', marginRight: 6 }}>
+                {port.name}{port.dynamic ? ' +' : ''}
+              </span>
               <Handle
                 type="source"
                 position={Position.Right}
                 id={port.name}
-                style={{ width: 8, height: 8, background: '#f97316', border: '1px solid #2a2a2a', right: -4 }}
+                style={{
+                  width: 8, height: 8,
+                  background: port.dataType === 'trigger' ? '#f59e0b' : '#f97316',
+                  border: '1px solid #2a2a2a',
+                  right: -4,
+                  outline: port.dynamic ? `1.5px dashed ${port.dataType === 'trigger' ? '#f59e0b' : '#f97316'}` : 'none',
+                  outlineOffset: '2px',
+                }}
               />
             </div>
           ))}
@@ -219,6 +243,12 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
 
 // ---- Accent colors per step type -------------------------------------------
 
+const MUTATION_OP_LABEL: Record<string, string> = {
+  insert: 'INSERT INTO',
+  update: 'UPDATE',
+  delete: 'DELETE FROM',
+}
+
 const STEP_ACCENT: Record<string, string> = {
   'step:query':         '#3b82f6',
   'step:mutation':      '#fb923c',
@@ -227,6 +257,35 @@ const STEP_ACCENT: Record<string, string> = {
   'step:notification':  '#34d399',
   'step:transform':     '#e879f9',
   'step:http':          '#38bdf8',
+}
+
+// Semantic output handle colors — override the per-step accent for ports whose
+// name carries an unambiguous positive or negative meaning.
+const SEMANTIC_HANDLE_COLORS: Record<string, string> = {
+  // Positive outcomes — green
+  trueBranch: '#4ade80',
+  approved:   '#4ade80',
+  ok:         '#4ade80',
+  sent:       '#4ade80',
+  // Negative outcomes — red
+  falseBranch: '#f87171',
+  rejected:    '#f87171',
+  error:       '#f87171',
+  failed:      '#f87171',
+}
+
+// Returns a short badge string representing a port data type.
+const DATA_TYPE_BADGE_MAP: Record<string, string> = {
+  trigger: '⚡',
+  array:   '[]',
+  object:  '{}',
+  number:  '#',
+  string:  '"',
+  boolean: 'T/F',
+  date:    '📅',
+}
+function dataTypeBadge(dataType: string): string {
+  return DATA_TYPE_BADGE_MAP[dataType] ?? dataType.slice(0, 3)
 }
 
 // ---- Unified step node component -------------------------------------------
@@ -248,14 +307,27 @@ function StepNodeComponent({ data, selected }: NodeProps) {
   // Config summary
   const w = sData.auraNode?.with ?? {}
   let configSummary = 'Not configured'
-  if (sData.stepType === 'step:query' || sData.stepType === 'step:mutation') {
-    const sql = w.sql as string | undefined
-    const conn = w.connector as string | undefined
-    if (sql) configSummary = sql.slice(0, 40) + (sql.length > 40 ? '\u2026' : '')
-    else if (conn) configSummary = `connector: ${conn}`
+  if (sData.stepType === 'step:query') {
+    const sql  = w.sql          as string | undefined
+    const conn = w.connector_id as string | undefined
+    if (sql)       configSummary = sql.slice(0, 40) + (sql.length > 40 ? '\u2026' : '')
+    else if (conn) configSummary = `connector: ${conn.slice(0, 20)}`
+  } else if (sData.stepType === 'step:mutation') {
+    const op    = (w.operation   as string | undefined) ?? 'insert'
+    const table =  w.table       as string | undefined
+    const conn  =  w.connector_id as string | undefined
+    const opLabel = MUTATION_OP_LABEL[op] ?? op.toUpperCase()
+    if (table)      configSummary = `${opLabel} ${table}`
+    else if (conn)  configSummary = `${opLabel} (connector: ${conn.slice(0, 18)})`
+    else            configSummary = `${opLabel} — not configured`
   } else if (sData.stepType === 'step:condition') {
-    const expr = w.expression as string | undefined
-    if (expr) configSummary = expr.slice(0, 40) + (expr.length > 40 ? '\u2026' : '')
+    const left  = w.left  as string | undefined
+    const op    = w.op    as string | undefined
+    const right = w.right as string | undefined
+    if (left !== undefined || op !== undefined || right !== undefined) {
+      const raw = `${left ?? '?'} ${op ?? '=='} ${right ?? '?'}`
+      configSummary = raw.length > 40 ? raw.slice(0, 40) + '\u2026' : raw
+    }
   } else if (sData.stepType === 'step:notification') {
     const msg = w.message as string | undefined
     if (msg) configSummary = msg.slice(0, 40) + (msg.length > 40 ? '\u2026' : '')
@@ -267,7 +339,11 @@ function StepNodeComponent({ data, selected }: NodeProps) {
     const method = (w.method as string | undefined) ?? 'GET'
     if (url) configSummary = `${method} ${url.slice(0, 28)}`
   } else if (sData.stepType === 'step:approval_gate') {
-    configSummary = 'Awaits admin approval'
+    const role = w.approver_role as string | undefined
+    const desc = w.description   as string | undefined
+    if (role)      configSummary = `Requires: ${role}`
+    else if (desc) configSummary = desc.slice(0, 40) + (desc.length > 40 ? '\u2026' : '')
+    else           configSummary = 'Awaits admin approval'
   }
 
   const sideW = selected ? '2px' : '1px'
@@ -320,26 +396,51 @@ function StepNodeComponent({ data, selected }: NodeProps) {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', padding: '4px 0' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {inputPorts.map(port => (
-              <div key={port.name} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
+              <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
                 <Handle
                   type="target"
                   position={Position.Left}
                   id={port.name}
-                  style={{ width: 8, height: 8, background: accent, border: '1px solid #2a2a2a', left: -4, opacity: 0.8 }}
+                  style={{
+                    width: 8, height: 8,
+                    background: accent,
+                    border: '1px solid #2a2a2a',
+                    left: -4,
+                    opacity: 0.8,
+                    outline: port.dynamic ? `1.5px dashed ${accent}` : 'none',
+                    outlineOffset: '2px',
+                  }}
                 />
-                <span style={{ fontSize: '0.55rem', color: '#555', marginLeft: 6 }}>{port.name}</span>
+                <span style={{ fontSize: '0.65rem', color: '#888', marginLeft: 6 }}>
+                  {port.name}{port.dynamic ? ' +' : ''}
+                </span>
+                <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>
+                  {dataTypeBadge(port.dataType)}
+                </span>
               </div>
             ))}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
             {outputPorts.map(port => (
-              <div key={port.name} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
-                <span style={{ fontSize: '0.55rem', color: '#555', marginRight: 6 }}>{port.name}</span>
+              <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
+                <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
+                  {dataTypeBadge(port.dataType)}
+                </span>
+                <span style={{ fontSize: '0.65rem', color: '#888', marginRight: 6 }}>
+                  {port.name}{port.dynamic ? ' +' : ''}
+                </span>
                 <Handle
                   type="source"
                   position={Position.Right}
                   id={port.name}
-                  style={{ width: 8, height: 8, background: accent, border: '1px solid #2a2a2a', right: -4 }}
+                  style={{
+                    width: 8, height: 8,
+                    background: SEMANTIC_HANDLE_COLORS[port.name] ?? accent,
+                    border: '1px solid #2a2a2a',
+                    right: -4,
+                    outline: port.dynamic ? `1.5px dashed ${accent}` : 'none',
+                    outlineOffset: '2px',
+                  }}
                 />
               </div>
             ))}

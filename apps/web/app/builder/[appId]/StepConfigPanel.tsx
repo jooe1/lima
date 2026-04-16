@@ -118,6 +118,18 @@ const STEP_META: Record<string, { icon: string; label: string; color: string }> 
 
 // ---- SQL builder helpers ---------------------------------------------------
 
+/**
+ * Mirrors Go's managedTableName() in queryexec.go.
+ * Collapses non-word characters to underscores, strips leading/trailing
+ * underscores, prepends '_' if the name starts with a digit.
+ */
+function managedTableName(name: string): string {
+  let s = name.replace(/\W+/g, '_').replace(/^_+|_+$/g, '')
+  if (!s) s = 'data'
+  if (s[0] >= '0' && s[0] <= '9') s = '_' + s
+  return s
+}
+
 interface SchemaTable {
   name: string
   columns: Array<{ name: string; type: string }>
@@ -149,7 +161,7 @@ function extractTables(connector: Connector | undefined): SchemaTable[] {
       name: String(c.name ?? ''),
       type: String(c.col_type ?? c.type ?? ''),
     })).filter(c => c.name)
-    return [{ name: 'data', columns: cols }]
+    return [{ name: managedTableName(connector!.name), columns: cols }]
   }
 
   return []
@@ -363,7 +375,15 @@ function SqlStepEditor({
   const isQuery = node.element === 'step:query'
   const [connectors, setConnectors] = useState<Connector[]>([])
   const [mode, setMode] = useState<'guided' | 'sql'>('guided')
-  const [guided, setGuided] = useState<GuidedState>(defaultGuided)
+  // Initialise from the persisted SQL so fields survive page refresh / re-open.
+  const [guided, setGuided] = useState<GuidedState>(() => {
+    const sql = String((node.with ?? {}).sql ?? '')
+    if (sql) {
+      const parsed = tryParseSQL(sql, node.element === 'step:query')
+      if (parsed) return parsed
+    }
+    return defaultGuided()
+  })
   const [parseWarning, setParseWarning] = useState('')
   const [preview, setPreview] = useState<DashboardQueryResponse | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -375,20 +395,34 @@ function SqlStepEditor({
   }, [workspaceId])
 
   const with_ = node.with ?? {}
-  const connectorId = String(with_.connector ?? '')
+  const connectorId = String(with_.connector_id ?? '')
   const currentSql = String(with_.sql ?? '')
   const selectedConnector = connectors.find(c => c.id === connectorId)
   const tables = extractTables(selectedConnector)
 
-  // When the connector changes, reset guided state to defaults for that connector
+  const isManaged = selectedConnector?.type === 'managed'
+
+  // When the connector changes, reset guided state and auto-fill the table
+  // name for managed connectors (they always have exactly one table).
   const prevConnectorRef = React.useRef(connectorId)
   useEffect(() => {
     if (connectorId !== prevConnectorRef.current) {
       prevConnectorRef.current = connectorId
-      setGuided(defaultGuided())
+      const newConnector = connectors.find(c => c.id === connectorId)
+      const autoTable = newConnector?.type === 'managed' ? managedTableName(newConnector.name) : ''
+      setGuided({ ...defaultGuided(), table: autoTable })
       setPreview(null)
     }
-  }, [connectorId])
+  }, [connectorId, connectors])
+
+  // When the connector list loads after mount and the selected connector is
+  // managed, backfill guided.table if it is still empty (covers the case where
+  // the panel opened with an already-configured managed connector).
+  useEffect(() => {
+    if (isManaged && selectedConnector && !guided.table) {
+      setGuided(g => ({ ...g, table: managedTableName(selectedConnector.name) }))
+    }
+  }, [isManaged, selectedConnector]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // When the mode switches to guided, try to parse current SQL
   const switchToGuided = () => {
@@ -464,7 +498,7 @@ function SqlStepEditor({
         <select
           style={selectStyle}
           value={connectorId}
-          onChange={e => setWith('connector', e.target.value)}
+          onChange={e => setWith('connector_id', e.target.value)}
         >
           <option value="">Select a connector…</option>
           {connectors.map(c => (
@@ -506,7 +540,21 @@ function SqlStepEditor({
           {/* Table */}
           <div>
             <label style={labelStyle}>Table</label>
-            {tables.length > 0 ? (
+            {isManaged ? (
+              // Managed connectors always have exactly one table — show it as
+              // a read-only chip so the builder can't accidentally change it.
+              <div style={{
+                ...inputStyle,
+                color: '#888',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                cursor: 'default',
+              }}>
+                <span style={{ fontSize: '0.6rem', background: '#1e1e1e', borderRadius: 3, padding: '1px 5px', color: '#f59e0b' }}>managed</span>
+                {guided.table || (selectedConnector ? managedTableName(selectedConnector.name) : '—')}
+              </div>
+            ) : tables.length > 0 ? (
               <select style={selectStyle} value={guided.table} onChange={e => updateGuided({ table: e.target.value })}>
                 <option value="">Select a table…</option>
                 {tables.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}

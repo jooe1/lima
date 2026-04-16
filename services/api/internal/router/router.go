@@ -222,6 +222,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, s *store.Store, enq *queue.Enqu
 						r.Get("/schema", handler.GetConnectorSchema(cfg, s, enq, log))
 						// Dashboard read-only query (Phase 6) — any workspace member may query
 						r.Post("/query", handler.RunQuery(cfg, s, log))
+						// Flow-engine mutation execution — any workspace member may execute
+						r.Post("/mutate", handler.RunMutation(cfg, s, log))
 						// Lima Table (managed connector) — schema and row management
 						r.Get("/columns", handler.GetManagedTableColumns(s, log))
 						r.With(handler.RequireWorkspaceRole(s, log, model.RoleAppBuilder)).

@@ -49,6 +49,46 @@ function evalExpression(expression: string, $input: unknown): unknown {
   }
 }
 
+/**
+ * Replace {{path}} tokens in a SQL template string using values from `data`.
+ *
+ * Resolution order for a token like {{form1.email}}:
+ *  1. Full dot-path traversal in `data`  (handles {{a.b.c}} → data.a.b.c)
+ *  2. Last-segment lookup in `data`       (handles {{widgetId.fieldName}} →
+ *     data[fieldName], which covers the common form-submit case where `data`
+ *     is already the flat form-values object)
+ *
+ * Substituted values have single quotes doubled to prevent SQL syntax errors
+ * and injection through string-typed columns.
+ */
+function resolveSqlTemplate(sql: string, data: unknown): string {
+  const obj = typeof data === 'object' && data !== null ? data as Record<string, unknown> : {}
+  return sql.replace(/\{\{([^}]+)\}\}/g, (_, path: string) => {
+    const parts = path.trim().split('.')
+
+    // 1. Full path traversal
+    let v: unknown = obj
+    for (const p of parts) {
+      v = (v as Record<string, unknown> | null)?.[p] ?? undefined
+    }
+    if (v != null) return escapeSqlToken(v)
+
+    // 2. Last-segment fallback: {{widgetId.fieldName}} → obj['fieldName']
+    if (parts.length > 1) {
+      const last = parts[parts.length - 1]
+      const direct = obj[last]
+      if (direct != null) return escapeSqlToken(direct)
+    }
+
+    return ''
+  })
+}
+
+/** Escape a value for safe inline SQL substitution: double any single quotes. */
+function escapeSqlToken(v: unknown): string {
+  return String(v).replace(/'/g, "''")
+}
+
 function FlowEngineProvider({
   nodes,
   edges,
@@ -112,14 +152,27 @@ function FlowEngineProvider({
           const result = evalExpression(expression, value)
           await firePort(targetNode.id, 'output', result)
 
-        } else if (stepType === 'step:query' || stepType === 'step:mutation') {
+        } else if (stepType === 'step:query') {
           try {
-            const connectorId = String(w.connector ?? '')
+            const connectorId = String(w.connector_id ?? '')
             const sql = String(w.sql ?? '')
             if (connectorId && sql) {
               const { runConnectorQuery: runQuery } = await import('../../../lib/api')
               const res = await runQuery(workspaceIdRef.current, connectorId, { sql })
               await firePort(targetNode.id, 'result', res.rows ?? [])
+            }
+          } catch { /* step error — stop chain */ }
+
+        } else if (stepType === 'step:mutation') {
+          try {
+            const connectorId = String(w.connector_id ?? '')
+            const sqlTemplate = String(w.sql ?? '')
+            if (connectorId && sqlTemplate) {
+              const resolvedSql = resolveSqlTemplate(sqlTemplate, value)
+              const { runConnectorMutation } = await import('../../../lib/api')
+              const res = await runConnectorMutation(workspaceIdRef.current, connectorId, { sql: resolvedSql })
+              await firePort(targetNode.id, 'affectedRows', res.affected_rows)
+              await firePort(targetNode.id, 'result', [{ affected_rows: res.affected_rows }])
             }
           } catch { /* step error — stop chain */ }
 
@@ -143,7 +196,7 @@ function FlowEngineProvider({
         } else if (stepType === 'step:condition') {
           const expression = String(w.expression ?? 'false')
           const result = Boolean(evalExpression(expression, value))
-          await firePort(targetNode.id, result ? 'true' : 'false', value)
+          await firePort(targetNode.id, result ? 'trueBranch' : 'falseBranch', value)
         }
         // step:approval_gate and step:notification have no client-side execution
 
