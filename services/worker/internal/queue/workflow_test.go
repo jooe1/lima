@@ -693,6 +693,7 @@ func TestCollectTriggeredOutputBindings(t *testing.T) {
 		}
 	})
 }
+
 // ---- evaluateCondition tests ------------------------------------------------
 
 func TestEvaluateConditionEqNeq(t *testing.T) {
@@ -723,25 +724,25 @@ func TestEvaluateConditionNumericComparisons(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		left   any
-		op     string
-		right  string
-		want   bool
+		name  string
+		left  any
+		op    string
+		right string
+		want  bool
 	}{
-		{name: "gt true",  left: 10,   op: "gt",  right: "5",  want: true},
-		{name: "gt false", left: 3,    op: "gt",  right: "5",  want: false},
-		{name: "gt equal", left: 5,    op: "gt",  right: "5",  want: false},
-		{name: "lt true",  left: 3,    op: "lt",  right: "5",  want: true},
-		{name: "lt false", left: 10,   op: "lt",  right: "5",  want: false},
-		{name: "lt equal", left: 5,    op: "lt",  right: "5",  want: false},
-		{name: "gte equal", left: 5,   op: "gte", right: "5",  want: true},
-		{name: "gte greater", left: 6, op: "gte", right: "5",  want: true},
-		{name: "gte less", left: 4,    op: "gte", right: "5",  want: false},
-		{name: "lte equal", left: 5,   op: "lte", right: "5",  want: true},
-		{name: "lte less", left: 4,    op: "lte", right: "5",  want: true},
-		{name: "lte greater", left: 6, op: "lte", right: "5",  want: false},
-		{name: "float gt",  left: 1.5, op: "gt", right: "1.2", want: true},
+		{name: "gt true", left: 10, op: "gt", right: "5", want: true},
+		{name: "gt false", left: 3, op: "gt", right: "5", want: false},
+		{name: "gt equal", left: 5, op: "gt", right: "5", want: false},
+		{name: "lt true", left: 3, op: "lt", right: "5", want: true},
+		{name: "lt false", left: 10, op: "lt", right: "5", want: false},
+		{name: "lt equal", left: 5, op: "lt", right: "5", want: false},
+		{name: "gte equal", left: 5, op: "gte", right: "5", want: true},
+		{name: "gte greater", left: 6, op: "gte", right: "5", want: true},
+		{name: "gte less", left: 4, op: "gte", right: "5", want: false},
+		{name: "lte equal", left: 5, op: "lte", right: "5", want: true},
+		{name: "lte less", left: 4, op: "lte", right: "5", want: true},
+		{name: "lte greater", left: 6, op: "lte", right: "5", want: false},
+		{name: "float gt", left: 1.5, op: "gt", right: "1.2", want: true},
 	}
 
 	for _, tc := range tests {
