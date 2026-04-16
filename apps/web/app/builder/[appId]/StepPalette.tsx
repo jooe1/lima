@@ -132,27 +132,30 @@ export function StepPalette({ onAddWidget }: Props) {
               {group.types.map(type => {
                 const meta = WIDGET_REGISTRY[type]
                 return (
-                  <button
+                  <div
                     key={type}
+                    draggable
                     onClick={() => onAddWidget?.(type)}
+                    onDragStart={e => {
+                      e.dataTransfer.setData('widget-type', type)
+                      e.dataTransfer.effectAllowed = 'copy'
+                    }}
                     title={`Add ${meta.displayName} widget to layout`}
                     style={{
-                      display: 'block',
-                      width: '100%',
                       padding: '6px 10px',
                       marginBottom: 2,
                       background: '#111',
                       border: '1px solid #2a2a2a',
                       borderRadius: 4,
-                      cursor: onAddWidget ? 'pointer' : 'default',
-                      textAlign: 'left',
+                      cursor: 'grab',
+                      userSelect: 'none',
                       color: '#e5e5e5',
                       fontSize: '0.7rem',
                       fontWeight: 600,
                     }}
                   >
                     {meta.displayName}
-                  </button>
+                  </div>
                 )
               })}
             </div>

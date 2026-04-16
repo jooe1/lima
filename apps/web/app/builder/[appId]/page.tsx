@@ -701,6 +701,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             onChange={d => history.set(d)}
             workspaceId={workspace?.id ?? ''}
             reactiveStore={reactiveStore}
+            onAddWidget={handleAddWidget}
           />
         ) : (
           <CanvasEditor

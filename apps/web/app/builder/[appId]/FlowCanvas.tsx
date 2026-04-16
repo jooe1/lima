@@ -37,6 +37,7 @@ export interface FlowCanvasProps {
   onChange: (doc: AuraDocumentV2) => void
   workspaceId: string
   reactiveStore: ReactiveStore
+  onAddWidget?: (element: string) => void
 }
 
 interface WidgetNodeData extends Record<string, unknown> {
@@ -422,7 +423,7 @@ function applyConnected(nodes: Node[], connectedSet: Set<string>): Node[] {
 
 // ---- Inner component (needs ReactFlowProvider in parent) --------------------
 
-function FlowCanvasInner({ doc, selectedId, onSelect, onChange, workspaceId: _workspaceId, reactiveStore: _reactiveStore }: FlowCanvasProps) {
+function FlowCanvasInner({ doc, selectedId, onSelect, onChange, workspaceId: _workspaceId, reactiveStore: _reactiveStore, onAddWidget }: FlowCanvasProps) {
   // Suppress unused param linting — will be used in C8
   void _workspaceId
   void _reactiveStore
@@ -508,6 +509,11 @@ function FlowCanvasInner({ doc, selectedId, onSelect, onChange, workspaceId: _wo
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
+    const widgetType = e.dataTransfer.getData('widget-type')
+    if (widgetType) {
+      onAddWidget?.(widgetType)
+      return
+    }
     const stepType = e.dataTransfer.getData('application/reactflow/step')
     if (!stepType) return
     const pos = rfInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY })
@@ -518,7 +524,7 @@ function FlowCanvasInner({ doc, selectedId, onSelect, onChange, workspaceId: _wo
       style: { flowX: String(pos.x), flowY: String(pos.y) },
     }
     onChange({ ...doc, nodes: [...doc.nodes, newNode] })
-  }, [doc, onChange, rfInstance])
+  }, [doc, onChange, rfInstance, onAddWidget])
 
   const onSelectionChange: OnSelectionChangeFunc = useCallback(({ nodes: selNodes }) => {
     const stepIds = selNodes
