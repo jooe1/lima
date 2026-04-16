@@ -330,7 +330,9 @@ function RuntimeText({ node }: { node: AuraNode }) {
 
   const { portValues } = useFlowEngine()
   const dynamicContent = portValues[node.id]?.['setContent']
-  const content = dynamicContent !== undefined ? String(dynamicContent) : (node.text ?? node.value ?? '')
+  const content = dynamicContent !== undefined
+    ? (dynamicContent !== null && typeof dynamicContent === 'object' ? JSON.stringify(dynamicContent, null, 2) : String(dynamicContent))
+    : (node.text ?? node.value ?? '')
   const variant = node.style?.variant ?? 'body'
   const fz = variant === 'heading1' ? '1.5rem' : variant === 'heading2' ? '1.125rem' : variant === 'caption' ? '0.75rem' : '0.875rem'
   const fw = variant === 'heading1' || variant === 'heading2' ? 700 : 400
@@ -370,8 +372,9 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
           bumpRefreshSeq()
         }
       } else {
-        // Fire the flow engine for this button's clicked port
+        // Fire the flow engine for this button's clicked and clickedAt ports
         await firePort(node.id, 'clicked', true)
+        await firePort(node.id, 'clickedAt', new Date().toISOString())
         bumpRefreshSeq()
       }
       setStatus('done')
@@ -440,7 +443,7 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const hasBinding = hasConnectorBinding(node)
   const querySql = getConnectorQuerySQL(connectorType, sql)
   const { values: dashboardFilters, refreshSeq } = useDashboardFilters()
-  const { portValues } = useFlowEngine()
+  const { portValues, firePort } = useFlowEngine()
   const tablePorts = portValues[node.id] ?? {}
 
   // refresh port — trigger a re-fetch
@@ -458,6 +461,10 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const overrideRows = tablePorts['setRows'] as Array<Record<string, unknown>> | undefined
   // setFilter port — apply additional {column: value} filter pairs
   const overrideFilter = tablePorts['setFilter'] as Record<string, string> | undefined
+
+  // selectedRow / selectedRowIndex output ports
+  const [selectedRowIdx, setSelectedRowIdx] = useState<number | null>(null)
+  const prevFiredRowsJsonRef = useRef<string>('')
 
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -513,6 +520,15 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const rows = boundData?.rows ?? []
   const runtimeError = boundData?.error ?? error
 
+  // Fire rows output port whenever the displayed rows change
+  useEffect(() => {
+    const json = JSON.stringify(rows)
+    if (json !== prevFiredRowsJsonRef.current) {
+      prevFiredRowsJsonRef.current = json
+      firePort(node.id, 'rows', rows).catch(() => {})
+    }
+  })
+
   return (
     <div style={{ height: '100%', overflow: 'auto', padding: '0.5rem' }}>
       {loading && <RuntimeStateMessage tone="muted" message="Loading table data…" />}
@@ -533,7 +549,19 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
           {rows.length > 0 && (
             <tbody>
               {rows.map((row, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid #111' }}>
+                <tr
+                  key={i}
+                  style={{
+                    borderBottom: '1px solid #111',
+                    cursor: 'pointer',
+                    background: i === selectedRowIdx ? '#1e3a5f' : 'transparent',
+                  }}
+                  onClick={() => {
+                    setSelectedRowIdx(i)
+                    firePort(node.id, 'selectedRow', row).catch(() => {})
+                    firePort(node.id, 'selectedRowIndex', i).catch(() => {})
+                  }}
+                >
                   {cols.map((col: string) => (
                     <td key={col} style={{ padding: '6px 8px', color: '#ccc', fontSize: '0.78rem' }}>
                       {String(row[col] ?? '')}
@@ -618,7 +646,11 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
         }
         setValues({})
       } else {
-        // Fire the flow engine 'submitted' port with form values
+        // Fire individual field ports (* dynamic ports), the full values object, then submitted
+        for (const [fieldName, fieldValue] of Object.entries(values)) {
+          await firePort(node.id, fieldName, fieldValue)
+        }
+        await firePort(node.id, 'values', { ...values })
         await firePort(node.id, 'submitted', { ...values })
         bumpRefreshSeq()
         setValues({})
@@ -902,7 +934,7 @@ function RuntimeFilter({ node, workspaceId }: { node: AuraNode; workspaceId: str
   const placeholder = node.style?.placeholder ?? 'Type to filter…'
   const staticOptions = parseFilterOptions(node.style?.options)
   const { values, setFilterValue } = useDashboardFilters()
-  const { portValues } = useFlowEngine()
+  const { portValues, firePort } = useFlowEngine()
   const filterPortValues = portValues[node.id] ?? {}
 
   // setValue port — set the current filter value programmatically
@@ -962,7 +994,7 @@ function RuntimeFilter({ node, workspaceId }: { node: AuraNode; workspaceId: str
       {resolvedOptions.length > 0 ? (
         <select
           value={value}
-          onChange={e => setFilterValue(node.id, e.target.value)}
+          onChange={e => { const v = e.target.value; setFilterValue(node.id, v); firePort(node.id, 'value', v).catch(() => {}); firePort(node.id, 'selectedValue', v).catch(() => {}) }}
           style={{
             width: '100%',
             boxSizing: 'border-box',
@@ -984,7 +1016,7 @@ function RuntimeFilter({ node, workspaceId }: { node: AuraNode; workspaceId: str
         <input
           type="text"
           value={value}
-          onChange={e => setFilterValue(node.id, e.target.value)}
+          onChange={e => { const v = e.target.value; setFilterValue(node.id, v); firePort(node.id, 'value', v).catch(() => {}) }}
           placeholder={placeholder}
           style={{
             width: '100%',
@@ -1015,7 +1047,9 @@ function RuntimeMarkdown({ node }: { node: AuraNode }) {
 
   const { portValues } = useFlowEngine()
   const dynamicMarkdownContent = portValues[node.id]?.['setContent']
-  const content = dynamicMarkdownContent !== undefined ? String(dynamicMarkdownContent) : (node.style?.content ?? node.text ?? '')
+  const content = dynamicMarkdownContent !== undefined
+    ? (dynamicMarkdownContent !== null && typeof dynamicMarkdownContent === 'object' ? JSON.stringify(dynamicMarkdownContent, null, 2) : String(dynamicMarkdownContent))
+    : (node.style?.content ?? node.text ?? '')
   // Minimal markdown rendering without a library — just paragraphs
   const lines = content.split('\n')
   return (
