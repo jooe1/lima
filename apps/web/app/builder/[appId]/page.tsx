@@ -723,6 +723,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               onUpdate={handleUpdateNode}
               onDelete={id => { handleDeleteWidget(id); setSelectedId(null) }}
               workspaceId={workspace?.id ?? ''}
+              doc={history.doc}
             />
           ) : (
             <Inspector

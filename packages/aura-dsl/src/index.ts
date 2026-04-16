@@ -59,7 +59,11 @@ export interface AuraNode {
 
 export type AuraDocument = AuraNode[]
 
-export type EdgeType = 'reactive' | 'async'
+/** 'binding' edges connect a widget output port to a step node's column/value
+ *  slot (e.g. form1.firstName → step-mutation.bind:set:0).  They are
+ *  rendered as dashed purple wires on the Flow canvas and drive the
+ *  drag-to-wire binding feature. */
+export type EdgeType = 'reactive' | 'async' | 'binding'
 
 export interface AuraEdge {
   id: string

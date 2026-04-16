@@ -26,7 +26,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { WIDGET_REGISTRY, STEP_NODE_REGISTRY, type WidgetType, type StepNodeType } from '@lima/widget-catalog'
-import { type AuraDocumentV2, type AuraNode, type ReactiveStore } from '@lima/aura-dsl'
+import { type AuraDocumentV2, type AuraNode, type ReactiveStore, type AuraEdge } from '@lima/aura-dsl'
+import { tryParseSQL, defaultGuided, sqlFromGuided } from './stepSqlUtils'
 
 // ---- Types -----------------------------------------------------------------
 
@@ -119,10 +120,12 @@ export function docV2ToFlowNodes(doc: AuraDocumentV2): Node[] {
  * Convert V2 document edges into React Flow edges.
  * Reactive → blue animated smoothstep.
  * Async → orange dashed smoothstep.
+ * Binding → purple dashed (drag-to-wire data bindings).
  */
 export function docV2ToFlowEdges(doc: AuraDocumentV2): Edge[] {
   return doc.edges.map(edge => {
     const isReactive = edge.edgeType === 'reactive'
+    const isBinding  = edge.edgeType === 'binding'
     return {
       id: edge.id,
       source: edge.fromNodeId,
@@ -132,9 +135,10 @@ export function docV2ToFlowEdges(doc: AuraDocumentV2): Edge[] {
       type: 'smoothstep',
       animated: isReactive,
       style: {
-        stroke: isReactive ? '#3b82f6' : '#f97316',
-        strokeWidth: 1.5,
-        ...(isReactive ? {} : { strokeDasharray: '6 3' }),
+        stroke: isReactive ? '#3b82f6' : isBinding ? '#a78bfa' : '#f97316',
+        strokeWidth: isBinding ? 1 : 1.5,
+        strokeDasharray: isBinding ? '4 3' : isReactive ? undefined : '6 3',
+        opacity: isBinding ? 0.7 : 1,
       },
     } satisfies Edge
   })
@@ -447,6 +451,79 @@ function StepNodeComponent({ data, selected }: NodeProps) {
           </div>
         </div>
       )}
+
+      {/* Binding slot handles — mutation SET clauses (drag-to-wire) */}
+      {(sData.stepType === 'step:mutation' || sData.stepType === 'step:query') && (() => {
+        const sql = String(sData.auraNode?.with?.sql ?? '')
+        if (!sql) return null
+        const isQuery = sData.stepType === 'step:query'
+        const guided = tryParseSQL(sql, isQuery) ?? defaultGuided()
+        const setSlots = !isQuery && guided.mutationOp !== 'DELETE' ? guided.setClauses : []
+        const whereSlots = guided.whereClauses
+        if (setSlots.length === 0 && whereSlots.length === 0) return null
+        return (
+          <div style={{ borderTop: '1px solid #1a1a1a', padding: '4px 0' }}>
+            {setSlots.length > 0 && (
+              <div style={{ padding: '2px 10px 0', fontSize: '0.5rem', color: '#333', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Bind values
+              </div>
+            )}
+            {setSlots.map((s, i) => (
+              <div key={`set-${i}`} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10, paddingTop: 3, paddingBottom: 3 }}>
+                <Handle
+                  type="target"
+                  position={Position.Left}
+                  id={`bind:set:${i}`}
+                  style={{
+                    width: 7, height: 7,
+                    background: '#a78bfa',
+                    border: '1px solid #2a2a2a',
+                    left: -4,
+                    borderRadius: 2,
+                  }}
+                />
+                <span style={{ fontSize: '0.6rem', color: '#666', marginLeft: 6 }}>
+                  {s.col || `col ${i}`}
+                </span>
+                {s.val.startsWith('{{') && (
+                  <span style={{ fontSize: '0.5rem', color: '#a78bfa', marginLeft: 4, fontFamily: 'monospace' }}>
+                    {s.val.replace(/^\{\{|\}\}$/g, '')}
+                  </span>
+                )}
+              </div>
+            ))}
+            {whereSlots.length > 0 && (
+              <div style={{ padding: '4px 10px 0', fontSize: '0.5rem', color: '#333', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Bind filters
+              </div>
+            )}
+            {whereSlots.map((w, i) => (
+              <div key={`where-${i}`} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10, paddingTop: 3, paddingBottom: 3 }}>
+                <Handle
+                  type="target"
+                  position={Position.Left}
+                  id={`bind:where:${i}`}
+                  style={{
+                    width: 7, height: 7,
+                    background: '#60a5fa',
+                    border: '1px solid #2a2a2a',
+                    left: -4,
+                    borderRadius: 2,
+                  }}
+                />
+                <span style={{ fontSize: '0.6rem', color: '#666', marginLeft: 6 }}>
+                  {w.col || `filter ${i}`}
+                </span>
+                {w.val.startsWith('{{') && (
+                  <span style={{ fontSize: '0.5rem', color: '#60a5fa', marginLeft: 4, fontFamily: 'monospace' }}>
+                    {w.val.replace(/^\{\{|\}\}$/g, '')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -554,6 +631,81 @@ function FlowCanvasInner({ doc, selectedId, onSelect, onChange, workspaceId: _wo
   }, [doc, setRfNodes, setRfEdges])
 
   const onConnect: OnConnect = useCallback((connection: Connection) => {
+    // ---- Drag-to-wire binding (Approach 1) ---------------------------------
+    // When the user drops a widget output port onto a step node's bind:set:N
+    // or bind:where:N handle, write the {{widgetId.portName}} expression into
+    // the corresponding SQL slot and persist a 'binding' edge.
+    if (connection.targetHandle?.startsWith('bind:')) {
+      const parts = connection.targetHandle.split(':') // ['bind', 'set'|'where', index]
+      const slotType = parts[1] as 'set' | 'where'
+      const slotIdx  = parseInt(parts[2], 10)
+      const targetNode = doc.nodes.find(n => n.id === connection.target)
+      if (targetNode) {
+        const isQuery  = targetNode.element === 'step:query'
+        const sql      = String(targetNode.with?.sql ?? '')
+        const guided   = tryParseSQL(sql, isQuery) ?? defaultGuided()
+        const binding  = `{{${connection.source}.${connection.sourceHandle}}}`
+
+        let updatedGuided = guided
+        if (slotType === 'set') {
+          const setClauses = guided.setClauses.map((c, i) =>
+            i === slotIdx ? { ...c, val: binding } : c,
+          )
+          updatedGuided = { ...guided, setClauses }
+        } else if (slotType === 'where') {
+          const whereClauses = guided.whereClauses.map((c, i) =>
+            i === slotIdx ? { ...c, val: binding } : c,
+          )
+          updatedGuided = { ...guided, whereClauses }
+        }
+
+        const newSql = sqlFromGuided(updatedGuided, isQuery)
+        const updatedNodes = doc.nodes.map(n =>
+          n.id === connection.target
+            ? { ...n, with: { ...(n.with ?? {}), sql: newSql } }
+            : n,
+        )
+
+        // Remove any pre-existing binding edge on this same slot so there is
+        // never more than one binding per slot.
+        const existingSlotEdge = doc.edges.find(
+          e => e.edgeType === 'binding' && e.toNodeId === connection.target && e.toPort === connection.targetHandle,
+        )
+        const filteredEdges = existingSlotEdge
+          ? doc.edges.filter(e => e.id !== existingSlotEdge.id)
+          : doc.edges
+
+        const bindingEdge: AuraEdge = {
+          id: `bind_${crypto.randomUUID().slice(0, 8)}`,
+          fromNodeId: connection.source!,
+          fromPort:   connection.sourceHandle ?? '',
+          toNodeId:   connection.target!,
+          toPort:     connection.targetHandle!,
+          edgeType:   'binding',
+        }
+
+        const rfEdge = {
+          id: bindingEdge.id,
+          source: bindingEdge.fromNodeId,
+          sourceHandle: bindingEdge.fromPort,
+          target: bindingEdge.toNodeId,
+          targetHandle: bindingEdge.toPort,
+          type: 'smoothstep' as const,
+          animated: false,
+          style: { stroke: '#a78bfa', strokeWidth: 1, strokeDasharray: '4 3', opacity: 0.7 },
+        }
+        if (existingSlotEdge) {
+          setRfEdges(eds => [...eds.filter(e => e.id !== existingSlotEdge.id), rfEdge])
+        } else {
+          setRfEdges(eds => [...eds, rfEdge])
+        }
+
+        onChange({ ...doc, nodes: updatedNodes, edges: [...filteredEdges, bindingEdge] })
+        return
+      }
+    }
+
+    // ---- Normal flow edge --------------------------------------------------
     const fromNode = doc.nodes.find(n => n.id === connection.source)
     const toNode = doc.nodes.find(n => n.id === connection.target)
     const edgeType =
@@ -590,7 +742,31 @@ function FlowCanvasInner({ doc, selectedId, onSelect, onChange, workspaceId: _wo
 
   const onEdgesDelete: OnEdgesDelete = useCallback((deleted: Edge[]) => {
     const deletedIds = new Set(deleted.map(e => e.id))
-    onChange({ ...doc, edges: doc.edges.filter(e => !deletedIds.has(e.id)) })
+
+    // For each deleted binding edge, clear the corresponding SQL slot value
+    let updatedNodes = doc.nodes
+    for (const de of doc.edges.filter(e => deletedIds.has(e.id) && e.edgeType === 'binding')) {
+      const parts    = de.toPort.split(':') // ['bind', 'set'|'where', index]
+      const slotType = parts[1] as 'set' | 'where'
+      const slotIdx  = parseInt(parts[2], 10)
+      const target   = updatedNodes.find(n => n.id === de.toNodeId)
+      if (!target) continue
+      const isQuery  = target.element === 'step:query'
+      const sql      = String(target.with?.sql ?? '')
+      const guided   = tryParseSQL(sql, isQuery) ?? defaultGuided()
+      let next = guided
+      if (slotType === 'set') {
+        next = { ...guided, setClauses: guided.setClauses.map((c, i) => i === slotIdx ? { ...c, val: '' } : c) }
+      } else if (slotType === 'where') {
+        next = { ...guided, whereClauses: guided.whereClauses.map((c, i) => i === slotIdx ? { ...c, val: '' } : c) }
+      }
+      const newSql = sqlFromGuided(next, isQuery)
+      updatedNodes = updatedNodes.map(n =>
+        n.id === de.toNodeId ? { ...n, with: { ...(n.with ?? {}), sql: newSql } } : n,
+      )
+    }
+
+    onChange({ ...doc, nodes: updatedNodes, edges: doc.edges.filter(e => !deletedIds.has(e.id)) })
   }, [doc, onChange])
 
   const onNodeDragStop: OnNodeDrag = useCallback((_event, node) => {

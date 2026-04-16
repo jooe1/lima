@@ -1,14 +1,22 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { type AuraNode } from '@lima/aura-dsl'
+import { type AuraNode, type AuraDocumentV2 } from '@lima/aura-dsl'
 import { listConnectors, runConnectorQuery, type Connector, type DashboardQueryResponse } from '../../../lib/api'
+import { ExpressionInput, buildAvailableWidgets, type AvailableWidget } from './ExpressionInput'
+import {
+  defaultGuided, sqlFromGuided, tryParseSQL,
+  type GuidedState, type WhereClause, type SetClause, type MutationOp, type WhereOp,
+} from './stepSqlUtils'
 
 interface Props {
   node: AuraNode
   onUpdate: (node: AuraNode) => void
   onDelete: (id: string) => void
   workspaceId: string
+  /** Full app document — used to enumerate bindable widget ports and detect
+   *  drag-to-wire binding edges for this step node. */
+  doc: AuraDocumentV2
 }
 
 // Shared style helpers
@@ -167,129 +175,19 @@ function extractTables(connector: Connector | undefined): SchemaTable[] {
   return []
 }
 
-type WhereOp = '=' | '!=' | 'LIKE' | '>' | '<' | '>=' | '<='
-interface WhereClause { col: string; op: WhereOp; val: string }
-interface SetClause { col: string; val: string }
-type MutationOp = 'INSERT' | 'UPDATE' | 'DELETE'
-
-interface GuidedState {
-  table: string
-  whereClauses: WhereClause[]
-  limit: string
-  // mutation-only
-  mutationOp: MutationOp
-  setClauses: SetClause[]
-}
-
-function defaultGuided(): GuidedState {
-  return { table: '', whereClauses: [], limit: '50', mutationOp: 'INSERT', setClauses: [{ col: '', val: '' }] }
-}
-
-function sqlFromGuided(state: GuidedState, isQuery: boolean): string {
-  const { table, whereClauses, limit, mutationOp, setClauses } = state
-  if (!table) return ''
-
-  const whereStr = whereClauses.length > 0
-    ? ' WHERE ' + whereClauses
-        .filter(w => w.col)
-        .map(w => {
-          const val = w.val.startsWith('{{') ? w.val : `'${w.val}'`
-          return `${w.col} ${w.op} ${val}`
-        }).join(' AND ')
-    : ''
-
-  if (isQuery) {
-    const limitStr = limit ? ` LIMIT ${limit}` : ''
-    return `SELECT * FROM ${table}${whereStr}${limitStr}`
-  }
-
-  if (mutationOp === 'DELETE') return `DELETE FROM ${table}${whereStr}`
-
-  const validSets = setClauses.filter(s => s.col)
-  if (mutationOp === 'INSERT') {
-    const cols = validSets.map(s => s.col).join(', ')
-    const vals = validSets.map(s => s.val.startsWith('{{') ? s.val : `'${s.val}'`).join(', ')
-    return cols ? `INSERT INTO ${table} (${cols}) VALUES (${vals})` : `INSERT INTO ${table} DEFAULT VALUES`
-  }
-
-  // UPDATE
-  const setStr = validSets.map(s => `${s.col} = ${s.val.startsWith('{{') ? s.val : `'${s.val}'`}`).join(', ')
-  return setStr ? `UPDATE ${table} SET ${setStr}${whereStr}` : ''
-}
-
-/**
- * Try to parse a simple SQL query into guided state.
- * Returns null when the SQL is too complex to represent.
- */
-function tryParseSQL(sql: string, isQuery: boolean): GuidedState | null {
-  const s = sql.trim()
-  if (!s) return defaultGuided()
-
-  const WHERE_CLAUSE_RE = /(\w+)\s*(=|!=|LIKE|>=|<=|>|<)\s*('([^']*)'|({{[^}]+}}))/gi
-  const whereMatch = (str: string): WhereClause[] => {
-    const result: WhereClause[] = []
-    let m
-    const re = new RegExp(WHERE_CLAUSE_RE.source, 'gi')
-    while ((m = re.exec(str)) !== null) {
-      result.push({ col: m[1], op: m[2] as WhereOp, val: m[4] !== undefined ? m[4] : m[5] })
-    }
-    return result
-  }
-
-  if (isQuery) {
-    const m = s.match(/^SELECT\s+[*\w,\s]+\s+FROM\s+(\w+)(.*?)(?:LIMIT\s+(\d+))?$/i)
-    if (!m) return null
-    const table = m[1]
-    const rest = m[2] ?? ''
-    const limit = m[3] ?? '50'
-    const whereMatch_ = rest.match(/WHERE\s+(.*)/i)
-    const whereClauses = whereMatch_ ? whereMatch(whereMatch_[1]) : []
-    return { table, whereClauses, limit, mutationOp: 'INSERT', setClauses: [{ col: '', val: '' }] }
-  }
-
-  // INSERT
-  const ins = s.match(/^INSERT\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i)
-  if (ins) {
-    const table = ins[1]
-    const cols = ins[2].split(',').map(c => c.trim())
-    const vals = ins[3].split(',').map(v => v.trim().replace(/^'|'$/g, ''))
-    const setClauses: SetClause[] = cols.map((col, i) => ({ col, val: vals[i] ?? '' }))
-    return { table, setClauses, whereClauses: [], limit: '50', mutationOp: 'INSERT' }
-  }
-
-  // UPDATE
-  const upd = s.match(/^UPDATE\s+(\w+)\s+SET\s+(.*?)(?:\s+WHERE\s+(.*))?$/i)
-  if (upd) {
-    const table = upd[1]
-    const setClauses: SetClause[] = upd[2].split(',').map(part => {
-      const eq = part.indexOf('=')
-      return { col: part.slice(0, eq).trim(), val: part.slice(eq + 1).trim().replace(/^'|'$/g, '') }
-    })
-    const whereClauses = upd[3] ? whereMatch(upd[3]) : []
-    return { table, setClauses, whereClauses, limit: '50', mutationOp: 'UPDATE' }
-  }
-
-  // DELETE
-  const del = s.match(/^DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+(.*))?$/i)
-  if (del) {
-    const table = del[1]
-    const whereClauses = del[2] ? whereMatch(del[2]) : []
-    return { table, whereClauses, setClauses: [{ col: '', val: '' }], limit: '50', mutationOp: 'DELETE' }
-  }
-
-  return null
-}
-
 // ---- Sub-editors per step type ---------------------------------------------
 
 const WHERE_OPS: WhereOp[] = ['=', '!=', 'LIKE', '>', '<', '>=', '<=']
 
 function WhereBuilder({
-  clauses, columns, onChange,
+  clauses, columns, onChange, availableWidgets, boundSlots,
 }: {
   clauses: WhereClause[]
   columns: string[]
   onChange: (next: WhereClause[]) => void
+  availableWidgets: AvailableWidget[]
+  /** Set of slot indices that are locked via a drag-to-wire binding edge. */
+  boundSlots: Set<number>
 }) {
   const add = () => onChange([...clauses, { col: columns[0] ?? '', op: '=', val: '' }])
   const remove = (i: number) => onChange(clauses.filter((_, idx) => idx !== i))
@@ -305,7 +203,9 @@ function WhereBuilder({
       {clauses.length === 0 && (
         <div style={{ fontSize: '0.6rem', color: '#333', fontStyle: 'italic' }}>No filters — returns all rows.</div>
       )}
-      {clauses.map((clause, i) => (
+      {clauses.map((clause, i) => {
+        const isWired = boundSlots.has(i)
+        return (
         <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 60px 1fr 18px', gap: 4, alignItems: 'center' }}>
           {columns.length > 0 ? (
             <select style={selectStyle} value={clause.col} onChange={e => update(i, { col: e.target.value })}>
@@ -318,10 +218,26 @@ function WhereBuilder({
           <select style={selectStyle} value={clause.op} onChange={e => update(i, { op: e.target.value as WhereOp })}>
             {WHERE_OPS.map(op => <option key={op} value={op}>{op}</option>)}
           </select>
-          <input style={inputStyle} value={clause.val} placeholder="value or {{widget.port}}" onChange={e => update(i, { val: e.target.value })} />
+          {isWired ? (
+            <ExpressionInput
+              value={clause.val}
+              onChange={() => {}}
+              availableWidgets={availableWidgets}
+              locked
+              lockLabel={clause.val.replace(/^\{\{|\}\}$/g, '')}
+            />
+          ) : (
+            <ExpressionInput
+              value={clause.val}
+              onChange={v => update(i, { val: v })}
+              placeholder="value or @widget"
+              availableWidgets={availableWidgets}
+            />
+          )}
           <button onClick={() => remove(i)} style={{ fontSize: '0.7rem', color: '#555', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>✕</button>
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -366,11 +282,16 @@ function PreviewResults({ result, error, loading }: { result: DashboardQueryResp
 }
 
 function SqlStepEditor({
-  node, onUpdate, workspaceId,
+  node, onUpdate, workspaceId, availableWidgets, boundSetSlots, boundWhereSlots,
 }: {
   node: AuraNode
   onUpdate: (node: AuraNode) => void
   workspaceId: string
+  availableWidgets: AvailableWidget[]
+  /** SET clause slot indices wired via drag-to-wire binding edges. */
+  boundSetSlots: Set<number>
+  /** WHERE clause slot indices wired via drag-to-wire binding edges. */
+  boundWhereSlots: Set<number>
 }) {
   const isQuery = node.element === 'step:query'
   const [connectors, setConnectors] = useState<Connector[]>([])
@@ -604,7 +525,9 @@ function SqlStepEditor({
                   + Add field
                 </button>
               </div>
-              {guided.setClauses.map((s, i) => (
+              {guided.setClauses.map((s, i) => {
+                const isWired = boundSetSlots.has(i)
+                return (
                 <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 18px', gap: 4, marginBottom: 4, alignItems: 'center' }}>
                   {tableColumns.length > 0 ? (
                     <select style={selectStyle} value={s.col} onChange={e => {
@@ -620,16 +543,32 @@ function SqlStepEditor({
                       updateGuided({ setClauses: next })
                     }} />
                   )}
-                  <input style={inputStyle} value={s.val} placeholder="value or {{widget.port}}" onChange={e => {
-                    const next = guided.setClauses.map((sc, idx) => idx === i ? { ...sc, val: e.target.value } : sc)
-                    updateGuided({ setClauses: next })
-                  }} />
+                  {isWired ? (
+                    <ExpressionInput
+                      value={s.val}
+                      onChange={() => {}}
+                      availableWidgets={availableWidgets}
+                      locked
+                      lockLabel={s.val.replace(/^\{\{|\}\}$/g, '')}
+                    />
+                  ) : (
+                    <ExpressionInput
+                      value={s.val}
+                      onChange={v => {
+                        const next = guided.setClauses.map((sc, idx) => idx === i ? { ...sc, val: v } : sc)
+                        updateGuided({ setClauses: next })
+                      }}
+                      placeholder="value or @widget"
+                      availableWidgets={availableWidgets}
+                    />
+                  )}
                   <button
                     onClick={() => updateGuided({ setClauses: guided.setClauses.filter((_, idx) => idx !== i) })}
                     style={{ fontSize: '0.7rem', color: '#555', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                   >✕</button>
                 </div>
-              ))}
+                )
+              })}
             </div>
           )}
 
@@ -638,6 +577,8 @@ function SqlStepEditor({
             clauses={guided.whereClauses}
             columns={tableColumns}
             onChange={whereClauses => updateGuided({ whereClauses })}
+            availableWidgets={availableWidgets}
+            boundSlots={boundWhereSlots}
           />
 
           {/* LIMIT — queries only */}
@@ -869,8 +810,26 @@ function HttpEditor({
 
 // ---- Main component --------------------------------------------------------
 
-export function StepConfigPanel({ node, onUpdate, onDelete, workspaceId }: Props) {
+export function StepConfigPanel({ node, onUpdate, onDelete, workspaceId, doc }: Props) {
   const meta = STEP_META[node.element]
+
+  // Derive available widgets for binding pickers
+  const availableWidgets = buildAvailableWidgets(doc.nodes)
+
+  // Derive which SET/WHERE slots are wired via drag-to-wire binding edges
+  const bindingEdges = doc.edges.filter(
+    e => e.edgeType === 'binding' && e.toNodeId === node.id,
+  )
+  const boundSetSlots = new Set(
+    bindingEdges
+      .filter(e => e.toPort.startsWith('bind:set:'))
+      .map(e => parseInt(e.toPort.split(':')[2], 10)),
+  )
+  const boundWhereSlots = new Set(
+    bindingEdges
+      .filter(e => e.toPort.startsWith('bind:where:'))
+      .map(e => parseInt(e.toPort.split(':')[2], 10)),
+  )
 
   const handleNameChange = (value: string) => {
     onUpdate({ ...node, text: value || undefined })
@@ -911,7 +870,14 @@ export function StepConfigPanel({ node, onUpdate, onDelete, workspaceId }: Props
       {/* Config section — per step type */}
       {(node.element === 'step:query' || node.element === 'step:mutation') && (
         <Section title="Configuration">
-          <SqlStepEditor node={node} onUpdate={onUpdate} workspaceId={workspaceId} />
+          <SqlStepEditor
+            node={node}
+            onUpdate={onUpdate}
+            workspaceId={workspaceId}
+            availableWidgets={availableWidgets}
+            boundSetSlots={boundSetSlots}
+            boundWhereSlots={boundWhereSlots}
+          />
         </Section>
       )}
 
