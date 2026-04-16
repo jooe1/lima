@@ -682,7 +682,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
       {/* ── Body ── */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         {canvasView === 'flow' ? (
-          <StepPalette />
+          <StepPalette onAddWidget={handleAddWidget} />
         ) : (
           <LayersPanel
             doc={history.doc.nodes}
