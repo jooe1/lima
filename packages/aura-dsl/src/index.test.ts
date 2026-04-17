@@ -354,6 +354,27 @@ describe('parseV2', () => {
     })
   })
 
+  it('parses and round-trips binding edges', () => {
+    const src = `
+form form1 @ root ;
+step:mutation step1 @ root ;
+---edges---
+edge bind_abc12345 from form1.firstName to step1.bind:set:0 binding ;
+`
+
+    const doc = parseV2(src)
+    expect(doc.edges[0]).toMatchObject({
+      id: 'bind_abc12345',
+      fromNodeId: 'form1',
+      fromPort: 'firstName',
+      toNodeId: 'step1',
+      toPort: 'bind:set:0',
+      edgeType: 'binding',
+    })
+
+    expect(parseV2(serializeV2(doc))).toEqual(doc)
+  })
+
   it('throws ParseError for edge missing from keyword', () => {
     const bad = `
 table t @ root ;
