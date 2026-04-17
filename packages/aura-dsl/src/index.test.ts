@@ -375,6 +375,24 @@ edge bind_abc12345 from form1.firstName to step1.bind:set:0 binding ;
     expect(parseV2(serializeV2(doc))).toEqual(doc)
   })
 
+  it('parses legacy malformed edges whose fromPort contains spaces', () => {
+    const src = `
+form form1 @ root ;
+step:mutation step1 @ root ;
+---edges---
+edge bind_abc12345 from form1.First name to step1.bind:set:0 binding ;
+`
+
+    const doc = parseV2(src)
+    expect(doc.edges[0]).toMatchObject({
+      fromNodeId: 'form1',
+      fromPort: 'First name',
+      toNodeId: 'step1',
+      toPort: 'bind:set:0',
+      edgeType: 'binding',
+    })
+  })
+
   it('throws ParseError for edge missing from keyword', () => {
     const bad = `
 table t @ root ;
@@ -489,6 +507,22 @@ describe('V2 serializer / validator / diff', () => {
     expect(doc2.nodes).toHaveLength(2)
     expect(doc2.edges).toHaveLength(1)
     expect(doc2.edges[0]).toMatchObject({ id: 'e1', edgeType: 'reactive' })
+  })
+
+  it('serializeV2 quotes edge endpoints when port names contain spaces', () => {
+    const spacedDoc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'form', id: 'form1', parentId: 'root' },
+        { element: 'step:mutation', id: 'step1', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'form1', fromPort: 'First name', toNodeId: 'step1', toPort: 'bind:set:0', edgeType: 'binding' },
+      ],
+    }
+
+    const src = serializeV2(spacedDoc)
+    expect(src).toContain('from "form1.First name"')
+    expect(parseV2(src)).toEqual(spacedDoc)
   })
 
   it('serializeV2 emits no ---edges--- section when edges is empty', () => {

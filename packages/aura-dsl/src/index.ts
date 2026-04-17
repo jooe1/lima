@@ -131,7 +131,7 @@ export function parse(source: string): AuraDocument {
  * Notes:
  * - `fromNodeId.fromPort` is a single token; split on the FIRST dot only
  *   because toPort values can contain dots (e.g. `sql_param.user_id`).
- * - Valid edgeType values are `reactive`, `async`, and `binding`.
+ * - Valid edgeType values are `reactive` and `async`.
  */
 export function parseV2(source: string): AuraDocumentV2 {
   const SENTINEL = '---edges---'
@@ -189,8 +189,8 @@ export function parseV2(source: string): AuraDocumentV2 {
       const toPort = toToken.slice(toDot + 1)
 
       const edgeTypeToken = consume()
-      if (edgeTypeToken !== 'reactive' && edgeTypeToken !== 'async' && edgeTypeToken !== 'binding') {
-        throw new ParseError(`edge '${id}': unknown edgeType '${edgeTypeToken}'; expected 'reactive', 'async', or 'binding'`)
+      if (edgeTypeToken !== 'reactive' && edgeTypeToken !== 'async') {
+        throw new ParseError(`edge '${id}': unknown edgeType '${edgeTypeToken}'; expected 'reactive' or 'async'`)
       }
       const edgeType = edgeTypeToken as EdgeType
 

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   WIDGET_REGISTRY,
   STEP_NODE_REGISTRY,
+  expandWidgetPorts,
   type WidgetType,
   type StepNodeType,
 } from './index'
@@ -57,5 +58,39 @@ describe('STEP_NODE_REGISTRY ports', () => {
       const unique = new Set(names)
       expect(unique.size).toBe(names.length)
     }
+  })
+})
+
+describe('expandWidgetPorts', () => {
+  const formPorts = WIDGET_REGISTRY['form'].ports
+
+  it('form widget with fields expands "*" into concrete per-field output ports', () => {
+    const result = expandWidgetPorts({ fields: 'name,email,status' }, formPorts)
+    const outputNames = result.filter(p => p.direction === 'output').map(p => p.name)
+    expect(outputNames).toContain('name')
+    expect(outputNames).toContain('email')
+    expect(outputNames).toContain('status')
+    expect(outputNames).toContain('values')
+    expect(outputNames).toContain('submitted')
+    expect(outputNames).not.toContain('*')
+    expect(result.filter(p => p.direction === 'input').length).toBe(
+      formPorts.filter(p => p.direction === 'input').length,
+    )
+  })
+
+  it('form widget with no fields returns catalog ports unchanged', () => {
+    const result = expandWidgetPorts({}, formPorts)
+    expect(result).toEqual(formPorts)
+  })
+
+  it('form widget with empty fields string returns catalog ports unchanged', () => {
+    const result = expandWidgetPorts({ fields: '   ' }, formPorts)
+    expect(result).toEqual(formPorts)
+  })
+
+  it('non-form widget (table) returns ports unchanged', () => {
+    const tablePorts = WIDGET_REGISTRY['table'].ports
+    const result = expandWidgetPorts({ fields: 'name,email' }, tablePorts)
+    expect(result).toEqual(tablePorts)
   })
 })

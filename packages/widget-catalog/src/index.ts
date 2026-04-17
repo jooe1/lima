@@ -375,6 +375,7 @@ export const STEP_NODE_REGISTRY: Record<StepNodeType, StepNodeMeta> = {
     description: 'Execute a write SQL statement (INSERT/UPDATE/DELETE)',
     icon: 'PenLine',
     ports: [
+      { name: 'run', direction: 'input', dataType: 'trigger', description: 'Trigger execution of this mutation step' },
       { name: 'params', direction: 'input', dataType: 'object', description: 'SQL parameters (one dynamic port per parameter)', dynamic: true },
       { name: 'result', direction: 'output', dataType: 'object', description: 'Full mutation result object' },
       { name: 'affectedRows', direction: 'output', dataType: 'number', description: 'Number of rows affected' },
@@ -456,4 +457,45 @@ export function listWidgets(): WidgetMeta[] {
 /** Returns the StepNodeMeta for a given step element name, or undefined. */
 export function getStepNode(element: string): StepNodeMeta | undefined {
   return STEP_NODE_REGISTRY[element as StepNodeType]
+}
+
+/**
+ * Expand dynamic ports for a widget node using its runtime configuration.
+ *
+ * For `form` widgets: the generic `'*'` port is replaced with one concrete
+ * output port per field listed in `nodeConfig.fields` (comma-separated string).
+ * The `values`, `submitted`, and all input ports are preserved unchanged.
+ *
+ * All other widget types are returned unchanged.
+ */
+export function expandWidgetPorts(
+  nodeConfig: Record<string, unknown>,
+  ports: PortDef[],
+): PortDef[] {
+  const hasDynamic = ports.some(p => p.dynamic && p.direction === 'output')
+  if (!hasDynamic) return ports
+
+  const fields = typeof nodeConfig.fields === 'string'
+    ? nodeConfig.fields.split(',').map(f => f.trim()).filter(Boolean)
+    : []
+
+  if (fields.length === 0) return ports
+
+  // Replace the '*' dynamic output port with concrete per-field ports
+  const result: PortDef[] = []
+  for (const p of ports) {
+    if (p.name === '*' && p.direction === 'output' && p.dynamic) {
+      for (const field of fields) {
+        result.push({
+          name: field,
+          direction: 'output',
+          dataType: 'string',
+          description: `Form field: ${field}`,
+        })
+      }
+    } else {
+      result.push(p)
+    }
+  }
+  return result
 }

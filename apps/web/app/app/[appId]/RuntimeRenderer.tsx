@@ -35,7 +35,7 @@ const FlowEngineContext = React.createContext<FlowEngine>({
   firePort: async () => {},
 })
 
-function useFlowEngine() {
+export function useFlowEngine() {
   return useContext(FlowEngineContext)
 }
 
@@ -61,9 +61,17 @@ function evalExpression(expression: string, $input: unknown): unknown {
  * Substituted values have single quotes doubled to prevent SQL syntax errors
  * and injection through string-typed columns.
  */
-function resolveSqlTemplate(sql: string, data: unknown): string {
+export function resolveSqlTemplate(sql: string, data: unknown, slotBag: Record<string, unknown> = {}): string {
+  // First pass: resolve stable slot placeholders ({{slot.set.0}}, {{slot.where.1}}, …)
+  // These are keyed directly in slotBag and take priority over path-traversal.
+  const withSlots = sql.replace(/\{\{(slot\.(set|where)\.\d+)\}\}/g, (_, token: string) => {
+    const v = slotBag[token]
+    return v != null ? escapeSqlToken(v) : ''
+  })
+
+  // Second pass: legacy {{widgetId.portName}} tokens via path-traversal
   const obj = typeof data === 'object' && data !== null ? data as Record<string, unknown> : {}
-  return sql.replace(/\{\{([^}]+)\}\}/g, (_, path: string) => {
+  return withSlots.replace(/\{\{([^}]+)\}\}/g, (_, path: string) => {
     const parts = path.trim().split('.')
 
     // 1. Full path traversal
@@ -89,7 +97,7 @@ function escapeSqlToken(v: unknown): string {
   return String(v).replace(/'/g, "''")
 }
 
-function FlowEngineProvider({
+export function FlowEngineProvider({
   nodes,
   edges,
   workspaceId,
@@ -125,6 +133,8 @@ function FlowEngineProvider({
   const edgeMapRef = useRef(edgeMap)
   const nodeMapRef = useRef(nodeMap)
   const workspaceIdRef = useRef(workspaceId)
+  // Per-node slot accumulator: populated by binding edges, consumed by mutation `run` trigger
+  const slotAccumulatorRef = useRef<Record<string, Record<string, unknown>>>({})
   useEffect(() => { edgeMapRef.current = edgeMap }, [edgeMap])
   useEffect(() => { nodeMapRef.current = nodeMap }, [nodeMap])
   useEffect(() => { workspaceIdRef.current = workspaceId }, [workspaceId])
@@ -143,6 +153,16 @@ function FlowEngineProvider({
       if (!targetNode) continue
 
       if (targetNode.element.startsWith('step:')) {
+        // Binding edges carry data into slot accumulators but must not trigger step execution.
+        if (edge.edgeType === 'binding') {
+          const acc = slotAccumulatorRef.current
+          acc[edge.toNodeId] = acc[edge.toNodeId] ?? {}
+          // Translate port name (bind:set:0) → slot token key (slot.set.0) so
+          // resolveSqlTemplate can look them up by the {{slot.set.N}} token directly.
+          const slotKey = edge.toPort.replace(/^bind:/, 'slot.').replace(':', '.')
+          acc[edge.toNodeId][slotKey] = value
+          continue
+        }
         // Execute the step and fire its output port(s)
         const stepType = targetNode.element
         const w = targetNode.with ?? {}
@@ -164,11 +184,16 @@ function FlowEngineProvider({
           } catch { /* step error — stop chain */ }
 
         } else if (stepType === 'step:mutation') {
+          // Only execute when triggered by the `run` port or a legacy async edge.
+          // Binding edges are handled above by the accumulator branch and never reach here.
+          const isRunTrigger = edge.toPort === 'run' || edge.edgeType === 'async'
+          if (!isRunTrigger) continue
           try {
             const connectorId = String(w.connector_id ?? '')
             const sqlTemplate = String(w.sql ?? '')
             if (connectorId && sqlTemplate) {
-              const resolvedSql = resolveSqlTemplate(sqlTemplate, value)
+              const slotBag = slotAccumulatorRef.current[targetNode.id] ?? {}
+              const resolvedSql = resolveSqlTemplate(sqlTemplate, value, slotBag)
               const { runConnectorMutation } = await import('../../../lib/api')
               const res = await runConnectorMutation(workspaceIdRef.current, connectorId, { sql: resolvedSql })
               await firePort(targetNode.id, 'affectedRows', res.affected_rows)
