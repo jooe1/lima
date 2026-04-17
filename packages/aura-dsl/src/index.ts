@@ -131,8 +131,38 @@ export function parse(source: string): AuraDocument {
  * Notes:
  * - `fromNodeId.fromPort` is a single token; split on the FIRST dot only
  *   because toPort values can contain dots (e.g. `sql_param.user_id`).
- * - Valid edgeType values are `reactive` and `async`.
+ * - Valid edgeType values are `reactive`, `async`, and `binding`.
  */
+
+/**
+ * Repairs DSL edge statements where port names contain spaces (e.g. `form1.first name`).
+ * Spaces within a port name segment are replaced with `_` so the parser can tokenize correctly.
+ * Only the edge section (after `---edges---`) is modified.
+ */
+export function repairDSL(source: string): string {
+  const SENTINEL = '---edges---'
+  const sentinelIdx = source.indexOf(SENTINEL)
+  if (sentinelIdx === -1) return source
+
+  const nodeSource = source.slice(0, sentinelIdx + SENTINEL.length)
+  const edgeSource = source.slice(sentinelIdx + SENTINEL.length)
+
+  // Fix patterns like `from nodeId.port1 part2 to` and `to nodeId.port1 part2 <edgeType>`
+  // by joining the broken port name segments with `_`.
+  // The pattern: after `from ` or `to `, a token containing a dot followed by a space and
+  // another non-keyword word before the next keyword (`to`, `reactive`, `async`, `binding`, `;`).
+  const KEYWORDS = new Set(['to', 'from', 'edge', 'reactive', 'async', 'binding', 'transform'])
+  const repairedEdgeSource = edgeSource.replace(
+    /((?:from|to)\s+\S+\.\S*)\s+([^\s;]+)/g,
+    (match, beforeSpace, afterSpace) => {
+      if (KEYWORDS.has(afterSpace)) return match
+      return `${beforeSpace}_${afterSpace}`
+    }
+  )
+
+  return nodeSource + repairedEdgeSource
+}
+
 export function parseV2(source: string): AuraDocumentV2 {
   const SENTINEL = '---edges---'
   const sentinelIdx = source.indexOf(SENTINEL)
@@ -172,25 +202,46 @@ export function parseV2(source: string): AuraDocumentV2 {
       const id = consume()
       expect('from')
 
-      // fromNodeId.fromPort — split on first dot only
-      const fromToken = consume()
-      const firstDot = fromToken.indexOf('.')
-      if (firstDot === -1) throw new ParseError(`edge '${id}': from token '${fromToken}' must be in format 'nodeId.portName'`)
-      const fromNodeId = fromToken.slice(0, firstDot)
-      const fromPort = fromToken.slice(firstDot + 1)
+      // fromNodeId.fromPort — split on first dot only.
+      // Handles two forms:
+      //   1. Quoted: "nodeId.port name" (emitted by serializeV2 when port has spaces)
+      //   2. Legacy unquoted split: nodeId.portPart1 portPart2 (stored before quoting was added)
+      let fromRaw = consume()
+      if (fromRaw.startsWith('"') && fromRaw.endsWith('"')) {
+        // Quoted form: strip outer quotes
+        fromRaw = fromRaw.slice(1, -1)
+      } else {
+        // Legacy form: consume extra non-keyword tokens that are part of a space-split port name
+        while (peek() !== 'to' && peek() !== ';' && peek() !== undefined &&
+               !/^(reactive|async|binding|transform)$/.test(peek())) {
+          fromRaw = fromRaw + ' ' + consume()
+        }
+      }
+      const firstDot = fromRaw.indexOf('.')
+      if (firstDot === -1) throw new ParseError(`edge '${id}': from token '${fromRaw}' must be in format 'nodeId.portName'`)
+      const fromNodeId = fromRaw.slice(0, firstDot)
+      const fromPort = fromRaw.slice(firstDot + 1)
 
       expect('to')
 
-      // toNodeId.toPort — same: split on first dot only
-      const toToken = consume()
-      const toDot = toToken.indexOf('.')
-      if (toDot === -1) throw new ParseError(`edge '${id}': to token '${toToken}' must be in format 'nodeId.portName'`)
-      const toNodeId = toToken.slice(0, toDot)
-      const toPort = toToken.slice(toDot + 1)
+      // toNodeId.toPort — same handling
+      let toRaw = consume()
+      if (toRaw.startsWith('"') && toRaw.endsWith('"')) {
+        toRaw = toRaw.slice(1, -1)
+      } else {
+        while (peek() !== ';' && peek() !== undefined &&
+               !/^(reactive|async|binding|transform)$/.test(peek())) {
+          toRaw = toRaw + ' ' + consume()
+        }
+      }
+      const toDot = toRaw.indexOf('.')
+      if (toDot === -1) throw new ParseError(`edge '${id}': to token '${toRaw}' must be in format 'nodeId.portName'`)
+      const toNodeId = toRaw.slice(0, toDot)
+      const toPort = toRaw.slice(toDot + 1)
 
       const edgeTypeToken = consume()
-      if (edgeTypeToken !== 'reactive' && edgeTypeToken !== 'async') {
-        throw new ParseError(`edge '${id}': unknown edgeType '${edgeTypeToken}'; expected 'reactive' or 'async'`)
+      if (edgeTypeToken !== 'reactive' && edgeTypeToken !== 'async' && edgeTypeToken !== 'binding') {
+        throw new ParseError(`edge '${id}': unknown edgeType '${edgeTypeToken}'; expected 'reactive', 'async', or 'binding'`)
       }
       const edgeType = edgeTypeToken as EdgeType
 
@@ -286,7 +337,9 @@ export function serializeV2(doc: AuraDocumentV2): string {
   if (doc.edges.length === 0) return nodePart
 
   const edgeLines = doc.edges.map((e) => {
-    let line = `edge ${e.id} from ${e.fromNodeId}.${e.fromPort} to ${e.toNodeId}.${e.toPort} ${e.edgeType}`
+    const fromEndpoint = /\s/.test(e.fromPort) ? `"${e.fromNodeId}.${e.fromPort}"` : `${e.fromNodeId}.${e.fromPort}`
+    const toEndpoint = /\s/.test(e.toPort) ? `"${e.toNodeId}.${e.toPort}"` : `${e.toNodeId}.${e.toPort}`
+    let line = `edge ${e.id} from ${fromEndpoint} to ${toEndpoint} ${e.edgeType}`
     if (e.transform !== undefined) line += ` transform ${JSON.stringify(e.transform)}`
     line += ' ;'
     return line
