@@ -15,8 +15,6 @@ interface Props {
   workspaceId: string
   appId: string
   pageId: string
-  onOpenCanvas?: (workflowId: string) => void
-  onOpenSplitView?: (workflowId: string) => void
   onSwitchToFlowView?: () => void
 }
 
@@ -87,7 +85,7 @@ function getDataFlowSummary(nodeId: string, edges: AuraEdge[]) {
   return { reactiveInputs, reactiveOutputs, asyncTriggers }
 }
 
-export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, pageId, onOpenCanvas, onOpenSplitView, onSwitchToFlowView }: Props) {
+export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, pageId, onSwitchToFlowView }: Props) {
   const [activeTab, setActiveTab] = useState<'properties' | 'data' | 'layout'>('properties')
 
   // Reset to Properties whenever a different widget is selected.

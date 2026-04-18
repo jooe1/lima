@@ -25,11 +25,6 @@ import { StepConfigPanel } from './StepConfigPanel'
 import { LayersPanel } from './LayersPanel'
 import { StepPalette } from './StepPalette'
 import { VersionHistory } from './VersionHistory'
-import { WorkflowCanvas } from './WorkflowCanvas'
-import { WorkflowEditor } from './WorkflowEditor'
-import { SplitViewOverlay } from './SplitViewOverlay'
-import { WorkflowOverlay } from './WorkflowOverlay'
-import { FloatingWorkflowPanel } from './FloatingWorkflowPanel'
 import { formatProductionIssues, getAppProductionIssues, getUserFacingProductionIssues } from '../../../lib/appValidation'
 import { RouteGateShell } from '../../_components/RouteGateShell'
 
@@ -58,10 +53,6 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const [pubLoading, setPubLoading] = useState(false)
   // 'inspector' | 'chat' — controls the right-hand panel
   const [rightPanel, setRightPanel] = useState<'inspector' | 'chat'>('inspector')
-  const [showWorkflowModal, setShowWorkflowModal] = useState(false)
-  const [canvasWorkflowId, setCanvasWorkflowId] = useState<string | null>(null)
-  const [splitViewWorkflowId, setSplitViewWorkflowId] = useState<string | null>(null)
-  const [floatingPanelWorkflowId, setFloatingPanelWorkflowId] = useState<string | null>(null)
   const [highlightedWidgetIds, setHighlightedWidgetIds] = useState<string[]>([])
   // nodeMetadata tracks which nodes were manually edited; persisted as JSONB
   const [nodeMetadata, setNodeMetadata] = useState<Record<string, { manuallyEdited: boolean }>>({})
@@ -362,22 +353,6 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const publishBlocked = publishIssues.length > 0
   const publishBlockerMessage = publishBlocked ? formatProductionIssues(publishIssues) : ''
   const userFacingBlockers = useMemo(() => getUserFacingProductionIssues(history.doc.nodes), [history.doc.nodes])
-  const workflowTriggerTargets = history.doc.nodes
-    .filter(node => node.id !== 'root')
-    .map(node => {
-      const fields = node.element === 'form'
-        ? (node.style?.fields ?? node.with?.fields ?? '')
-            .split(',')
-            .map((f: string) => f.trim())
-            .filter(Boolean)
-        : undefined
-      return {
-        id: node.id,
-        label: `${node.id} (${node.element})`,
-        element: node.element,
-        fields,
-      }
-    })
 
   if (loading) return <RouteGateShell title="Editor" message="Loading your tool…" />
 
@@ -636,14 +611,6 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           💬
         </button>
         <button
-          onClick={() => setShowWorkflowModal(v => !v)}
-          title="Workflows"
-          style={{ ...iconBtn(true), background: showWorkflowModal ? '#161616' : 'transparent', borderColor: showWorkflowModal ? '#333' : '#1e1e1e' }}
-        >
-          ⚡
-        </button>
-
-        <button
           onClick={handleOpenPublishDialog}
           disabled={publishing || !!loadError || publishBlocked}
           style={{
@@ -734,8 +701,6 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               workspaceId={workspace?.id ?? ''}
               appId={appId}
               pageId={appId}
-              onOpenCanvas={setCanvasWorkflowId}
-              onOpenSplitView={setSplitViewWorkflowId}
               onSwitchToFlowView={() => setCanvasView('flow')}
             />
           )
@@ -756,41 +721,6 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
           </div>
         ) : null}
       </div>
-
-      {/* Workflow modal */}
-      {showWorkflowModal && (
-        <div
-          onClick={() => setShowWorkflowModal(false)}
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 500,
-          }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              width: 'min(760px, 95vw)', height: 'min(85vh, 800px)',
-              background: '#0a0a0a', border: '1px solid #2a2a2a', borderRadius: 8,
-              display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative',
-            }}
-          >
-            <button
-              onClick={() => setShowWorkflowModal(false)}
-              title="Close"
-              style={{
-                position: 'absolute', top: 8, right: 10, zIndex: 1,
-                background: 'transparent', border: 'none', color: '#555',
-                fontSize: '1rem', cursor: 'pointer', lineHeight: 1, padding: '2px 6px',
-              }}
-            >
-              ✕
-            </button>
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <WorkflowEditor appId={appId} triggerTargets={workflowTriggerTargets} onOpenCanvas={setCanvasWorkflowId} onOpenSplitView={setSplitViewWorkflowId} />
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Publish dialog */}
       {showPublishDialog && (
@@ -917,47 +847,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
         />
       )}
 
-      {/* Workflow canvas overlay */}
-      {canvasWorkflowId && (
-        <WorkflowCanvas
-          workspaceId={workspace!.id}
-          appId={appId}
-          workflowId={canvasWorkflowId}
-          triggerLabel="Workflow"
-          onClose={() => setCanvasWorkflowId(null)}
-          isAdmin={user?.role === 'workspace_admin'}
-        />
-      )}
 
-      {/* Workflow overlay for page-bound workflow editing */}
-      {splitViewWorkflowId && workspace && (
-        <WorkflowOverlay
-          workflowId={splitViewWorkflowId}
-          workspaceId={workspace.id}
-          appId={appId}
-          pageId={appId}
-          onClose={() => setSplitViewWorkflowId(null)}
-          onPopOut={(wfId) => { setSplitViewWorkflowId(null); setFloatingPanelWorkflowId(wfId) }}
-          pageDocument={history.doc.nodes}
-          isAdmin={user?.role === 'workspace_admin'}
-          onBindingWidgetsChange={setHighlightedWidgetIds}
-        />
-      )}
-
-      {/* Floating panel for page-bound workflow editing (WF-33–WF-37) */}
-      {floatingPanelWorkflowId && workspace && (
-        <FloatingWorkflowPanel
-          workflowId={floatingPanelWorkflowId}
-          workspaceId={workspace.id}
-          appId={appId}
-          pageId={appId}
-          pageDocument={history.doc.nodes}
-          isAdmin={user?.role === 'workspace_admin'}
-          onClose={() => setFloatingPanelWorkflowId(null)}
-          onSnapBack={() => { setSplitViewWorkflowId(floatingPanelWorkflowId); setFloatingPanelWorkflowId(null) }}
-          onBindingWidgetsChange={setHighlightedWidgetIds}
-        />
-      )}
     </div>
   )
 }
