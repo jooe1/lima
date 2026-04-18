@@ -114,7 +114,7 @@
         "emptyColumn": "New column",
         "addAnotherColumn": "Add another column",
         "importFromCsv": "Import columns from CSV",
-        "importCsvHelp": "Column names will be read from the first row.",
+        "importCsvHelp": "Columns are read from the first row and all data rows are imported when the table is created.",
         "finish": "Create shared table"
       }
     },

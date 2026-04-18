@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslations } from 'next-intl'
-import { createConnector, setManagedTableColumns, getConnector, upsertConnectorAction, sendConnectorChatMessage } from '../../../lib/api'
+import { createConnector, setManagedTableColumns, getConnector, upsertConnectorAction, sendConnectorChatMessage, seedManagedTableFromCSV } from '../../../lib/api'
 import type { ConnectorType, Connector } from '../../../lib/api'
 import type { ConnectorChatResponse } from '@lima/sdk-connectors'
 import { ManagedColumnsEditor, type EditableManagedColumn } from './ManagedColumnBuilder'
@@ -73,6 +73,7 @@ export function ConnectorWizard({
     { id: 'draft-1', name: '', col_type: 'text', nullable: true },
   ])
   const [csvImportError, setCsvImportError] = useState('')
+  const [csvSeedFile, setCsvSeedFile] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
 
@@ -166,6 +167,8 @@ export function ConnectorWizard({
         return
       }
       setManagedDraftColumns(cols)
+      // Keep the File so handleFinish can seed the rows after creating the table
+      setCsvSeedFile(file)
     }
     reader.onerror = () => setCsvImportError('Could not read the file.')
     reader.readAsText(file)
@@ -202,6 +205,11 @@ export function ConnectorWizard({
         const initialColumns = getManagedColumnsPayload()
         if (initialColumns.length > 0) {
           await setManagedTableColumns(workspaceId, connector.id, initialColumns)
+        }
+        // If the user imported columns from a CSV, seed the row data as well so
+        // they don't end up with a schema but an empty table.
+        if (csvSeedFile) {
+          await seedManagedTableFromCSV(workspaceId, connector.id, csvSeedFile)
         }
         // Re-fetch so schema_cached_at is up-to-date before handing off to caller.
         const fresh = await getConnector(workspaceId, connector.id)

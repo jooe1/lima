@@ -113,7 +113,7 @@
         "columnType": "Typ",
         "emptyColumn": "Neue Spalte",
         "addAnotherColumn": "Weitere Spalte hinzuf\u00fcgen",        "importFromCsv": "Spalten aus CSV importieren",
-        "importCsvHelp": "Spaltennamen werden aus der ersten Zeile gelesen.",        "finish": "Gemeinsame Tabelle erstellen"
+        "importCsvHelp": "Spaltennamen werden aus der ersten Zeile gelesen und alle Datenzeilen werden beim Erstellen der Tabelle importiert.",        "finish": "Gemeinsame Tabelle erstellen"
       }
     },
     "apiGuide": {
