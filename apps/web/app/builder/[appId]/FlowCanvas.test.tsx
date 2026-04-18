@@ -524,3 +524,33 @@ describe('validateBindings', () => {
     expect(validateBindings(doc)).toEqual([])
   })
 })
+
+describe('FlowCanvas mutation summary', () => {
+  it('shows the configured mutation SQL instead of a legacy fallback summary', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        {
+          id: 'mut1',
+          element: 'step:mutation',
+          parentId: 'root',
+          with: { sql: 'DELETE FROM sessions' },
+        },
+      ],
+      edges: [],
+    }
+
+    render(
+      <FlowCanvas
+        doc={doc}
+        selectedId={null}
+        onSelect={vi.fn()}
+        onChange={vi.fn()}
+        workspaceId="ws1"
+        reactiveStore={MOCK_REACTIVE_STORE as any}
+      />
+    )
+
+    expect(screen.getByText('DELETE FROM sessions')).toBeTruthy()
+    expect(screen.queryByText('INSERT INTO — not configured')).toBeNull()
+  })
+})

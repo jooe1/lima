@@ -64,7 +64,10 @@ export interface PortDef {
   direction: 'input' | 'output'
   dataType: 'string' | 'number' | 'boolean' | 'date' | 'object' | 'array' | 'trigger' | 'void'
   description: string
-  dynamic?: boolean  // true → additional ports generated at runtime from widget config
+  dynamic?: boolean         // true → additional ports generated at runtime from widget config
+  expandable?: boolean      // true → object port that generates child ports per configured key list
+  childKeySource?: string   // nodeConfig key whose value is a comma-separated list of child names
+  childKeyDefault?: string  // fallback child names (comma-separated) if nodeConfig[childKeySource] is absent or empty
 }
 
 // Per-widget prop schemas — these drive both the inspector panel and the
@@ -154,12 +157,12 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       exampleSQL: 'SELECT * FROM {{table}} ORDER BY created_at DESC LIMIT 100',
     },
     ports: [
-      { name: 'selectedRow', direction: 'output', dataType: 'object', description: 'Currently selected row object' },
+      { name: 'selectedRow', direction: 'output', dataType: 'object', description: 'Currently selected row object', expandable: true, childKeySource: 'columns' },
       { name: 'rows', direction: 'output', dataType: 'array', description: 'All rows currently displayed in the table' },
       { name: 'selectedRowIndex', direction: 'output', dataType: 'number', description: 'Zero-based index of the selected row' },
       { name: 'refresh', direction: 'input', dataType: 'trigger', description: 'Trigger a data refresh' },
       { name: 'setRows', direction: 'input', dataType: 'array', description: 'Override the displayed rows' },
-      { name: 'setFilter', direction: 'input', dataType: 'object', description: 'Apply a filter object to the table' },
+      { name: 'setFilter', direction: 'input', dataType: 'object', description: 'Apply a filter object to the table', expandable: true, childKeySource: 'columns' },
     ],
   },
   form: {
@@ -178,8 +181,8 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       { name: 'submitted', direction: 'output', dataType: 'trigger', description: 'Triggered when the form is submitted' },
       { name: '*', direction: 'output', dataType: 'string', description: 'One port per form field, keyed by field name', dynamic: true },
       { name: 'reset', direction: 'input', dataType: 'trigger', description: 'Reset the form to initial values' },
-      { name: 'setValues', direction: 'input', dataType: 'object', description: 'Populate form fields programmatically' },
-      { name: 'setErrors', direction: 'input', dataType: 'object', description: 'Set validation error messages on fields' },
+      { name: 'setValues', direction: 'input', dataType: 'object', description: 'Populate form fields programmatically', expandable: true, childKeySource: 'fields' },
+      { name: 'setErrors', direction: 'input', dataType: 'object', description: 'Set validation error messages on fields', expandable: true, childKeySource: 'fields' },
     ],
   },
   text: {
@@ -229,7 +232,7 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
       exampleSQL: 'SELECT {{labelColumn}} AS label, COUNT(*) AS value FROM {{table}} GROUP BY {{labelColumn}} ORDER BY {{labelColumn}}',
     },
     ports: [
-      { name: 'selectedPoint', direction: 'output', dataType: 'object', description: 'Currently selected chart data point' },
+      { name: 'selectedPoint', direction: 'output', dataType: 'object', description: 'Currently selected chart data point', expandable: true, childKeySource: 'chartPointFields', childKeyDefault: 'label,value' },
       { name: 'setData', direction: 'input', dataType: 'array', description: 'Override the chart data array' },
       { name: 'refresh', direction: 'input', dataType: 'trigger', description: 'Trigger a data refresh' },
     ],
@@ -363,9 +366,9 @@ export const STEP_NODE_REGISTRY: Record<StepNodeType, StepNodeMeta> = {
     icon: 'Database',
     ports: [
       { name: 'params', direction: 'input', dataType: 'object', description: 'SQL parameters (one dynamic port per parameter)', dynamic: true },
-      { name: 'result', direction: 'output', dataType: 'object', description: 'Full query result object' },
+      { name: 'result', direction: 'output', dataType: 'object', description: 'Query result object { rows, rowCount }' },
       { name: 'rows', direction: 'output', dataType: 'array', description: 'Array of result rows' },
-      { name: 'firstRow', direction: 'output', dataType: 'object', description: 'First row of the result set' },
+      { name: 'firstRow', direction: 'output', dataType: 'object', description: 'First result row', expandable: true, childKeySource: 'resultColumns' },
       { name: 'rowCount', direction: 'output', dataType: 'number', description: 'Number of rows returned' },
     ],
   },
@@ -422,7 +425,7 @@ export const STEP_NODE_REGISTRY: Record<StepNodeType, StepNodeMeta> = {
     icon: 'Braces',
     ports: [
       { name: 'input', direction: 'input', dataType: 'object', description: 'Data to transform' },
-      { name: 'output', direction: 'output', dataType: 'object', description: 'Transformed result' },
+      { name: 'output', direction: 'output', dataType: 'object', description: 'Transformed result', expandable: true, childKeySource: 'outputFields' },
     ],
   },
   'step:http': {
@@ -432,7 +435,7 @@ export const STEP_NODE_REGISTRY: Record<StepNodeType, StepNodeMeta> = {
     icon: 'Globe',
     ports: [
       { name: 'body', direction: 'input', dataType: 'object', description: 'Request body (JSON)' },
-      { name: 'responseBody', direction: 'output', dataType: 'object', description: 'Parsed JSON response body' },
+      { name: 'responseBody', direction: 'output', dataType: 'object', description: 'Parsed JSON response body', expandable: true, childKeySource: 'responseFields' },
       { name: 'status', direction: 'output', dataType: 'number', description: 'HTTP response status code' },
       { name: 'ok', direction: 'output', dataType: 'trigger', description: 'Triggered on 2xx response' },
       { name: 'error', direction: 'output', dataType: 'trigger', description: 'Triggered on non-2xx or network error' },
@@ -472,25 +475,51 @@ export function expandWidgetPorts(
   nodeConfig: Record<string, unknown>,
   ports: PortDef[],
 ): PortDef[] {
-  const hasDynamic = ports.some(p => p.dynamic && p.direction === 'output')
-  if (!hasDynamic) return ports
-
+  // Form field outputs (the '*' dynamic sentinel) still use nodeConfig.fields
   const fields = typeof nodeConfig.fields === 'string'
     ? nodeConfig.fields.split(',').map(f => f.trim()).filter(Boolean)
     : []
 
-  if (fields.length === 0) return ports
+  const hasDynamicOutput = ports.some(p => p.dynamic && p.direction === 'output')
+  const hasExpandable = ports.some(p => {
+    if (!p.expandable || !p.childKeySource) return false
+    const raw = typeof nodeConfig[p.childKeySource] === 'string'
+      ? (nodeConfig[p.childKeySource] as string).trim()
+      : (p.childKeyDefault ?? '')
+    return raw.length > 0
+  })
 
-  // Replace the '*' dynamic output port with concrete per-field ports
+  if (!hasDynamicOutput && !hasExpandable) return ports
+
   const result: PortDef[] = []
   for (const p of ports) {
     if (p.name === '*' && p.direction === 'output' && p.dynamic) {
-      for (const field of fields) {
+      // Form field output expansion — replace sentinel with one port per field
+      if (fields.length === 0) {
+        result.push(p)
+      } else {
+        for (const field of fields) {
+          result.push({
+            name: field,
+            direction: 'output',
+            dataType: 'string',
+            description: `Form field: ${field}`,
+          })
+        }
+      }
+    } else if (p.expandable && p.childKeySource) {
+      // Generic expandable port — keep parent, append one child per key
+      const rawKeys = typeof nodeConfig[p.childKeySource] === 'string'
+        ? (nodeConfig[p.childKeySource] as string)
+        : (p.childKeyDefault ?? '')
+      const childKeys = rawKeys.split(',').map(k => k.trim()).filter(Boolean)
+      result.push(p) // always keep the parent port
+      for (const key of childKeys) {
         result.push({
-          name: field,
-          direction: 'output',
+          name: `${p.name}.${key}`,
+          direction: p.direction,
           dataType: 'string',
-          description: `Form field: ${field}`,
+          description: `${p.description} — ${key}`,
         })
       }
     } else {

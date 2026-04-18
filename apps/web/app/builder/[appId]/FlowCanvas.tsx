@@ -145,12 +145,146 @@ export function docV2ToFlowEdges(doc: AuraDocumentV2): Edge[] {
   })
 }
 
+function getExpandedOutputPortDataType(node: AuraNode | undefined, handleName: string | null | undefined): string | undefined {
+  if (!node || !handleName) return undefined
+
+  if (node.element.startsWith('step:')) {
+    return STEP_NODE_REGISTRY[node.element as StepNodeType]?.ports.find(
+      port => port.direction === 'output' && port.name === handleName,
+    )?.dataType
+  }
+
+  const meta = WIDGET_REGISTRY[node.element as WidgetType]
+  const ports = expandWidgetPorts({ ...(node.style ?? {}), ...(node.with ?? {}) }, meta?.ports ?? [])
+  return ports.find(port => port.direction === 'output' && port.name === handleName)?.dataType
+}
+
+function isBindableSqlValueType(dataType: string | undefined): boolean {
+  return Boolean(dataType) && dataType !== 'array' && dataType !== 'object' && dataType !== 'trigger'
+}
+
+function slotKeyFromHandle(handle: string): string {
+  return handle.replace(/^bind:/, 'slot.').replace(':', '.')
+}
+
+function slotTokenFromHandle(handle: string): string {
+  return `{{${slotKeyFromHandle(handle)}}}`
+}
+
+function getSlotColumnName(node: AuraNode | undefined, handle: string): string | undefined {
+  if (!node?.with?.sql) return undefined
+
+  const parts = handle.split(':')
+  if (parts.length !== 3) return undefined
+
+  const slotType = parts[1] as 'set' | 'where'
+  const slotIdx = parseInt(parts[2], 10)
+  if (Number.isNaN(slotIdx)) return undefined
+
+  const guided = tryParseSQL(String(node.with.sql), node.element === 'step:query')
+  if (!guided) return undefined
+
+  return slotType === 'set'
+    ? guided.setClauses[slotIdx]?.col
+    : guided.whereClauses[slotIdx]?.col
+}
+
+function getBindableFieldNames(node: AuraNode | undefined): string[] {
+  if (!node) return []
+
+  const raw = String(node.with?.fields ?? node.style?.fields ?? '')
+  return raw.split(',').map((field: string) => field.trim()).filter(Boolean)
+}
+
+export function migrateLegacyBindingTokens(doc: AuraDocumentV2): AuraDocumentV2 {
+  const nextEdges = doc.edges.map(edge => {
+    if (edge.edgeType !== 'binding' || edge.fromPort !== '*') return edge
+
+    const sourceNode = doc.nodes.find(node => node.id === edge.fromNodeId)
+    const targetNode = doc.nodes.find(node => node.id === edge.toNodeId)
+    const slotColumn = getSlotColumnName(targetNode, edge.toPort)
+    if (!slotColumn) return edge
+
+    const availableFields = getBindableFieldNames(sourceNode)
+    if (!availableFields.includes(slotColumn)) return edge
+
+    return { ...edge, fromPort: slotColumn }
+  })
+
+  const nextNodes = doc.nodes.map(node => {
+    const sql = typeof node.with?.sql === 'string' ? node.with.sql : ''
+    if (!sql) return node
+
+    const relevantEdges = nextEdges.filter(edge => edge.edgeType === 'binding' && edge.toNodeId === node.id)
+    if (relevantEdges.length === 0) return node
+
+    let nextSql = sql
+    for (const edge of relevantEdges) {
+      const legacyToken = `{{${edge.fromNodeId}.${edge.fromPort}}}`
+      nextSql = nextSql.split(legacyToken).join(slotTokenFromHandle(edge.toPort))
+    }
+
+    if (nextSql === sql) return node
+    return { ...node, with: { ...(node.with ?? {}), sql: nextSql } }
+  })
+
+  return { ...doc, nodes: nextNodes, edges: nextEdges }
+}
+
+export interface BindingValidationIssue {
+  severity: 'error' | 'warning'
+  nodeId: string
+  message: string
+}
+
+export function validateBindings(doc: AuraDocumentV2): BindingValidationIssue[] {
+  const issues: BindingValidationIssue[] = []
+
+  for (const node of doc.nodes) {
+    if (node.element !== 'step:mutation') continue
+
+    const sql = typeof node.with?.sql === 'string' ? node.with.sql : ''
+    if (!sql) continue
+
+    const referencedSlots = new Set(
+      Array.from(sql.matchAll(/\{\{(slot\.(set|where)\.\d+)\}\}/g), match => match[1]),
+    )
+    const bindingEdges = doc.edges.filter(edge => edge.edgeType === 'binding' && edge.toNodeId === node.id)
+    const boundSlots = new Set(bindingEdges.map(edge => slotKeyFromHandle(edge.toPort)))
+
+    for (const slot of referencedSlots) {
+      if (!boundSlots.has(slot)) {
+        issues.push({
+          severity: 'error',
+          nodeId: node.id,
+          message: `Mutation step ${node.id} has an unwired binding slot: ${slot}`,
+        })
+      }
+    }
+
+    if (bindingEdges.length > 0) {
+      const hasRunTrigger = doc.edges.some(edge => edge.toNodeId === node.id && (edge.toPort === 'run' || edge.edgeType === 'async'))
+      if (!hasRunTrigger) {
+        issues.push({
+          severity: 'warning',
+          nodeId: node.id,
+          message: `Mutation step ${node.id} has bindings but no run trigger edge.`,
+        })
+      }
+    }
+  }
+
+  return issues
+}
+
 // ---- Widget node custom component ------------------------------------------
 
 function WidgetNodeComponent({ data, selected }: NodeProps) {
   const wData = data as WidgetNodeData
   const meta = WIDGET_REGISTRY[wData.element as WidgetType]
   const [areFieldOutputsExpanded, setAreFieldOutputsExpanded] = useState(false)
+  const [expandedInputPorts, setExpandedInputPorts] = useState<Map<string, boolean>>(new Map())
+  const [expandedOutputPorts, setExpandedOutputPorts] = useState<Map<string, boolean>>(new Map())
   const rawPorts = meta?.ports ?? []
   const ports = expandWidgetPorts({ ...(wData.auraNode.style ?? {}), ...(wData.auraNode.with ?? {}) }, rawPorts)
   const inputPorts = ports.filter(p => p.direction === 'input')
@@ -162,6 +296,29 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
   const fieldOutputPorts = isFormWidget
     ? outputPorts.filter(port => !visibleOutputPorts.some(visiblePort => visiblePort.name === port.name))
     : []
+
+  // Group input ports: for each expandable parent, collect its children
+  const inputPortGroups = useMemo(() => {
+    const groups: Array<{ parent: typeof inputPorts[0]; children: typeof inputPorts[0][] } | { parent: typeof inputPorts[0]; children: null }> = []
+    for (const port of inputPorts) {
+      if (port.name.includes('.')) continue // skip children, they're added via parent
+      const children = inputPorts.filter(p => p.name.startsWith(`${port.name}.`))
+      groups.push({ parent: port, children: children.length > 0 ? children : null })
+    }
+    return groups
+  }, [inputPorts])
+
+  // Group output ports: for each expandable parent (e.g. table.selectedRow), collect its children
+  const outputPortGroups = useMemo(() => {
+    const groups: Array<{ parent: typeof visibleOutputPorts[0]; children: typeof visibleOutputPorts[0][] | null }> = []
+    for (const port of visibleOutputPorts) {
+      if (port.name === '*') continue
+      if (port.name.includes('.')) continue // skip children
+      const children = visibleOutputPorts.filter(p => p.name.startsWith(`${port.name}.`))
+      groups.push({ parent: port, children: children.length > 0 ? children : null })
+    }
+    return groups
+  }, [visibleOutputPorts])
 
   return (
     <div style={{
@@ -199,56 +356,154 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
       <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', padding: '4px 0' }}>
         {/* Input ports on the left */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 0' }}>
-          {inputPorts.map(port => (
-            <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
-              <Handle
-                type="target"
-                position={Position.Left}
-                id={port.name}
-                style={{
-                  width: 8, height: 8,
-                  background: '#3b82f6',
-                  border: '1px solid #2a2a2a',
-                  left: -4,
-                  outline: port.dynamic ? '1.5px dashed #3b82f6' : 'none',
-                  outlineOffset: '2px',
-                }}
-              />
-              <span style={{ fontSize: '0.65rem', color: '#888', marginLeft: 6 }}>
-                {port.name}{port.dynamic ? ' +' : ''}
-              </span>
-              <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>
-                {dataTypeBadge(port.dataType)}
-              </span>
-            </div>
-          ))}
+          {inputPortGroups.map(({ parent: port, children }) => {
+            const isExpanded = expandedInputPorts.get(port.name) ?? false
+            return (
+              <React.Fragment key={port.name}>
+                <div title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
+                  <Handle
+                    type="target"
+                    position={Position.Left}
+                    id={port.name}
+                    style={{
+                      width: 8, height: 8,
+                      background: '#3b82f6',
+                      border: '1px solid #2a2a2a',
+                      left: -4,
+                      outline: port.dynamic ? '1.5px dashed #3b82f6' : 'none',
+                      outlineOffset: '2px',
+                    }}
+                  />
+                  <span style={{ fontSize: '0.65rem', color: '#888', marginLeft: 6 }}>
+                    {port.name}{port.dynamic ? ' +' : ''}
+                  </span>
+                  <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>
+                    {dataTypeBadge(port.dataType)}
+                  </span>
+                  {children && children.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setExpandedInputPorts(prev => {
+                        const next = new Map(prev)
+                        next.set(port.name, !isExpanded)
+                        return next
+                      })}
+                      style={{
+                        border: '1px solid #2a2a2a',
+                        borderRadius: 999,
+                        background: '#161616',
+                        color: '#f5f5f5',
+                        cursor: 'pointer',
+                        fontSize: '0.55rem',
+                        fontWeight: 600,
+                        marginLeft: 4,
+                        padding: '1px 5px',
+                      }}
+                    >
+                      {isExpanded ? '▲' : `▼ ${children.length}`}
+                    </button>
+                  )}
+                </div>
+                {children && isExpanded && children.map(child => (
+                  <div key={child.name} title={child.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 22 }}>
+                    <Handle
+                      type="target"
+                      position={Position.Left}
+                      id={child.name}
+                      style={{
+                        width: 7, height: 7,
+                        background: '#6366f1',
+                        border: '1px solid #2a2a2a',
+                        left: -4,
+                      }}
+                    />
+                    <span style={{ fontSize: '0.6rem', color: '#6b7280', marginLeft: 6 }}>
+                      {child.name.split('.').pop()}
+                    </span>
+                    <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>
+                      {dataTypeBadge(child.dataType)}
+                    </span>
+                  </div>
+                ))}
+              </React.Fragment>
+            )
+          })}
         </div>
 
         {/* Output ports on the right */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 0', alignItems: 'flex-end' }}>
-          {visibleOutputPorts.map(port => (
-            <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
-              <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
-                {dataTypeBadge(port.dataType)}
-              </span>
-              <span style={{ fontSize: '0.65rem', color: '#888', marginRight: 6 }}>
-                {port.name}{port.dynamic ? ' +' : ''}
-              </span>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id={port.name}
-                style={{
-                  width: 8, height: 8,
-                  background: port.dataType === 'trigger' ? '#f59e0b' : '#f97316',
-                  border: '1px solid #2a2a2a',
-                  right: -4,
-                  outline: port.dynamic ? `1.5px dashed ${port.dataType === 'trigger' ? '#f59e0b' : '#f97316'}` : 'none',
-                  outlineOffset: '2px',
-                }}
-              />
-            </div>
-          ))}
+          {outputPortGroups.map(({ parent: port, children }) => {
+            const isExpanded = expandedOutputPorts.get(port.name) ?? false
+            return (
+              <React.Fragment key={port.name}>
+                <div title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
+                  {children && children.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setExpandedOutputPorts(prev => {
+                        const next = new Map(prev)
+                        next.set(port.name, !isExpanded)
+                        return next
+                      })}
+                      style={{
+                        border: '1px solid #2a2a2a',
+                        borderRadius: 999,
+                        background: '#161616',
+                        color: '#f5f5f5',
+                        cursor: 'pointer',
+                        fontSize: '0.55rem',
+                        fontWeight: 600,
+                        marginRight: 4,
+                        padding: '1px 5px',
+                      }}
+                    >
+                      {isExpanded ? '▲' : `▼ ${children.length}`}
+                    </button>
+                  )}
+                  <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
+                    {dataTypeBadge(port.dataType)}
+                  </span>
+                  <span style={{ fontSize: '0.65rem', color: '#888', marginRight: 6 }}>
+                    {port.name}{port.dynamic ? ' +' : ''}
+                  </span>
+                  <Handle
+                    type="source"
+                    position={Position.Right}
+                    id={port.name}
+                    style={{
+                      width: 8, height: 8,
+                      background: port.dataType === 'trigger' ? '#f59e0b' : '#f97316',
+                      border: '1px solid #2a2a2a',
+                      right: -4,
+                      outline: port.dynamic ? `1.5px dashed ${port.dataType === 'trigger' ? '#f59e0b' : '#f97316'}` : 'none',
+                      outlineOffset: '2px',
+                    }}
+                  />
+                </div>
+                {children && isExpanded && children.map(child => (
+                  <div key={child.name} title={child.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 22 }}>
+                    <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
+                      {dataTypeBadge(child.dataType)}
+                    </span>
+                    <span style={{ fontSize: '0.6rem', color: '#6b7280', marginRight: 6 }}>
+                      {child.name.split('.').pop()}
+                    </span>
+                    <Handle
+                      type="source"
+                      position={Position.Right}
+                      id={child.name}
+                      style={{
+                        width: 7, height: 7,
+                        background: '#6366f1',
+                        border: '1px solid #2a2a2a',
+                        right: -4,
+                      }}
+                    />
+                  </div>
+                ))}
+              </React.Fragment>
+            )
+          })}
           {isFormWidget && fieldOutputPorts.length > 0 && (
             <>
               <button
@@ -362,9 +617,37 @@ function StepNodeComponent({ data, selected }: NodeProps) {
   const accent = STEP_ACCENT[sData.stepType] ?? '#555'
   const emptyValueSlotHelperCopy = 'Drop field value here'
   const emptyFilterSlotHelperCopy = 'Drop filter field here'
-  const ports = meta?.ports ?? []
-  const inputPorts = ports.filter(p => p.direction === 'input')
-  const outputPorts = ports.filter(p => p.direction === 'output')
+  const [expandedInputPorts, setExpandedInputPorts] = useState<Map<string, boolean>>(new Map())
+  const [expandedOutputPorts, setExpandedOutputPorts] = useState<Map<string, boolean>>(new Map())
+  const allPorts = useMemo(
+    () => expandWidgetPorts(sData.auraNode.with ?? {}, meta?.ports ?? []),
+    [sData.auraNode.with, meta?.ports],
+  )
+  const inputPorts = allPorts.filter(p => p.direction === 'input')
+  const outputPorts = allPorts.filter(p => p.direction === 'output')
+
+  // Group input ports: for each expandable parent, collect its children
+  const inputPortGroups = useMemo(() => {
+    const groups: Array<{ parent: typeof inputPorts[0]; children: typeof inputPorts[0][] } | { parent: typeof inputPorts[0]; children: null }> = []
+    for (const port of inputPorts) {
+      if (port.name.includes('.')) continue // skip children, they're added via parent
+      const children = inputPorts.filter(p => p.name.startsWith(`${port.name}.`))
+      groups.push({ parent: port, children: children.length > 0 ? children : null })
+    }
+    return groups
+  }, [inputPorts])
+
+  // Group output ports: for each expandable parent, collect its children
+  const outputPortGroups = useMemo(() => {
+    const groups: Array<{ parent: typeof outputPorts[0]; children: typeof outputPorts[0][] | null }> = []
+    for (const port of outputPorts) {
+      if (port.name === '*') continue
+      if (port.name.includes('.')) continue // skip children
+      const children = outputPorts.filter(p => p.name.startsWith(`${port.name}.`))
+      groups.push({ parent: port, children: children.length > 0 ? children : null })
+    }
+    return groups
+  }, [outputPorts])
 
   // Config summary
   const w = sData.auraNode?.with ?? {}
@@ -375,13 +658,11 @@ function StepNodeComponent({ data, selected }: NodeProps) {
     if (sql)       configSummary = sql.slice(0, 40) + (sql.length > 40 ? '\u2026' : '')
     else if (conn) configSummary = `connector: ${conn.slice(0, 20)}`
   } else if (sData.stepType === 'step:mutation') {
-    const op    = (w.operation   as string | undefined) ?? 'insert'
-    const table =  w.table       as string | undefined
-    const conn  =  w.connector_id as string | undefined
-    const opLabel = MUTATION_OP_LABEL[op] ?? op.toUpperCase()
-    if (table)      configSummary = `${opLabel} ${table}`
-    else if (conn)  configSummary = `${opLabel} (connector: ${conn.slice(0, 18)})`
-    else            configSummary = `${opLabel} — not configured`
+    const sql  = w.sql          as string | undefined
+    const conn = w.connector_id as string | undefined
+    if (sql)       configSummary = sql.slice(0, 40) + (sql.length > 40 ? '\u2026' : '')
+    else if (conn) configSummary = `connector: ${conn.slice(0, 20)}`
+    else           configSummary = 'Not configured'
   } else if (sData.stepType === 'step:condition') {
     const left  = w.left  as string | undefined
     const op    = w.op    as string | undefined
@@ -456,56 +737,154 @@ function StepNodeComponent({ data, selected }: NodeProps) {
       {/* Port columns */}
       {(inputPorts.length > 0 || outputPorts.length > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', padding: '4px 0' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {inputPorts.map(port => (
-              <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
-                <Handle
-                  type="target"
-                  position={Position.Left}
-                  id={port.name}
-                  style={{
-                    width: 8, height: 8,
-                    background: accent,
-                    border: '1px solid #2a2a2a',
-                    left: -4,
-                    opacity: 0.8,
-                    outline: port.dynamic ? `1.5px dashed ${accent}` : 'none',
-                    outlineOffset: '2px',
-                  }}
-                />
-                <span style={{ fontSize: '0.65rem', color: '#888', marginLeft: 6 }}>
-                  {port.name}{port.dynamic ? ' +' : ''}
-                </span>
-                <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>
-                  {dataTypeBadge(port.dataType)}
-                </span>
-              </div>
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 0' }}>
+            {inputPortGroups.map(({ parent: port, children }) => {
+              const isExpanded = expandedInputPorts.get(port.name) ?? false
+              return (
+                <React.Fragment key={port.name}>
+                  <div title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
+                    <Handle
+                      type="target"
+                      position={Position.Left}
+                      id={port.name}
+                      style={{
+                        width: 8, height: 8,
+                        background: accent,
+                        border: '1px solid #2a2a2a',
+                        left: -4,
+                        opacity: 0.8,
+                        outline: port.dynamic ? `1.5px dashed ${accent}` : 'none',
+                        outlineOffset: '2px',
+                      }}
+                    />
+                    <span style={{ fontSize: '0.65rem', color: '#888', marginLeft: 6 }}>
+                      {port.name}{port.dynamic ? ' +' : ''}
+                    </span>
+                    <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>
+                      {dataTypeBadge(port.dataType)}
+                    </span>
+                    {children && children.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedInputPorts(prev => {
+                          const next = new Map(prev)
+                          next.set(port.name, !isExpanded)
+                          return next
+                        })}
+                        style={{
+                          border: '1px solid #2a2a2a',
+                          borderRadius: 999,
+                          background: '#161616',
+                          color: '#f5f5f5',
+                          cursor: 'pointer',
+                          fontSize: '0.55rem',
+                          fontWeight: 600,
+                          marginLeft: 4,
+                          padding: '1px 5px',
+                        }}
+                      >
+                        {isExpanded ? '▲' : `▼ ${children.length}`}
+                      </button>
+                    )}
+                  </div>
+                  {children && isExpanded && children.map(child => (
+                    <div key={child.name} title={child.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 22 }}>
+                      <Handle
+                        type="target"
+                        position={Position.Left}
+                        id={child.name}
+                        style={{
+                          width: 7, height: 7,
+                          background: '#6366f1',
+                          border: '1px solid #2a2a2a',
+                          left: -4,
+                        }}
+                      />
+                      <span style={{ fontSize: '0.6rem', color: '#6b7280', marginLeft: 6 }}>
+                        {child.name.split('.').pop()}
+                      </span>
+                      <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>
+                        {dataTypeBadge(child.dataType)}
+                      </span>
+                    </div>
+                  ))}
+                </React.Fragment>
+              )
+            })}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
-            {outputPorts.map(port => (
-              <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
-                <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
-                  {dataTypeBadge(port.dataType)}
-                </span>
-                <span style={{ fontSize: '0.65rem', color: '#888', marginRight: 6 }}>
-                  {port.name}{port.dynamic ? ' +' : ''}
-                </span>
-                <Handle
-                  type="source"
-                  position={Position.Right}
-                  id={port.name}
-                  style={{
-                    width: 8, height: 8,
-                    background: SEMANTIC_HANDLE_COLORS[port.name] ?? accent,
-                    border: '1px solid #2a2a2a',
-                    right: -4,
-                    outline: port.dynamic ? `1.5px dashed ${accent}` : 'none',
-                    outlineOffset: '2px',
-                  }}
-                />
-              </div>
-            ))}
+            {outputPortGroups.map(({ parent: port, children }) => {
+              const isExpanded = expandedOutputPorts.get(port.name) ?? false
+              return (
+                <React.Fragment key={port.name}>
+                  <div title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
+                    {children && children.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedOutputPorts(prev => {
+                          const next = new Map(prev)
+                          next.set(port.name, !isExpanded)
+                          return next
+                        })}
+                        style={{
+                          border: '1px solid #2a2a2a',
+                          borderRadius: 999,
+                          background: '#161616',
+                          color: '#f5f5f5',
+                          cursor: 'pointer',
+                          fontSize: '0.55rem',
+                          fontWeight: 600,
+                          marginRight: 4,
+                          padding: '1px 5px',
+                        }}
+                      >
+                        {isExpanded ? '▲' : `▼ ${children.length}`}
+                      </button>
+                    )}
+                    <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
+                      {dataTypeBadge(port.dataType)}
+                    </span>
+                    <span style={{ fontSize: '0.65rem', color: '#888', marginRight: 6 }}>
+                      {port.name}{port.dynamic ? ' +' : ''}
+                    </span>
+                    <Handle
+                      type="source"
+                      position={Position.Right}
+                      id={port.name}
+                      style={{
+                        width: 8, height: 8,
+                        background: SEMANTIC_HANDLE_COLORS[port.name] ?? accent,
+                        border: '1px solid #2a2a2a',
+                        right: -4,
+                        outline: port.dynamic ? `1.5px dashed ${accent}` : 'none',
+                        outlineOffset: '2px',
+                      }}
+                    />
+                  </div>
+                  {children && isExpanded && children.map(child => (
+                    <div key={child.name} title={child.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 22 }}>
+                      <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
+                        {dataTypeBadge(child.dataType)}
+                      </span>
+                      <span style={{ fontSize: '0.6rem', color: '#6b7280', marginRight: 6 }}>
+                        {child.name.split('.').pop()}
+                      </span>
+                      <Handle
+                        type="source"
+                        position={Position.Right}
+                        id={child.name}
+                        style={{
+                          width: 7, height: 7,
+                          background: '#6366f1',
+                          border: '1px solid #2a2a2a',
+                          right: -4,
+                        }}
+                      />
+                    </div>
+                  ))}
+                </React.Fragment>
+              )
+            })}
           </div>
         </div>
       )}
@@ -737,18 +1116,21 @@ function FlowCanvasInner({ doc, selectedId, onSelect, onChange, workspaceId: _wo
   const onConnect: OnConnect = useCallback((connection: Connection) => {
     // ---- Drag-to-wire binding (Approach 1) ---------------------------------
     // When the user drops a widget output port onto a step node's bind:set:N
-    // or bind:where:N handle, write the {{widgetId.portName}} expression into
+    // or bind:where:N handle, write the stable {{slot.*}} token into
     // the corresponding SQL slot and persist a 'binding' edge.
     if (connection.targetHandle?.startsWith('bind:')) {
       const parts = connection.targetHandle.split(':') // ['bind', 'set'|'where', index]
       const slotType = parts[1] as 'set' | 'where'
       const slotIdx  = parseInt(parts[2], 10)
       const targetNode = doc.nodes.find(n => n.id === connection.target)
+      const sourceNode = doc.nodes.find(n => n.id === connection.source)
+      const sourceDataType = getExpandedOutputPortDataType(sourceNode, connection.sourceHandle)
+      if (!isBindableSqlValueType(sourceDataType)) return
       if (targetNode) {
         const isQuery  = targetNode.element === 'step:query'
         const sql      = String(targetNode.with?.sql ?? '')
         const guided   = tryParseSQL(sql, isQuery) ?? defaultGuided()
-        const binding  = `{{${connection.source}.${connection.sourceHandle}}}`
+        const binding  = slotTokenFromHandle(connection.targetHandle)
 
         let updatedGuided = guided
         if (slotType === 'set') {

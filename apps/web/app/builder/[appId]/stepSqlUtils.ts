@@ -27,9 +27,9 @@ export function sqlFromGuided(state: GuidedState, isQuery: boolean): string {
   const { table, whereClauses, limit, mutationOp, setClauses } = state
   if (!table) return ''
 
-  const whereStr = whereClauses.length > 0
-    ? ' WHERE ' + whereClauses
-        .filter(w => w.col)
+  const validWhereClauses = whereClauses.filter(w => w.col)
+  const whereStr = validWhereClauses.length > 0
+    ? ' WHERE ' + validWhereClauses
         .map(w => {
           const val = w.val.startsWith('{{') ? w.val : `'${w.val}'`
           return `${w.col} ${w.op} ${val}`
@@ -84,6 +84,12 @@ export function tryParseSQL(sql: string, isQuery: boolean): GuidedState | null {
     const whereMatch_ = rest.match(/WHERE\s+(.*)/i)
     const whereClauses = whereMatch_ ? whereMatch(whereMatch_[1]) : []
     return { table, whereClauses, limit, mutationOp: 'INSERT', setClauses: [{ col: '', val: '' }] }
+  }
+
+  const insertDefault = s.match(/^INSERT\s+INTO\s+(\w+)\s+DEFAULT\s+VALUES$/i)
+  if (insertDefault) {
+    const table = insertDefault[1]
+    return { table, whereClauses: [], limit: '50', mutationOp: 'INSERT', setClauses: [{ col: '', val: '' }] }
   }
 
   // INSERT

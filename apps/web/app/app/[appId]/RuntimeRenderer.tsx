@@ -97,6 +97,37 @@ function escapeSqlToken(v: unknown): string {
   return String(v).replace(/'/g, "''")
 }
 
+function normalizeFormValueKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function mapInboundFormValues(fields: string[], inbound: Record<string, unknown>): Record<string, string> {
+  const mapped: Record<string, string> = {}
+  const normalizedInbound = new Map<string, unknown>()
+
+  for (const [key, value] of Object.entries(inbound)) {
+    const normalized = normalizeFormValueKey(key)
+    if (!normalizedInbound.has(normalized)) {
+      normalizedInbound.set(normalized, value)
+    }
+  }
+
+  for (const field of fields) {
+    let value: unknown
+    if (Object.prototype.hasOwnProperty.call(inbound, field)) {
+      value = inbound[field]
+    } else {
+      value = normalizedInbound.get(normalizeFormValueKey(field))
+    }
+
+    if (value !== undefined) {
+      mapped[field] = value == null ? '' : String(value)
+    }
+  }
+
+  return mapped
+}
+
 export function FlowEngineProvider({
   nodes,
   edges,
@@ -171,6 +202,13 @@ export function FlowEngineProvider({
           const expression = String(w.expression ?? '$input')
           const result = evalExpression(expression, value)
           await firePort(targetNode.id, 'output', result)
+          // Fire output child ports if outputFields is configured and result is an object
+          const outputFieldsRaw = String(w.outputFields ?? '')
+          if (outputFieldsRaw && result !== null && typeof result === 'object' && !Array.isArray(result)) {
+            for (const field of outputFieldsRaw.split(',').map((f: string) => f.trim()).filter(Boolean)) {
+              await firePort(targetNode.id, `output.${field}`, (result as Record<string, unknown>)[field] ?? null)
+            }
+          }
 
         } else if (stepType === 'step:query') {
           try {
@@ -179,7 +217,19 @@ export function FlowEngineProvider({
             if (connectorId && sql) {
               const { runConnectorQuery: runQuery } = await import('../../../lib/api')
               const res = await runQuery(workspaceIdRef.current, connectorId, { sql })
-              await firePort(targetNode.id, 'result', res.rows ?? [])
+              const rows = res.rows ?? []
+              await firePort(targetNode.id, 'rows', rows)
+              await firePort(targetNode.id, 'firstRow', rows[0] ?? null)
+              await firePort(targetNode.id, 'rowCount', rows.length)
+              await firePort(targetNode.id, 'result', { rows, rowCount: rows.length })
+              // Fire firstRow child ports if resultColumns is configured
+              const resultColsRaw = String(w.resultColumns ?? '')
+              if (resultColsRaw) {
+                const firstRow = rows[0] ?? {}
+                for (const col of resultColsRaw.split(',').map((c: string) => c.trim()).filter(Boolean)) {
+                  await firePort(targetNode.id, `firstRow.${col}`, (firstRow as Record<string, unknown>)[col] ?? null)
+                }
+              }
             }
           } catch { /* step error — stop chain */ }
 
@@ -213,6 +263,13 @@ export function FlowEngineProvider({
               })
               const json = await res.json().catch(() => null)
               await firePort(targetNode.id, 'responseBody', json)
+              // Fire responseBody child ports for each configured response field
+              const responseFieldsRaw = String(w.responseFields ?? '')
+              if (responseFieldsRaw && json !== null && typeof json === 'object') {
+                for (const field of responseFieldsRaw.split(',').map((f: string) => f.trim()).filter(Boolean)) {
+                  await firePort(targetNode.id, `responseBody.${field}`, (json as Record<string, unknown>)[field] ?? null)
+                }
+              }
               await firePort(targetNode.id, 'status', res.status)
               await firePort(targetNode.id, res.ok ? 'ok' : 'error', json)
             }
@@ -539,6 +596,17 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const overrideRows = tablePorts['setRows'] as Array<Record<string, unknown>> | undefined
   // setFilter port — apply additional {column: value} filter pairs
   const overrideFilter = tablePorts['setFilter'] as Record<string, string> | undefined
+  // Per-column filter merging
+  const columnFilterOverrides: Record<string, unknown> = {}
+  const configuredColNames = configuredColumns.split(',').map(s => s.trim()).filter(Boolean)
+  for (const col of configuredColNames) {
+    const v = tablePorts['setFilter.' + col]
+    if (v !== undefined && v !== null) columnFilterOverrides[col] = v
+  }
+  const effectiveFilter: Record<string, unknown> | null =
+    Object.keys(columnFilterOverrides).length > 0
+      ? { ...(overrideFilter as Record<string, unknown> ?? {}), ...columnFilterOverrides }
+      : (overrideFilter as Record<string, unknown> | null ?? null)
 
   // selectedRow / selectedRowIndex output ports
   const [selectedRowIdx, setSelectedRowIdx] = useState<number | null>(null)
@@ -586,7 +654,7 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   const boundData = applyTableDataBinding(effectiveTableData, {
     filters: [
       ...filterLinks.map(link => ({ column: link.column, value: dashboardFilters[link.widgetId] ?? '' })),
-      ...(overrideFilter ? Object.entries(overrideFilter).map(([column, value]) => ({ column, value })) : []),
+      ...(effectiveFilter ? Object.entries(effectiveFilter).map(([column, value]) => ({ column, value })) : []),
     ],
     filterColumn: node.with?.filterColumn,
     filterValue: node.with?.filterValue,
@@ -638,6 +706,9 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
                     setSelectedRowIdx(i)
                     firePort(node.id, 'selectedRow', row).catch(() => {})
                     firePort(node.id, 'selectedRowIndex', i).catch(() => {})
+                    for (const col of cols) {
+                      firePort(node.id, `selectedRow.${col}`, row[col] ?? null).catch(() => {})
+                    }
                   }}
                 >
                   {cols.map((col: string) => (
@@ -675,23 +746,55 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
   const { portValues, firePort } = useFlowEngine()
   const formPorts = portValues[node.id] ?? {}
 
-  // setValues port — populate fields programmatically
+  // setValues port — populate fields programmatically (whole object)
   const inboundFormValues = formPorts['setValues'] as Record<string, string> | undefined
   const prevInboundFormRef = useRef<unknown>(undefined)
   useEffect(() => {
     if (inboundFormValues && inboundFormValues !== prevInboundFormRef.current) {
       prevInboundFormRef.current = inboundFormValues
-      setValues(prev => ({ ...prev, ...inboundFormValues }))
+      setValues(prev => ({ ...prev, ...mapInboundFormValues(fields, inboundFormValues) }))
     }
   })
 
-  // setErrors port — show per-field validation errors
+  // setValues.<field> child ports — populate individual fields
+  const prevInboundFieldValuesRef = useRef<Record<string, unknown>>({})
+  useEffect(() => {
+    const updates: Record<string, string> = {}
+    for (const field of fields) {
+      const portValue = formPorts[`setValues.${field}`]
+      if (portValue !== undefined && portValue !== prevInboundFieldValuesRef.current[field]) {
+        prevInboundFieldValuesRef.current = { ...prevInboundFieldValuesRef.current, [field]: portValue }
+        updates[field] = String(portValue)
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      setValues(prev => ({ ...prev, ...updates }))
+    }
+  })
+
+  // setErrors port — show per-field validation errors (whole object)
   const inboundFormErrors = formPorts['setErrors'] as Record<string, string> | undefined
   const prevFormErrorsRef = useRef<unknown>(undefined)
   useEffect(() => {
     if (inboundFormErrors && inboundFormErrors !== prevFormErrorsRef.current) {
       prevFormErrorsRef.current = inboundFormErrors
       setFieldErrors(inboundFormErrors)
+    }
+  })
+
+  // setErrors.<field> child ports — set individual field errors
+  const prevInboundFieldErrorsRef = useRef<Record<string, unknown>>({})
+  useEffect(() => {
+    const updates: Record<string, string> = {}
+    for (const field of fields) {
+      const portValue = formPorts[`setErrors.${field}`]
+      if (portValue !== undefined && portValue !== prevInboundFieldErrorsRef.current[field]) {
+        prevInboundFieldErrorsRef.current = { ...prevInboundFieldErrorsRef.current, [field]: portValue }
+        updates[field] = String(portValue)
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      setFieldErrors(prev => ({ ...prev, ...updates }))
     }
   })
 
@@ -835,7 +938,7 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
   const supportedType = isSupportedChartType(chartType)
   const querySql = getConnectorQuerySQL(connectorType, sql)
   const { values: dashboardFilters, refreshSeq } = useDashboardFilters()
-  const { portValues } = useFlowEngine()
+  const { portValues, firePort } = useFlowEngine()
   const chartPorts = portValues[node.id] ?? {}
   const overrideChartData = chartPorts['setData'] as Array<Record<string, unknown>> | undefined
   const [chartLocalRefreshSeq, setChartLocalRefreshSeq] = useState(0)
@@ -931,7 +1034,12 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
               <div
                 key={`${bar.label}-${i}`}
                 title={`${bar.label}: ${formatted}`}
-                style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', minWidth: 0, height: '100%', cursor: 'default' }}
+                style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', minWidth: 0, height: '100%', cursor: 'pointer' }}
+                onClick={() => {
+                  firePort(node.id, 'selectedPoint', { label: bar.label, value: bar.value }).catch(() => {})
+                  firePort(node.id, 'selectedPoint.label', bar.label).catch(() => {})
+                  firePort(node.id, 'selectedPoint.value', bar.value).catch(() => {})
+                }}
               >
                 {/* Value label above bar */}
                 <div

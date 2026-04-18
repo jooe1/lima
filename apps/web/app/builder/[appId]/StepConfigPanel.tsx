@@ -180,7 +180,7 @@ function extractTables(connector: Connector | undefined): SchemaTable[] {
 const WHERE_OPS: WhereOp[] = ['=', '!=', 'LIKE', '>', '<', '>=', '<=']
 
 function WhereBuilder({
-  clauses, columns, onChange, availableWidgets, boundSlots,
+  clauses, columns, onChange, availableWidgets, boundSlots, emptyStateLabel,
 }: {
   clauses: WhereClause[]
   columns: string[]
@@ -188,6 +188,7 @@ function WhereBuilder({
   availableWidgets: AvailableWidget[]
   /** Set of slot indices that are locked via a drag-to-wire binding edge. */
   boundSlots: Set<number>
+  emptyStateLabel: string
 }) {
   const add = () => onChange([...clauses, { col: columns[0] ?? '', op: '=', val: '' }])
   const remove = (i: number) => onChange(clauses.filter((_, idx) => idx !== i))
@@ -201,7 +202,7 @@ function WhereBuilder({
         <button onClick={add} style={{ fontSize: '0.6rem', color: '#555', background: 'none', border: 'none', cursor: 'pointer' }}>+ Add filter</button>
       </div>
       {clauses.length === 0 && (
-        <div style={{ fontSize: '0.6rem', color: '#333', fontStyle: 'italic' }}>No filters — returns all rows.</div>
+        <div style={{ fontSize: '0.6rem', color: '#333', fontStyle: 'italic' }}>{emptyStateLabel}</div>
       )}
       {clauses.map((clause, i) => {
         const isWired = boundSlots.has(i)
@@ -572,14 +573,17 @@ function SqlStepEditor({
             </div>
           )}
 
-          {/* WHERE clauses */}
-          <WhereBuilder
-            clauses={guided.whereClauses}
-            columns={tableColumns}
-            onChange={whereClauses => updateGuided({ whereClauses })}
-            availableWidgets={availableWidgets}
-            boundSlots={boundWhereSlots}
-          />
+          {/* WHERE clauses — not applicable for INSERT */}
+          {(isQuery || guided.mutationOp === 'UPDATE' || guided.mutationOp === 'DELETE') && (
+            <WhereBuilder
+              clauses={guided.whereClauses}
+              columns={tableColumns}
+              onChange={whereClauses => updateGuided({ whereClauses })}
+              availableWidgets={availableWidgets}
+              boundSlots={boundWhereSlots}
+              emptyStateLabel={isQuery ? 'No filters — returns all rows.' : 'No filters — affects all rows.'}
+            />
+          )}
 
           {/* LIMIT — queries only */}
           {isQuery && (

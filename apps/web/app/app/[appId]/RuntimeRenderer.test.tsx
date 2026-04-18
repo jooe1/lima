@@ -1,16 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, act } from '@testing-library/react'
+import { render, act, fireEvent, screen, waitFor } from '@testing-library/react'
 import React from 'react'
-import { FlowEngineProvider, useFlowEngine, resolveSqlTemplate } from './RuntimeRenderer'
+import { FlowEngineProvider, RuntimeRenderer, useFlowEngine, resolveSqlTemplate } from './RuntimeRenderer'
 import type { AuraNode, AuraEdge } from '@lima/aura-dsl'
 
 // ---- API mock ---------------------------------------------------------------
 
 const mockRunConnectorMutation = vi.fn()
+const mockRunConnectorQuery = vi.fn()
 
 vi.mock('../../../lib/api', () => ({
   runConnectorMutation: (...args: unknown[]) => mockRunConnectorMutation(...args),
-  runConnectorQuery: vi.fn().mockResolvedValue({ rows: [] }),
+  runConnectorQuery: (...args: unknown[]) => mockRunConnectorQuery(...args),
   triggerWorkflow: vi.fn().mockResolvedValue({ status: 'ok' }),
 }))
 
@@ -68,6 +69,8 @@ describe('FlowEngineProvider — binding edge / mutation trigger', () => {
   beforeEach(() => {
     mockRunConnectorMutation.mockClear()
     mockRunConnectorMutation.mockResolvedValue({ affected_rows: 1 })
+    mockRunConnectorQuery.mockClear()
+    mockRunConnectorQuery.mockResolvedValue({ rows: [], columns: [] })
   })
 
   it('Test 1: binding edge does NOT trigger mutation execution', async () => {
@@ -174,5 +177,58 @@ describe('FlowEngineProvider — binding edge / mutation trigger', () => {
     const data = { email: 'b@x.com' }
     const slotBag = { 'slot.set.0': 'Alice' }
     expect(resolveSqlTemplate(sql, data, slotBag)).toBe("VALUES ('Alice', 'b@x.com')")
+  })
+
+  it('Test 7: table selectedRow populates connected form setValues even when keys differ by case/format', async () => {
+    mockRunConnectorQuery.mockResolvedValue({
+      rows: [{ FirstName: 'Alice', Last_Name: 'Doe', EmailAddress: 'alice@example.com' }],
+      columns: ['FirstName', 'Last_Name', 'EmailAddress'],
+    })
+
+    const tableNode: AuraNode = {
+      id: 'table1',
+      element: 'table',
+      parentId: 'root',
+      with: { connector: 'conn1', connectorType: 'managed', sql: 'SELECT * FROM contacts' },
+      style: { gridX: '0', gridY: '0', gridW: '6', gridH: '4' },
+    }
+
+    const editFormNode: AuraNode = {
+      id: 'form2',
+      element: 'form',
+      parentId: 'root',
+      with: { fields: 'firstName,lastName,emailAddress' },
+      style: { gridX: '6', gridY: '0', gridW: '6', gridH: '4' },
+    }
+
+    const edges: AuraEdge[] = [
+      {
+        id: 'e1',
+        fromNodeId: 'table1',
+        fromPort: 'selectedRow',
+        toNodeId: 'form2',
+        toPort: 'setValues',
+        edgeType: 'reactive',
+      },
+    ]
+
+    render(
+      <RuntimeRenderer
+        doc={[tableNode, editFormNode]}
+        edges={edges}
+        workspaceId="ws1"
+        appId="app1"
+      />,
+    )
+
+    fireEvent.click(await screen.findByText('Alice'))
+
+    await waitFor(() => {
+      const inputs = screen.getAllByRole('textbox') as HTMLInputElement[]
+      expect(inputs).toHaveLength(3)
+      expect(inputs[0].value).toBe('Alice')
+      expect(inputs[1].value).toBe('Doe')
+      expect(inputs[2].value).toBe('alice@example.com')
+    })
   })
 })
