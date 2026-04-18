@@ -951,6 +951,14 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
     }
   })
 
+  // Hover-controlled metric overrides — let end users tweak display without leaving the page
+  const [hovered, setHovered] = useState(false)
+  const [localAggregate, setLocalAggregate] = useState(aggregate)
+  const [localSortBy, setLocalSortBy] = useState(sortBy)
+  const [localSortDirection, setLocalSortDirection] = useState<'asc' | 'desc'>(
+    (sortDirection === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc',
+  )
+
   const [data, setData] = useState<DashboardQueryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -992,9 +1000,9 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
     () => buildChartSeries(effectiveChartData, {
       labelCol,
       valueCol,
-      aggregate,
-      sortBy,
-      sortDirection,
+      aggregate: localAggregate,
+      sortBy: localSortBy,
+      sortDirection: localSortDirection,
       limit: pointLimit,
       filters: [
         ...filterLinks.map(link => ({ column: link.column, value: dashboardFilters[link.widgetId] ?? '' })),
@@ -1004,12 +1012,97 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
         },
       ],
     }),
-    [aggregate, dashboardFilters, effectiveChartData, labelCol, pointLimit, sortBy, sortDirection, valueCol, node.with?.filterColumn, node.with?.filterValue, node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn],
+    [localAggregate, localSortBy, localSortDirection, dashboardFilters, effectiveChartData, labelCol, pointLimit, valueCol, node.with?.filterColumn, node.with?.filterValue, node.with?.filterWidgets, node.with?.filterWidgetColumns, node.with?.filterWidget, node.with?.filterWidgetColumn],
   )
   const maxValue = Math.max(...series.points.map(point => Math.abs(point.value)), 1)
 
+  const AGGREGATE_OPTIONS = ['none', 'count', 'sum', 'avg', 'min', 'max'] as const
+
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: '0.5rem' }}>
+    <div
+      style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: '0.5rem', position: 'relative' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {/* Hover metric control toolbar */}
+      {hovered && !loading && !error && hasBinding && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            zIndex: 10,
+            background: 'rgba(10,10,10,0.85)',
+            border: '1px solid #2a2a2a',
+            borderRadius: 7,
+            padding: '4px 6px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3,
+            backdropFilter: 'blur(6px)',
+            pointerEvents: 'auto',
+          }}
+          // Prevent bar-click events from bleeding through the toolbar
+          onClick={e => e.stopPropagation()}
+        >
+          {AGGREGATE_OPTIONS.map(mode => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setLocalAggregate(mode)}
+              style={{
+                background: localAggregate === mode ? '#2563eb' : 'transparent',
+                color: localAggregate === mode ? '#fff' : '#666',
+                border: 'none',
+                borderRadius: 4,
+                padding: '2px 6px',
+                fontSize: '0.62rem',
+                cursor: 'pointer',
+                fontWeight: localAggregate === mode ? 600 : 400,
+                textTransform: 'capitalize',
+                transition: 'background 0.1s, color 0.1s',
+              }}
+            >
+              {mode}
+            </button>
+          ))}
+          <div style={{ width: 1, background: '#333', alignSelf: 'stretch', margin: '0 3px' }} />
+          <button
+            type="button"
+            title={`Sort by: ${localSortBy === 'value' ? 'value' : 'none'} — click to toggle`}
+            onClick={() => setLocalSortBy(prev => prev === 'value' ? 'none' : 'value')}
+            style={{
+              background: localSortBy === 'value' ? '#1e3a8a' : 'transparent',
+              color: localSortBy === 'value' ? '#93c5fd' : '#555',
+              border: 'none',
+              borderRadius: 4,
+              padding: '2px 6px',
+              fontSize: '0.62rem',
+              cursor: 'pointer',
+            }}
+          >
+            sort
+          </button>
+          <button
+            type="button"
+            title={`Direction: ${localSortDirection} — click to toggle`}
+            onClick={() => setLocalSortDirection(prev => prev === 'desc' ? 'asc' : 'desc')}
+            style={{
+              background: 'transparent',
+              color: '#555',
+              border: 'none',
+              borderRadius: 4,
+              padding: '2px 4px',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+            }}
+          >
+            {localSortDirection === 'desc' ? '↓' : '↑'}
+          </button>
+        </div>
+      )}
+
       <p style={{ margin: '0 0 0.5rem', color: '#555', fontSize: '0.7rem' }}>{chartType} chart</p>
       {loading ? (
         <RuntimeStateMessage tone="muted" message="Loading chart data…" />
