@@ -24,8 +24,9 @@ import {
   type OnSelectionChangeFunc,
   type OnNodesDelete,
 } from '@xyflow/react'
+// @ts-ignore -- Next bundles this global stylesheet; the editor lacks a declaration for the side-effect import.
 import '@xyflow/react/dist/style.css'
-import { WIDGET_REGISTRY, STEP_NODE_REGISTRY, type WidgetType, type StepNodeType } from '@lima/widget-catalog'
+import { WIDGET_REGISTRY, STEP_NODE_REGISTRY, expandWidgetPorts, type WidgetType, type StepNodeType } from '@lima/widget-catalog'
 import { type AuraDocumentV2, type AuraNode, type ReactiveStore, type AuraEdge } from '@lima/aura-dsl'
 import { tryParseSQL, defaultGuided, sqlFromGuided } from './stepSqlUtils'
 
@@ -149,9 +150,18 @@ export function docV2ToFlowEdges(doc: AuraDocumentV2): Edge[] {
 function WidgetNodeComponent({ data, selected }: NodeProps) {
   const wData = data as WidgetNodeData
   const meta = WIDGET_REGISTRY[wData.element as WidgetType]
-  const ports = meta?.ports ?? []
+  const [areFieldOutputsExpanded, setAreFieldOutputsExpanded] = useState(false)
+  const rawPorts = meta?.ports ?? []
+  const ports = expandWidgetPorts({ ...(wData.auraNode.style ?? {}), ...(wData.auraNode.with ?? {}) }, rawPorts)
   const inputPorts = ports.filter(p => p.direction === 'input')
   const outputPorts = ports.filter(p => p.direction === 'output')
+  const isFormWidget = wData.element === 'form'
+  const visibleOutputPorts = isFormWidget
+    ? outputPorts.filter(port => rawPorts.some(rawPort => rawPort.direction === 'output' && rawPort.name !== '*' && rawPort.name === port.name))
+    : outputPorts
+  const fieldOutputPorts = isFormWidget
+    ? outputPorts.filter(port => !visibleOutputPorts.some(visiblePort => visiblePort.name === port.name))
+    : []
 
   return (
     <div style={{
@@ -216,7 +226,7 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
 
         {/* Output ports on the right */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 0', alignItems: 'flex-end' }}>
-          {outputPorts.map(port => (
+          {visibleOutputPorts.map(port => (
             <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
               <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
                 {dataTypeBadge(port.dataType)}
@@ -239,6 +249,52 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
               />
             </div>
           ))}
+          {isFormWidget && fieldOutputPorts.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => setAreFieldOutputsExpanded(expanded => !expanded)}
+                style={{
+                  border: '1px solid #2a2a2a',
+                  borderRadius: 999,
+                  background: '#161616',
+                  color: '#f5f5f5',
+                  cursor: 'pointer',
+                  fontSize: '0.6rem',
+                  fontWeight: 600,
+                  marginRight: 10,
+                  padding: '2px 8px',
+                }}
+              >
+                Fields ({fieldOutputPorts.length})
+              </button>
+              {areFieldOutputsExpanded && (
+                fieldOutputPorts.map(port => (
+                  <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
+                    <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>
+                      {dataTypeBadge(port.dataType)}
+                    </span>
+                    <span style={{ fontSize: '0.65rem', color: '#888', marginRight: 6 }}>
+                      {port.name}{port.dynamic ? ' +' : ''}
+                    </span>
+                    <Handle
+                      type="source"
+                      position={Position.Right}
+                      id={port.name}
+                      style={{
+                        width: 8, height: 8,
+                        background: port.dataType === 'trigger' ? '#f59e0b' : '#f97316',
+                        border: '1px solid #2a2a2a',
+                        right: -4,
+                        outline: port.dynamic ? `1.5px dashed ${port.dataType === 'trigger' ? '#f59e0b' : '#f97316'}` : 'none',
+                        outlineOffset: '2px',
+                      }}
+                    />
+                  </div>
+                ))
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -304,6 +360,8 @@ function StepNodeComponent({ data, selected }: NodeProps) {
   const sData = data as StepNodeData
   const meta = STEP_NODE_REGISTRY[sData.stepType as StepNodeType]
   const accent = STEP_ACCENT[sData.stepType] ?? '#555'
+  const emptyValueSlotHelperCopy = 'Drop field value here'
+  const emptyFilterSlotHelperCopy = 'Drop filter field here'
   const ports = meta?.ports ?? []
   const inputPorts = ports.filter(p => p.direction === 'input')
   const outputPorts = ports.filter(p => p.direction === 'output')
@@ -469,7 +527,24 @@ function StepNodeComponent({ data, selected }: NodeProps) {
               </div>
             )}
             {setSlots.map((s, i) => (
-              <div key={`set-${i}`} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10, paddingTop: 3, paddingBottom: 3 }}>
+              (() => {
+                const isBoundSlot = s.val.startsWith('{{')
+                return (
+              <div
+                key={`set-${i}`}
+                style={{
+                  position: 'relative',
+                  display: 'flex',
+                  alignItems: 'center',
+                  margin: '2px 8px 0 6px',
+                  paddingLeft: 10,
+                  paddingTop: 3,
+                  paddingBottom: 3,
+                  border: isBoundSlot ? '1px solid transparent' : '1px dashed rgba(167, 139, 250, 0.35)',
+                  borderRadius: 6,
+                  background: isBoundSlot ? 'transparent' : 'rgba(167, 139, 250, 0.08)',
+                }}
+              >
                 <Handle
                   type="target"
                   position={Position.Left}
@@ -485,12 +560,18 @@ function StepNodeComponent({ data, selected }: NodeProps) {
                 <span style={{ fontSize: '0.6rem', color: '#666', marginLeft: 6 }}>
                   {s.col || `col ${i}`}
                 </span>
-                {s.val.startsWith('{{') && (
+                {isBoundSlot ? (
                   <span style={{ fontSize: '0.5rem', color: '#a78bfa', marginLeft: 4, fontFamily: 'monospace' }}>
                     {s.val.replace(/^\{\{|\}\}$/g, '')}
                   </span>
+                ) : (
+                  <span style={{ fontSize: '0.5rem', color: '#c4b5fd', marginLeft: 4 }}>
+                    {emptyValueSlotHelperCopy}
+                  </span>
                 )}
               </div>
+                )
+              })()
             ))}
             {whereSlots.length > 0 && (
               <div style={{ padding: '4px 10px 0', fontSize: '0.5rem', color: '#333', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
@@ -498,7 +579,24 @@ function StepNodeComponent({ data, selected }: NodeProps) {
               </div>
             )}
             {whereSlots.map((w, i) => (
-              <div key={`where-${i}`} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10, paddingTop: 3, paddingBottom: 3 }}>
+              (() => {
+                const isBoundSlot = w.val.startsWith('{{')
+                return (
+              <div
+                key={`where-${i}`}
+                style={{
+                  position: 'relative',
+                  display: 'flex',
+                  alignItems: 'center',
+                  margin: '2px 8px 0 6px',
+                  paddingLeft: 10,
+                  paddingTop: 3,
+                  paddingBottom: 3,
+                  border: isBoundSlot ? '1px solid transparent' : '1px dashed rgba(96, 165, 250, 0.35)',
+                  borderRadius: 6,
+                  background: isBoundSlot ? 'transparent' : 'rgba(96, 165, 250, 0.08)',
+                }}
+              >
                 <Handle
                   type="target"
                   position={Position.Left}
@@ -514,12 +612,18 @@ function StepNodeComponent({ data, selected }: NodeProps) {
                 <span style={{ fontSize: '0.6rem', color: '#666', marginLeft: 6 }}>
                   {w.col || `filter ${i}`}
                 </span>
-                {w.val.startsWith('{{') && (
+                {isBoundSlot ? (
                   <span style={{ fontSize: '0.5rem', color: '#60a5fa', marginLeft: 4, fontFamily: 'monospace' }}>
                     {w.val.replace(/^\{\{|\}\}$/g, '')}
                   </span>
+                ) : (
+                  <span style={{ fontSize: '0.5rem', color: '#93c5fd', marginLeft: 4 }}>
+                    {emptyFilterSlotHelperCopy}
+                  </span>
                 )}
               </div>
+                )
+              })()
             ))}
           </div>
         )

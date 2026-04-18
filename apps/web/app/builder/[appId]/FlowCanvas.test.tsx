@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import React from 'react'
 import { FlowCanvas, migrateLegacyBindingTokens, validateBindings } from './FlowCanvas'
 import type { AuraDocumentV2 } from '@lima/aura-dsl'
@@ -12,7 +12,24 @@ vi.mock('@xyflow/react', () => {
   return {
     ReactFlow: (props: any) => {
       capturedOnConnect = props.onConnect
-      return null
+      return (
+        <div>
+          {props.nodes?.map((node: any) => {
+            const NodeComponent = props.nodeTypes?.[node.type]
+            if (!NodeComponent) return null
+            return (
+              <NodeComponent
+                key={node.id}
+                id={node.id}
+                data={node.data}
+                selected={false}
+                type={node.type}
+              />
+            )
+          })}
+          {props.children}
+        </div>
+      )
     },
     ReactFlowProvider: ({ children }: any) => children,
     Background: () => null,
@@ -52,6 +69,18 @@ const MOCK_REACTIVE_STORE = {
   get: vi.fn(),
   set: vi.fn(),
   subscribe: vi.fn(() => () => {}),
+}
+
+const FORM_ONLY_DOC: AuraDocumentV2 = {
+  nodes: [
+    {
+      id: 'form1',
+      element: 'form',
+      parentId: 'root',
+      with: { fields: 'name,email' },
+    },
+  ],
+  edges: [],
 }
 
 describe('FlowCanvas onConnect — bind slot type validation', () => {
@@ -110,6 +139,73 @@ describe('FlowCanvas onConnect — bind slot type validation', () => {
     const mutNode = updatedDoc.nodes.find(n => n.id === 'mut1')
     expect(mutNode?.with?.sql).toContain('{{slot.set.0}}')
     expect(mutNode?.with?.sql).not.toContain('{{form1.email}}')
+  })
+})
+
+describe('FlowCanvas form field output disclosure', () => {
+  it('shows Fields (2) while collapsed and hides the raw dynamic output label', () => {
+    render(
+      <FlowCanvas
+        doc={FORM_ONLY_DOC}
+        selectedId={null}
+        onSelect={vi.fn()}
+        onChange={vi.fn()}
+        workspaceId="ws1"
+        reactiveStore={MOCK_REACTIVE_STORE as any}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: 'Fields (2)' })).toBeTruthy()
+    expect(screen.queryByText('* +')).toBeNull()
+  })
+
+  it('reveals concrete field outputs after expanding Fields (2) without extra helper copy', () => {
+    render(
+      <FlowCanvas
+        doc={FORM_ONLY_DOC}
+        selectedId={null}
+        onSelect={vi.fn()}
+        onChange={vi.fn()}
+        workspaceId="ws1"
+        reactiveStore={MOCK_REACTIVE_STORE as any}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fields (2)' }))
+
+    expect(screen.queryByText('Drag fields into bind slots.')).toBeNull()
+    expect(screen.getByText('name')).toBeTruthy()
+    expect(screen.getByText('email')).toBeTruthy()
+  })
+})
+
+describe('FlowCanvas bind slot affordances', () => {
+  it('shows helper copy for unbound mutation value and filter slots', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        {
+          id: 'mut1',
+          element: 'step:mutation',
+          parentId: 'root',
+          with: { sql: "UPDATE users SET email = '' WHERE id = ''" },
+        },
+      ],
+      edges: [],
+    }
+
+    render(
+      <FlowCanvas
+        doc={doc}
+        selectedId={null}
+        onSelect={vi.fn()}
+        onChange={vi.fn()}
+        workspaceId="ws1"
+        reactiveStore={MOCK_REACTIVE_STORE as any}
+      />
+    )
+
+    expect(screen.getByText('Drop field value here')).toBeTruthy()
+    expect(screen.getByText('Drop filter field here')).toBeTruthy()
   })
 })
 
