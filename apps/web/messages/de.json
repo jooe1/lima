@@ -112,8 +112,8 @@
         "columnName": "Spaltenname",
         "columnType": "Typ",
         "emptyColumn": "Neue Spalte",
-        "addAnotherColumn": "Weitere Spalte hinzuf\u00fcgen",
-        "finish": "Gemeinsame Tabelle erstellen"
+        "addAnotherColumn": "Weitere Spalte hinzuf\u00fcgen",        "importFromCsv": "Spalten aus CSV importieren",
+        "importCsvHelp": "Spaltennamen werden aus der ersten Zeile gelesen.",        "finish": "Gemeinsame Tabelle erstellen"
       }
     },
     "apiGuide": {

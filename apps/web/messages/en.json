@@ -113,6 +113,8 @@
         "columnType": "Type",
         "emptyColumn": "New column",
         "addAnotherColumn": "Add another column",
+        "importFromCsv": "Import columns from CSV",
+        "importCsvHelp": "Column names will be read from the first row.",
         "finish": "Create shared table"
       }
     },

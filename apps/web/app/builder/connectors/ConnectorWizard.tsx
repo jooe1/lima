@@ -7,6 +7,46 @@ import type { ConnectorType, Connector } from '../../../lib/api'
 import type { ConnectorChatResponse } from '@lima/sdk-connectors'
 import { ManagedColumnsEditor, type EditableManagedColumn } from './ManagedColumnBuilder'
 import { DatabaseStep, RestStep, CsvStep, GraphQLStep } from './CredentialSteps'
+
+/** Infer a managed-table col_type from a sample of string values from a CSV column. */
+function inferColType(samples: string[]): string {
+  const nonEmpty = samples.map(s => s.trim()).filter(Boolean)
+  if (nonEmpty.length === 0) return 'text'
+  if (nonEmpty.every(s => /^-?\d+$/.test(s))) return 'int4'
+  if (nonEmpty.every(s => /^-?\d+(\.\d+)?$/.test(s))) return 'float8'
+  if (nonEmpty.every(s => /^(true|false|yes|no|1|0)$/i.test(s))) return 'bool'
+  if (nonEmpty.every(s => !Number.isNaN(Date.parse(s)) && /\d{4}|\d{2}\/\d{2}/.test(s))) return 'date'
+  return 'text'
+}
+
+/** Parse CSV header row and up to `maxDataRows` data rows from raw text. */
+function parseCsvColumns(
+  text: string,
+  maxDataRows = 10,
+): EditableManagedColumn[] {
+  const lines = text.split(/\r?\n/)
+  if (lines.length === 0) return []
+
+  // Simple CSV header parse: split on comma, strip surrounding quotes
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g, ''))
+  const dataLines = lines.slice(1, 1 + maxDataRows).filter(l => l.trim().length > 0)
+
+  return headers
+    .map((name, i) => {
+      const samples = dataLines.map(line => {
+        const fields = line.split(',')
+        return (fields[i] ?? '').trim().replace(/^["']|["']$/g, '')
+      })
+      return {
+        id: `csv-import-${i}`,
+        name,
+        col_type: inferColType(samples),
+        nullable: true,
+        col_order: i,
+      }
+    })
+    .filter(col => col.name.length > 0)
+}
 import { ApiEndpointGuide } from './ApiEndpointGuide'
 
 export function ConnectorWizard({
@@ -32,6 +72,7 @@ export function ConnectorWizard({
   const [managedDraftColumns, setManagedDraftColumns] = useState<EditableManagedColumn[]>([
     { id: 'draft-1', name: '', col_type: 'text', nullable: true },
   ])
+  const [csvImportError, setCsvImportError] = useState('')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
 
@@ -107,6 +148,27 @@ export function ConnectorWizard({
 
   function handleManagedDraftColumnsChange(columns: EditableManagedColumn[]) {
     setManagedDraftColumns(columns)
+  }
+
+  function handleCsvImport(e: React.ChangeEvent<HTMLInputElement>) {
+    setCsvImportError('')
+    const file = e.target.files?.[0]
+    if (!file) return
+    // Reset the input value so the same file can be re-selected after clearing
+    e.target.value = ''
+    const reader = new FileReader()
+    reader.onload = ev => {
+      const text = ev.target?.result
+      if (typeof text !== 'string') return
+      const cols = parseCsvColumns(text)
+      if (cols.length === 0) {
+        setCsvImportError('No columns found. Make sure the file has a header row.')
+        return
+      }
+      setManagedDraftColumns(cols)
+    }
+    reader.onerror = () => setCsvImportError('Could not read the file.')
+    reader.readAsText(file)
   }
 
   function getManagedColumnsPayload() {
@@ -397,6 +459,32 @@ export function ConnectorWizard({
             </h3>
             <p style={{ color: '#888', fontSize: '0.85rem', lineHeight: 1.7, margin: '0 0 0.9rem' }}>
               {t('managed.columnsBody')}
+            </p>
+            {/* CSV import */}
+            <label
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                border: '1px dashed #333', borderRadius: 6, padding: '0.55rem 0.75rem',
+                cursor: 'pointer', color: '#60a5fa', fontSize: '0.78rem', marginBottom: '0.75rem',
+                background: 'transparent',
+              }}
+            >
+              <span style={{ fontSize: '0.9rem', lineHeight: 1 }}>⬆</span>
+              {t('managed.importFromCsv')}
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                style={{ display: 'none' }}
+                onChange={handleCsvImport}
+              />
+            </label>
+            {csvImportError && (
+              <p style={{ color: '#f87171', fontSize: '0.75rem', margin: '-0.5rem 0 0.75rem' }}>
+                {csvImportError}
+              </p>
+            )}
+            <p style={{ color: '#555', fontSize: '0.72rem', margin: '0 0 0.75rem' }}>
+              {t('managed.importCsvHelp')}
             </p>
             <ManagedColumnsEditor
               columns={managedDraftColumns}
