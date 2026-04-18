@@ -5,6 +5,11 @@ import { type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY } from '@lima/widget-catalog'
 import { runConnectorQuery, type DashboardQueryResponse } from '../../../../lib/api'
 import { getMissingRequiredProps, hasConnectorBinding, isSupportedChartType } from '../../../../lib/appValidation'
+import { FormWidgetPreview } from './FormWidgetPreview'
+import { TextWidgetPreview } from './TextWidgetPreview'
+import { ButtonWidgetPreview } from './ButtonWidgetPreview'
+import { TableWidgetPreview } from './TableWidgetPreview'
+import { ChartWidgetPreview } from './ChartWidgetPreview'
 import { buildChartSeries } from '../../../../lib/charting'
 import { applyTableDataBinding, getConnectorQuerySQL, getVisibleTableColumns } from '../../../../lib/tableBinding'
 import { useDashboardFilters } from '../../../../lib/dashboardFilters'
@@ -13,6 +18,7 @@ interface Props {
   node: AuraNode
   selected: boolean
   workspaceId: string
+  onUpdate?: (node: AuraNode) => void
 }
 
 // formatCellValue safely converts any row value to a display string.
@@ -23,7 +29,7 @@ function formatCellValue(v: unknown): string {
   return String(v)
 }
 
-export function WidgetRenderer({ node, workspaceId }: Props) {
+export function WidgetRenderer({ node, workspaceId, onUpdate }: Props) {
   const meta = WIDGET_REGISTRY[node.element as keyof typeof WIDGET_REGISTRY]
 
   return (
@@ -47,7 +53,7 @@ export function WidgetRenderer({ node, workspaceId }: Props) {
       </div>
       {/* Widget body */}
       <div style={{ flex: 1, overflow: 'hidden', padding: 6 }}>
-        {renderBody(node, workspaceId)}
+        {renderBody(node, workspaceId, onUpdate)}
       </div>
     </div>
   )
@@ -92,67 +98,53 @@ function BuilderUnsupportedPreview({ node }: { node: AuraNode }) {
   )
 }
 
-function renderBody(node: AuraNode, workspaceId: string): React.ReactNode {
+function renderBody(node: AuraNode, workspaceId: string, onUpdate?: (node: AuraNode) => void): React.ReactNode {
   const dim: React.CSSProperties = { color: '#444', fontSize: '0.65rem' }
 
   switch (node.element) {
     case 'table': {
-      return <CanvasTablePreview node={node} workspaceId={workspaceId} />
+      return (
+        <TableWidgetPreview node={node} workspaceId={workspaceId} onUpdate={onUpdate}>
+          <CanvasTablePreview node={node} workspaceId={workspaceId} />
+        </TableWidgetPreview>
+      )
     }
 
     case 'form': {
-      const missing = getMissingRequiredProps(node)
-      if (missing.length > 0) return <BuilderConfigurationRequired node={node} missing={missing} />
-
-      const fields = (node.style?.fields ?? node.with?.fields ?? '')
-        .split(',').map(f => f.trim()).slice(0, 3)
       return (
-        <div>
-          {fields.map(f => (
-            <div key={f} style={{ marginBottom: 8 }}>
-              <div style={{ color: '#555', fontSize: '0.6rem', marginBottom: 2 }}>{f}</div>
-              <div style={{ height: 20, background: '#161616', borderRadius: 3, border: '1px solid #222' }} />
-            </div>
-          ))}
-          <div style={{ marginTop: 8, display: 'inline-block', background: '#1d4ed8', borderRadius: 3, padding: '3px 12px', color: '#c7d9ff', fontSize: '0.65rem' }}>
-            {node.text ?? node.style?.submitLabel ?? 'Submit'}
-          </div>
-        </div>
+        <FormWidgetPreview
+          node={node}
+          onUpdate={(newFieldsStr) => {
+            if (!onUpdate) return
+            const updated: AuraNode = {
+              ...node,
+              manuallyEdited: true,
+              style: { ...(node.style ?? {}), fields: newFieldsStr },
+            }
+            if (!newFieldsStr) {
+              const { fields: _f, ...rest } = updated.style!
+              updated.style = rest
+            }
+            onUpdate(updated)
+          }}
+        />
       )
     }
 
     case 'text': {
-      const missing = getMissingRequiredProps(node)
-      if (missing.length > 0) return <BuilderConfigurationRequired node={node} missing={missing} />
-
-      const content = node.text ?? node.value ?? ''
-      const variant = node.style?.variant ?? 'body'
-      const fz = variant === 'heading1' ? '1.1rem' : variant === 'heading2' ? '0.9rem' : variant === 'caption' ? '0.6rem' : '0.75rem'
-      const fw = variant === 'heading1' || variant === 'heading2' ? 600 : 400
-      return (
-        <div style={{ color: '#aaa', fontSize: fz, fontWeight: fw, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' }}>
-          {content}
-        </div>
-      )
+      return <TextWidgetPreview node={node} onUpdate={onUpdate} />
     }
 
     case 'button': {
-      const missing = getMissingRequiredProps(node)
-      if (missing.length > 0) return <BuilderConfigurationRequired node={node} missing={missing} />
-
-      const variant = node.style?.variant ?? 'primary'
-      const bg = variant === 'danger' ? '#450a0a' : variant === 'secondary' ? '#1a1a1a' : '#1e3a8a'
-      const color = variant === 'danger' ? '#fca5a5' : variant === 'secondary' ? '#aaa' : '#bfdbfe'
-      const border = variant === 'secondary' ? '1px solid #333' : 'none'
-      return (
-        <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: bg, border, borderRadius: 4, padding: '4px 14px', color, fontSize: '0.75rem' }}>
-          {node.text ?? ''}
-        </div>
-      )
+      return <ButtonWidgetPreview node={node} onUpdate={onUpdate} />
     }
 
     case 'chart': {
-      return <CanvasChartPreview node={node} workspaceId={workspaceId} />
+      return (
+        <ChartWidgetPreview node={node} workspaceId={workspaceId} onUpdate={onUpdate}>
+          <CanvasChartPreview node={node} workspaceId={workspaceId} />
+        </ChartWidgetPreview>
+      )
     }
 
     case 'kpi': {

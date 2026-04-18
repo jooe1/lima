@@ -359,7 +359,14 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
                 }}
                 onClick={e => { e.stopPropagation(); onSelect(node.id) }}
               >
-                <WidgetRenderer node={node} selected={isSelected} workspaceId={workspaceId} />
+                <WidgetRenderer
+                  node={node}
+                  selected={isSelected}
+                  workspaceId={workspaceId}
+                  onUpdate={(updatedNode) => {
+                    onChangeRef.current(docRef.current.map(n => n.id === updatedNode.id ? updatedNode : n))
+                  }}
+                />
 
                 {/* Resize handle — bottom-right corner */}
                 {isSelected && (

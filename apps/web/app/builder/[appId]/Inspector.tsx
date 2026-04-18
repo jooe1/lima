@@ -6,6 +6,7 @@ import { WIDGET_REGISTRY, type WidgetType, type PropDef } from '@lima/widget-cat
 import { getGrid, CELL, COLS } from './CanvasEditor'
 import { listConnectors, runConnectorQuery, listConnectorActions, type Connector, type ActionDefinition, type DashboardQueryResponse } from '../../../lib/api'
 import { applyTableDataBinding, getConnectorQuerySQL, getConnectorSchemaColumns, mergeColumns } from '../../../lib/tableBinding'
+import { parseFormFields, validateFormFields } from '../../../lib/formValidation'
 
 interface Props {
   node: AuraNode | null
@@ -221,32 +222,47 @@ export function Inspector({ node, doc, onUpdate, onDelete, workspaceId, appId, p
               <div style={{ fontSize: '0.65rem', color: '#444', marginTop: 4 }}>{meta.description}</div>
             )}
           </div>
-          {meta && (
-            <Section title="Props">
-              {Object.entries(meta.propSchema).map(([propName, def]) =>
-                def.type === 'workflow_trigger' ? (
-                  <div key={propName}>
-                    <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4 }}>
-                      {def.label}
-                    </label>
-                    <FlowViewTriggerCard
-                      widgetId={n.id}
-                      element={n.element}
-                      edges={doc.edges}
-                      onSwitchToFlowView={onSwitchToFlowView}
+          {meta && (() => {
+            const formFieldDuplicates: string[] = n.element === 'form'
+              ? validateFormFields(parseFormFields(getPropValue(n, 'fields'))).duplicates
+              : []
+            return (
+              <Section title="Props">
+                {Object.entries(meta.propSchema).map(([propName, def]) =>
+                  def.type === 'workflow_trigger' ? (
+                    <div key={propName}>
+                      <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        {def.label}
+                      </label>
+                      <FlowViewTriggerCard
+                        widgetId={n.id}
+                        element={n.element}
+                        edges={doc.edges}
+                        onSwitchToFlowView={onSwitchToFlowView}
+                      />
+                    </div>
+                  ) : (
+                    <PropField
+                      key={propName}
+                      name={propName}
+                      def={def}
+                      value={getPropValue(n, propName)}
+                      onChange={v => handlePropChange(propName, v)}
+                      duplicateWarning={
+                        n.element === 'form' && propName === 'fields' && formFieldDuplicates.length > 0
+                          ? `Duplicate fields: ${formFieldDuplicates.join(', ')}`
+                          : undefined
+                      }
                     />
-                  </div>
-                ) : (
-                  <PropField
-                    key={propName}
-                    name={propName}
-                    def={def}
-                    value={getPropValue(n, propName)}
-                    onChange={v => handlePropChange(propName, v)}
-                  />
-                )
-              )}
-            </Section>
+                  )
+                )}
+              </Section>
+            )
+          })()}
+          {n.element === 'form' && (
+            <div style={{ padding: '0 1rem 0.5rem', fontSize: '0.62rem', color: '#3b82f6', lineHeight: 1.5 }}>
+              💡 Pro tip: click <strong>✎ fields</strong> on the canvas widget to add / remove fields interactively.
+            </div>
           )}
           {/* Data flow section */}
           {(dataFlowSummary.reactiveInputs.length > 0 || dataFlowSummary.reactiveOutputs.length > 0 || dataFlowSummary.asyncTriggers.length > 0) && (
@@ -1639,11 +1655,12 @@ function Field({
   )
 }
 
-function PropField({ name, def, value, onChange }: {
+function PropField({ name, def, value, onChange, duplicateWarning }: {
   name: string
   def: PropDef
   value: string
   onChange: (v: string) => void
+  duplicateWarning?: string
 }) {
   const isBoolean = def.type === 'boolean'
   const isMono = def.type === 'expression' || def.type === 'action'
@@ -1669,6 +1686,11 @@ function PropField({ name, def, value, onChange }: {
           onChange={e => onChange(e.target.value)}
           style={{ ...inputStyle, fontFamily: isMono ? 'monospace' : 'inherit', fontSize: isMono ? '0.65rem' : '0.75rem' }}
         />
+      )}
+      {duplicateWarning && (
+        <div style={{ fontSize: '0.62rem', color: '#fbbf24', background: '#1a1500', borderRadius: 3, padding: '3px 8px', marginTop: 3 }}>
+          ⚠ {duplicateWarning}
+        </div>
       )}
       {def.description && (
         <div style={{ fontSize: '0.6rem', color: '#333', marginTop: 3 }}>{def.description}</div>

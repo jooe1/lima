@@ -81,7 +81,7 @@ export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
     },
   },
   form: {
-    fields: { type: 'string', label: 'Fields', description: 'Comma-separated field names', required: true },
+    fields: { type: 'string', label: 'Fields', description: 'Comma-separated field names (can be empty; add fields using the + button on the canvas)', default: '' },
     submitLabel: { type: 'string', label: 'Submit label', default: 'Submit' },
     onSubmit: { type: 'workflow_trigger', label: 'On submit' },
   },
