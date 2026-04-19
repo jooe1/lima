@@ -121,6 +121,15 @@ web:
   apiBaseURL: ""      # internal API URL seen by web server; defaults to http://<release>-api:8080
   nextauthURL: ""     # public-facing URL for NextAuth callbacks
 
+# ---- Worker configuration --------------------------------------------------
+worker:
+  # Optional: override the AI model used for the layout generation stage.
+  # When empty, the user's configured AI model is used.
+  LAYOUT_MODEL: ""
+  # Optional: override the AI model used for the flow/wiring generation stage.
+  # When empty, the user's configured AI model is used.
+  FLOW_MODEL: ""
+
 # ---- OIDC / SSO ------------------------------------------------------------
 oidc:
   issuerURL: ""

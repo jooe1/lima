@@ -82,6 +82,17 @@ type userAISettings struct {
 	TavilyMCPURL  string
 }
 
+// stageSettings returns a copy of base with the model overridden to override
+// if override is non-empty, otherwise returns base unchanged.
+func stageSettings(base userAISettings, override string) userAISettings {
+	if override == "" {
+		return base
+	}
+	cp := base
+	cp.Model = override
+	return cp
+}
+
 var auraBlockRe = regexp.MustCompile("(?s)```(?:aura)?\\s*\n(.*?)\\s*```")
 var flowsBlockRe = regexp.MustCompile("(?s)```flows\\s*\n(.*?)\\s*```")
 var edgesBlockRe = regexp.MustCompile("(?s)```edges\\s*\n(.*?)\\s*```")
@@ -176,7 +187,7 @@ func callOpenAI(ctx context.Context, settings userAISettings, messages []chatMes
 	return parsed.Choices[0].Message.Content, nil
 }
 
-func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt string) (content string, err error) {
+func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt string, systemMsg string) (content string, err error) {
 	if settings.Credentials.GitHubToken == "" {
 		return "", errors.New("github_token is not configured for the selected Copilot provider")
 	}
@@ -201,7 +212,7 @@ func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt stri
 		AvailableTools:      []string{},
 		SystemMessage: &copilot.SystemMessageConfig{
 			Mode:    "replace",
-			Content: systemPrompt,
+			Content: systemMsg,
 		},
 	}
 	if settings.TavilyMCPURL != "" {
@@ -231,6 +242,42 @@ func callGitHubCopilot(ctx context.Context, settings userAISettings, prompt stri
 		return "", errors.New("copilot sdk returned no content")
 	}
 	return *response.Data.Content, nil
+}
+
+// generateLayout calls the configured layout model with the provided messages
+// (for OpenAI) or prompt (for Copilot). It returns the raw LLM response text.
+func generateLayout(
+	ctx context.Context,
+	settings userAISettings,
+	messages []chatMessage,
+	copilotPrompt string,
+) (string, error) {
+	switch settings.Provider {
+	case "openai":
+		return callOpenAI(ctx, settings, messages)
+	case "github_copilot":
+		return callGitHubCopilot(ctx, settings, copilotPrompt, layoutSystemPrompt)
+	default:
+		return "", fmt.Errorf("unsupported ai provider %q for layout stage", settings.Provider)
+	}
+}
+
+// generateFlow calls the configured flow model with the provided messages
+// (for OpenAI) or prompt (for Copilot). It returns the raw LLM response text.
+func generateFlow(
+	ctx context.Context,
+	settings userAISettings,
+	messages []chatMessage,
+	copilotPrompt string,
+) (string, error) {
+	switch settings.Provider {
+	case "openai":
+		return callOpenAI(ctx, settings, messages)
+	case "github_copilot":
+		return callGitHubCopilot(ctx, settings, copilotPrompt, flowSystemPrompt)
+	default:
+		return "", fmt.Errorf("unsupported ai provider %q for flow stage", settings.Provider)
+	}
 }
 
 func extractDSL(content string) string {
@@ -325,13 +372,46 @@ func buildConnectorContextBlock(connectors []genConnector) string {
 	return sb.String()
 }
 
+// nodeOnlyDSL strips the ---edges--- separator and everything after it from a
+// serialised Aura V2 document. The layout model only needs the widget/node
+// declarations; sending it the edge section can confuse it into reproducing
+// that section in its output, which would then fail Go's DSL validator.
+func nodeOnlyDSL(src string) string {
+	const sentinel = "---edges---"
+	if idx := strings.Index(src, sentinel); idx >= 0 {
+		return strings.TrimSpace(src[:idx])
+	}
+	return src
+}
+
+func buildLayoutCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector, existingWorkflows []existingWorkflowInfo) string {
+	var builder strings.Builder
+	builder.WriteString(buildConnectorContextBlock(connectors))
+	builder.WriteString("\n")
+	builder.WriteString(buildWorkflowContextBlock(existingWorkflows))
+	builder.WriteString("\nCurrent app DSL:\n```aura\n")
+	builder.WriteString(nodeOnlyDSL(currentDSL))
+	builder.WriteString("\n```\n\nConversation history:\n")
+	for _, message := range history {
+		role := titleCaseFirst(message.role)
+		builder.WriteString(role)
+		builder.WriteString(": ")
+		builder.WriteString(message.content)
+		builder.WriteString("\n")
+	}
+	builder.WriteString("\nLatest request:\n")
+	builder.WriteString(latestUserPrompt)
+	builder.WriteString("\n\nReturn the complete updated Aura DSL document only. Do not include an edges block or a flows block.")
+	return builder.String()
+}
+
 func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector, existingWorkflows []existingWorkflowInfo) string {
 	var builder strings.Builder
 	builder.WriteString(buildConnectorContextBlock(connectors))
 	builder.WriteString("\n")
 	builder.WriteString(buildWorkflowContextBlock(existingWorkflows))
 	builder.WriteString("\nCurrent app DSL:\n```aura\n")
-	builder.WriteString(currentDSL)
+	builder.WriteString(nodeOnlyDSL(currentDSL))
 	builder.WriteString("\n```\n\nConversation history:\n")
 	for _, message := range history {
 		role := titleCaseFirst(message.role)
@@ -343,6 +423,72 @@ func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, c
 	builder.WriteString("\nLatest request:\n")
 	builder.WriteString(latestUserPrompt)
 	builder.WriteString("\n\nReturn the complete updated Aura DSL document and, when the app requires write actions, a flows block.")
+	return builder.String()
+}
+
+// buildLayoutMessages constructs the OpenAI chat message slice for the layout
+// generation stage. Uses the dedicated layoutSystemPrompt so the model only
+// produces the Aura DSL block (no edges, no flows).
+func buildLayoutMessages(
+	currentDSL, latestUserPrompt string,
+	history []msgRow,
+	connectors []genConnector,
+	existingWorkflows []existingWorkflowInfo,
+) []chatMessage {
+	msgs := []chatMessage{
+		{Role: "system", Content: layoutSystemPrompt},
+		{Role: "system", Content: buildConnectorContextBlock(connectors)},
+		{Role: "system", Content: buildWorkflowContextBlock(existingWorkflows)},
+		{Role: "system", Content: "Current app DSL:\n```aura\n" + nodeOnlyDSL(currentDSL) + "\n```"},
+	}
+	for i, m := range history {
+		if i == len(history)-1 && m.role == "user" {
+			break
+		}
+		msgs = append(msgs, chatMessage{Role: m.role, Content: m.content})
+	}
+	msgs = append(msgs, chatMessage{Role: "user", Content: latestUserPrompt})
+	return msgs
+}
+
+// buildFlowMessages constructs the OpenAI chat message slice for the flow
+// generation stage. It sends the validated layout DSL (from Stage 1) as
+// context so the flow model knows which widget IDs and fields exist.
+func buildFlowMessages(
+	validatedDSL, latestUserPrompt string,
+	connectors []genConnector,
+	existingWorkflows []existingWorkflowInfo,
+) []chatMessage {
+	portManifest := BuildPortManifest()
+	return []chatMessage{
+		{Role: "system", Content: flowSystemPrompt},
+		{Role: "system", Content: buildConnectorContextBlock(connectors)},
+		{Role: "system", Content: buildWorkflowContextBlock(existingWorkflows)},
+		{Role: "system", Content: "## Widget port reference\n\n" + portManifest},
+		{Role: "system", Content: "Finalised widget layout (Stage 1 output):\n```aura\n" + validatedDSL + "\n```"},
+		{Role: "user", Content: "Original user intent: " + latestUserPrompt + "\n\nEmit only the wiring (edges and/or flows blocks) required by the user's intent. If no wiring is needed, respond with a single sentence explaining why."},
+	}
+}
+
+// buildFlowCopilotPrompt constructs the Copilot prompt string for the flow
+// generation stage.
+func buildFlowCopilotPrompt(
+	validatedDSL, latestUserPrompt string,
+	connectors []genConnector,
+	existingWorkflows []existingWorkflowInfo,
+) string {
+	portManifest := BuildPortManifest()
+	var builder strings.Builder
+	builder.WriteString(buildConnectorContextBlock(connectors))
+	builder.WriteString("\n")
+	builder.WriteString(buildWorkflowContextBlock(existingWorkflows))
+	builder.WriteString("\n## Widget port reference\n\n")
+	builder.WriteString(portManifest)
+	builder.WriteString("\nFinalised widget layout:\n```aura\n")
+	builder.WriteString(validatedDSL)
+	builder.WriteString("\n```\n\nOriginal user intent: ")
+	builder.WriteString(latestUserPrompt)
+	builder.WriteString("\n\nEmit only the wiring (edges and/or flows blocks) required. If no wiring is needed, say so briefly.")
 	return builder.String()
 }
 
@@ -607,6 +753,134 @@ func fetchAppEdges(ctx context.Context, pool *pgxpool.Pool, appID string) ([]dsl
 	}
 	return edges, nil
 }
+
+const layoutSystemPrompt = `You are an AI assistant that generates and modifies user interface definitions for an internal tools platform called Lima.
+
+Your job in this stage is ONLY to produce the widget layout — the Aura DSL block. Do NOT emit an edges block or a flows block in this stage; those are handled separately.
+
+You produce UI definitions using the Aura DSL, a flat, statement-based syntax where every widget is a standalone declaration terminated by a semicolon.
+
+## Aura DSL Syntax
+
+Each widget declaration looks like:
+
+    <element> <id> @ <parent>
+      [text "<literal text>"]
+      [value "{{expression}}"]
+      [forEach <variable> key <keyField>]
+      [key <keyField>]
+      [if "{{condition}}"]
+      [with <key>="<value>" ...]
+      [transform "{{expression}}"]
+      [style { <key>: "<value>"; ... }]
+    ;
+
+- Clauses must appear in the order shown above.
+- Every widget must have a unique id within the document.
+- Top-level widgets use @ root as their parent.
+- Nested widgets reference their parent's id.
+- style uses { key: "value"; key: "value" } syntax.
+- Grid layout uses style keys gridX, gridY, gridW, gridH as integer strings.
+
+## Available Widget Types
+
+- container: flex layout container — use as a visual background or grouping panel.
+  - Required with keys: none.
+  - Optional with keys: direction ("row" or "column", default "column"), gap (CSS value, default "16px").
+  - All other widgets that sit inside it visually still use @ root as their parent (the canvas is always flat).
+  - Do NOT set other widgets' parent to a container id — they must stay @ root.
+- text: static or dynamic label
+- button: clickable action
+- table: data grid
+- form: data-entry form — MUST include a fields key listing every input field name.
+  - Required with keys: fields (comma-separated field names, e.g. with fields="name,email,phone").
+  - Optional with keys: submitLabel (button text, default "Submit").
+  - Optional with keys: onSubmit (workflow ID to trigger on submit).
+- chart: chart widget
+- kpi: single metric display
+- filter: filter control
+- modal: overlay dialog (not yet supported in the production runtime — do not use)
+- tabs: tabbed container (not yet supported in the production runtime — do not use)
+- markdown: rich text block
+
+## Response format
+
+Return ONLY the Aura DSL inside a fenced code block and optionally a brief explanation before or after it. Do NOT include an edges block or a flows block.
+
+` + "```" + `aura
+<your DSL here>
+` + "```" + `
+
+If the user's request does not require any layout change (e.g. a pure data-wiring question), return the existing DSL unchanged inside the code block with a brief explanation of why no layout change is needed.
+`
+
+const flowSystemPrompt = `You are an AI assistant specialised in wiring widgets and workflow steps together for the Lima internal tools platform.
+
+You receive a finalised Aura DSL layout (the widgets are already decided) and the user's original intent. Your job is to emit ONLY the wiring — an edges block and/or a flows block. Do NOT emit an aura block.
+
+## Your inputs
+
+- The finalised widget layout (provided as context).
+- The full widget and step port reference (provided as context).
+- The user's original intent.
+
+## Widget-to-widget wiring (edges block)
+
+Emit a JSON edges block when the user's intent requires widgets to exchange data at runtime (e.g. clicking a table row populates a form, a filter value updates a table).
+
+` + "```edges" + `
+[
+  {
+    "id": "edge_<fromId>_<fromPort>_<toId>_<toPort>",
+    "fromNodeId": "<source widget id>",
+    "fromPort": "<output port name>",
+    "toNodeId": "<target widget id>",
+    "toPort": "<input port name>",
+    "edgeType": "reactive"
+  }
+]
+` + "```" + `
+
+Rules:
+- Use edgeType "reactive" for all widget-to-widget data connections.
+- id must be unique and follow the naming convention above.
+- fromNodeId and toNodeId must be widget IDs that exist in the layout above.
+- fromPort must be an output port and toPort must be an input port listed in the port reference.
+- Only emit an edges block if explicit wiring is needed. If not, omit it entirely.
+
+## Workflow definition (flows block)
+
+Emit a flows block only when the user's intent requires persisting data to a connector (INSERT/UPDATE/DELETE) or running a multi-step process.
+
+` + "```flows" + `
+[
+  {
+    "ref": "camelCaseRef",
+    "name": "Human readable name",
+    "trigger_type": "form_submit|button_click|manual|schedule|webhook",
+    "trigger_widget_ref": "<widget id if form_submit or button_click>",
+    "requires_approval": true,
+    "steps": [
+      {
+        "name": "Step name",
+        "step_type": "query|mutation|condition|approval_gate|notification",
+        "config": {}
+      }
+    ]
+  }
+]
+` + "```" + `
+
+Rules:
+- trigger_type must be one of: manual, form_submit, button_click, schedule, webhook.
+- step_type must be one of: query, mutation, condition, approval_gate, notification.
+- Use {{flow:ref}} in the widget DSL onSubmit/onClick to reference a flow by ref.
+- If no workflow is needed, omit the flows block entirely.
+
+## Response format
+
+Return ONLY edges and/or flows blocks (or nothing). Do not explain the layout. A brief one-sentence explanation is acceptable if helpful, but keep it before any code blocks.
+`
 
 const systemPrompt = `You are an AI assistant that generates and modifies user interface definitions for an internal tools platform called Lima.
 
@@ -1130,6 +1404,12 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			return err
 		}
 
+		layoutSettings := stageSettings(settings, cfg.LayoutModel)
+		flowSettings := stageSettings(settings, cfg.FlowModel)
+		if cfg.FlowModel == "" {
+			flowSettings = layoutSettings // inherit layout model when flow model not configured
+		}
+
 		currentDSL := strings.TrimSpace(app.dslSource)
 		if currentDSL == "" {
 			currentDSL = "[empty - generate an initial layout]"
@@ -1153,33 +1433,29 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			log.Warn("fetch existing workflows for generation (non-fatal)", zap.Error(wfErr))
 		}
 
-		var responseText string
-		switch settings.Provider {
-		case "openai":
-			requestMessages := []chatMessage{
-				{Role: "system", Content: systemPrompt},
-				{Role: "system", Content: buildConnectorContextBlock(connectors)},
-				{Role: "system", Content: buildWorkflowContextBlock(existingWorkflows)},
-				{Role: "system", Content: "Current app DSL:\n```aura\n" + currentDSL + "\n```"},
-			}
-			for index, message := range messages {
-				if index == len(messages)-1 && message.role == "user" {
-					break
-				}
-				requestMessages = append(requestMessages, chatMessage{Role: message.role, Content: message.content})
-			}
-			requestMessages = append(requestMessages, chatMessage{Role: "user", Content: latestUserPrompt})
-			responseText, err = callOpenAI(ctx, settings, requestMessages)
-		case "github_copilot":
-			responseText, err = callGitHubCopilot(ctx, settings, buildCopilotPrompt(currentDSL, latestUserPrompt, messages, connectors, existingWorkflows))
-		default:
-			err = fmt.Errorf("unsupported ai provider %q", settings.Provider)
+		// ── Stage 1: layout ────────────────────────────────────────────────────────
+		layoutMessages := buildLayoutMessages(currentDSL, latestUserPrompt, messages, connectors, existingWorkflows)
+		layoutCopilotPrompt := buildLayoutCopilotPrompt(currentDSL, latestUserPrompt, messages, connectors, existingWorkflows)
+		layoutStart := time.Now()
+		layoutResponse, layoutErr := generateLayout(ctx, layoutSettings, layoutMessages, layoutCopilotPrompt)
+		if layoutErr != nil {
+			log.Error("layout stage failed", zap.Error(layoutErr))
+			writeErrorMessage(ctx, pool, payload.ThreadID, layoutErr.Error())
+			return layoutErr
 		}
-		if err != nil {
-			log.Error("generation call failed", zap.Error(err))
-			writeErrorMessage(ctx, pool, payload.ThreadID, err.Error())
-			return err
+		if cfg.LogLLMOutput {
+			log.Info("layout stage raw output",
+				zap.String("provider", layoutSettings.Provider),
+				zap.String("model", layoutSettings.Model),
+				zap.String("response", layoutResponse),
+			)
 		}
+		log.Info("layout stage complete",
+			zap.Duration("elapsed", time.Since(layoutStart)),
+			zap.String("provider", layoutSettings.Provider),
+			zap.String("model", layoutSettings.Model),
+		)
+		responseText := layoutResponse
 
 		newDSL := extractDSL(responseText)
 		if newDSL == "" {
@@ -1194,6 +1470,43 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			}
 			_, _ = pool.Exec(ctx, `UPDATE conversation_threads SET updated_at = now() WHERE id = $1`, payload.ThreadID)
 			return nil
+		}
+
+		// ── Stage 2: flow wiring ──────────────────────────────────────────────────
+		// Run the flow model against the validated layout DSL and merge its output
+		// (edges/flows blocks) into responseText so the existing extraction path
+		// processes it transparently.
+		flowMessages := buildFlowMessages(newDSL, latestUserPrompt, connectors, existingWorkflows)
+		flowCopilotPrompt := buildFlowCopilotPrompt(newDSL, latestUserPrompt, connectors, existingWorkflows)
+		flowStart := time.Now()
+		flowFailed := false
+		flowResponse, flowErr := generateFlow(ctx, flowSettings, flowMessages, flowCopilotPrompt)
+		if flowErr != nil {
+			flowFailed = true
+			// Flow stage failure is non-fatal: log and continue with layout-only result.
+			log.Warn("flow stage failed; continuing with layout-only result",
+				zap.Error(flowErr),
+				zap.Duration("elapsed", time.Since(flowStart)),
+			)
+		} else {
+			if cfg.LogLLMOutput {
+				log.Info("flow stage raw output",
+					zap.String("provider", flowSettings.Provider),
+					zap.String("model", flowSettings.Model),
+					zap.String("response", flowResponse),
+				)
+			}
+			log.Info("flow stage complete",
+				zap.Duration("elapsed", time.Since(flowStart)),
+				zap.String("provider", flowSettings.Provider),
+				zap.String("model", flowSettings.Model),
+			)
+			// Merge the flow response's edges/flows blocks into responseText.
+			// The existing extractFlows / extractEdges calls below will parse them.
+			responseText = responseText + "\n" + flowResponse
+		}
+		if flowFailed {
+			responseText += "\n\n_Note: widget wiring could not be generated automatically. You can wire widgets manually in the canvas._"
 		}
 
 		// Extract and persist AI-generated workflows. Must happen before DSL
@@ -1273,6 +1586,17 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			return err
 		}
 
+		// Log enough of resultDSL to identify model-specific format issues.
+		dslPreview := resultDSL
+		if len(dslPreview) > 300 {
+			dslPreview = dslPreview[:300] + "…"
+		}
+		log.Debug("storing result DSL",
+			zap.Int("bytes", len(resultDSL)),
+			zap.Int("edges", len(allEdges)),
+			zap.String("preview", dslPreview),
+		)
+
 		explanation := strings.TrimSpace(auraBlockRe.ReplaceAllString(flowsBlockRe.ReplaceAllString(edgesBlockRe.ReplaceAllString(responseText, ""), ""), ""))
 		if explanation == "" {
 			explanation = "Updated the app layout."
@@ -1283,7 +1607,7 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			return err
 		}
 
-		log.Info("generation job complete", zap.String("thread_id", payload.ThreadID), zap.String("provider", settings.Provider), zap.String("model", settings.Model))
+		log.Info("generation job complete", zap.String("thread_id", payload.ThreadID), zap.String("provider", settings.Provider), zap.String("model", settings.Model), zap.Bool("flowFailed", flowFailed))
 		return nil
 	}
 }

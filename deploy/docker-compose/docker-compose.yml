@@ -95,6 +95,12 @@ services:
       OTEL_ENDPOINT: http://otel-collector:4318
       CREDENTIALS_ENCRYPTION_KEY: dev_credentials_key_change_in_prod
       CREDENTIALS_ENCRYPTION_KEY_PREVIOUS: dev_jwt_secret_change_in_prod
+      # Optional: override the AI model used for the layout generation stage.
+      # Defaults to the AI_MODEL value when not set.
+      LAYOUT_MODEL: ${LAYOUT_MODEL:-}
+      # Optional: override the AI model used for the flow/wiring generation stage.
+      # Defaults to the AI_MODEL value when not set.
+      FLOW_MODEL: ${FLOW_MODEL:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

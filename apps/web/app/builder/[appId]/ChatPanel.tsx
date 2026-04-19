@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { parse } from '@lima/aura-dsl'
+import { parseV2, type AuraEdge } from '@lima/aura-dsl'
 import {
   type ConversationThread,
   type ThreadMessage,
@@ -17,7 +17,7 @@ interface Props {
   workspaceId: string
   appId: string
   /** Called when the assistant returns a new DSL to apply to the canvas. */
-  onDSLUpdate: (newSource: string, newEdges?: import('../../../lib/api').AuraEdge[]) => void
+  onDSLUpdate: (newSource: string, newEdges?: AuraEdge[]) => void
 }
 
 export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
@@ -66,11 +66,21 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
         for (const msg of newMsgs) {
           if (msg.role === 'assistant' && msg.dsl_patch?.new_source) {
             try {
-              parse(msg.dsl_patch.new_source) // validate before applying
+              const parsed = parseV2(msg.dsl_patch.new_source) // validate before applying
+              console.info('[ChatPanel] applying polled DSL patch', {
+                messageId: msg.id,
+                sourceBytes: msg.dsl_patch.new_source.length,
+                parsedNodes: parsed.nodes.length,
+                parsedEdges: parsed.edges.length,
+                incomingEdges: msg.dsl_patch.new_edges?.length ?? 0,
+              })
               onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
               newlyApplied.push(msg.id)
-            } catch {
-              // DSL parse error — ignore this patch
+            } catch (err) {
+              console.warn('[ChatPanel] DSL patch parse error — patch ignored', err, {
+                messageId: msg.id,
+                dslPreview: msg.dsl_patch.new_source.slice(0, 400),
+              })
             }
           }
         }
@@ -124,6 +134,30 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
             setMessages(msgs)
             if (msgs.length > 0) {
               lastMsgIdRef.current = msgs[msgs.length - 1].id
+              // Apply the latest DSL patch so the canvas reflects prior generations
+              // when the chat panel mounts after a generation has already completed.
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const msg = msgs[i]
+                if (msg.role === 'assistant' && msg.dsl_patch?.new_source) {
+                  try {
+                    const parsed = parseV2(msg.dsl_patch.new_source)
+                    console.info('[ChatPanel] applying initial DSL patch', {
+                      messageId: msg.id,
+                      sourceBytes: msg.dsl_patch.new_source.length,
+                      parsedNodes: parsed.nodes.length,
+                      parsedEdges: parsed.edges.length,
+                      incomingEdges: msg.dsl_patch.new_edges?.length ?? 0,
+                    })
+                    onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
+                  } catch (err) {
+                    console.warn('[ChatPanel] initial DSL patch parse error — patch ignored', err, {
+                      messageId: msg.id,
+                      dslPreview: msg.dsl_patch.new_source.slice(0, 400),
+                    })
+                  }
+                  break // only apply the most recent patch
+                }
+              }
             }
           }
         }

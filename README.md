@@ -54,6 +54,8 @@ cp .env.example .env
 cd services/worker
 go run ./cmd/worker
 
+$env:LOG_LLM_OUTPUT = "true"
+go run ./cmd/worker
 cp .env.example .env
 
 # 5. Start the web app

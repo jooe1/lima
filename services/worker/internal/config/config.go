@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -24,6 +25,15 @@ type Config struct {
 	// query parameter). When set, the generation agent will have access to a
 	// web-search tool so it can resolve API endpoints without asking the user.
 	TavilyMCPURL string
+	// LayoutModel overrides the user's configured model for the layout generation
+	// stage. When empty the user's configured model is used for both stages.
+	LayoutModel string
+	// FlowModel overrides the user's configured model for the flow/edge generation
+	// stage. When empty LayoutModel (or the user's model) is used.
+	FlowModel string
+	// LogLLMOutput writes raw layout/flow model responses to the worker log.
+	// Intended only for local debugging because responses may contain user data.
+	LogLLMOutput bool
 }
 
 func getEnv(key, fallback string) string {
@@ -37,6 +47,18 @@ func getInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func getBool(key string, fallback bool) bool {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
 		}
 	}
 	return fallback
@@ -58,5 +80,8 @@ func Load() *Config {
 		CredentialsEncryptionKey:         getEnv("CREDENTIALS_ENCRYPTION_KEY", getEnv("JWT_SECRET", "")),
 		CredentialsEncryptionKeyPrevious: getEnv("CREDENTIALS_ENCRYPTION_KEY_PREVIOUS", ""),
 		TavilyMCPURL:                     getEnv("TAVILY_MCP_URL", ""),
+		LayoutModel:                      getEnv("LAYOUT_MODEL", ""),
+		FlowModel:                        getEnv("FLOW_MODEL", ""),
+		LogLLMOutput:                     getBool("LOG_LLM_OUTPUT", false),
 	}
 }

@@ -20,12 +20,20 @@ type Action =
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'SET':
+      console.info('[useDocumentHistory] SET', {
+        nodes: action.doc.nodes.length,
+        edges: action.doc.edges.length,
+      })
       return {
         past: [...state.past.slice(-(MAX_HISTORY - 1)), state.present],
         present: action.doc,
         future: [],
       }
     case 'RESET':
+      console.info('[useDocumentHistory] RESET', {
+        nodes: action.doc.nodes.length,
+        edges: action.doc.edges.length,
+      })
       return { past: [], present: action.doc, future: [] }
     case 'UNDO':
       if (state.past.length === 0) return state
