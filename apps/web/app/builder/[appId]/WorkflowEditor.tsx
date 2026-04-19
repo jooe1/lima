@@ -290,7 +290,7 @@ function getTriggerHelperText(triggerType: WorkflowTrigger) {
 // WorkflowEditor
 // ============================================================================
 export function WorkflowEditor({ appId, triggerTargets = [] }: Props) {
-  const { workspace, user } = useAuth()
+  const { workspace, user, token } = useAuth()
   const isAdmin   = user?.role === 'workspace_admin'
   const isBuilder = user?.role === 'app_builder' || isAdmin
 
@@ -354,6 +354,7 @@ export function WorkflowEditor({ appId, triggerTargets = [] }: Props) {
     workspace?.id ?? '',
     appId,
     !!selected?.id,
+    token,
   )
 
   useEffect(() => {

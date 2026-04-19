@@ -36,7 +36,7 @@ export type ToolShareTarget = { type: 'group' | 'company'; id?: string; capabili
 
 export default function AppEditorPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
-  const { workspace, company, user } = useAuth()
+  const { workspace, company, user, token } = useAuth()
   const [app, setApp] = useState<App | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -69,7 +69,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const reactiveStore = useMemo(() => createReactiveStore(), [])
 
   // SSE event pipeline — wires step_completed outputs to the reactive store
-  const { lastEvent: sseLastEvent } = useAppSSE(workspace?.id ?? '', appId, !loading && !loadError)
+  const { lastEvent: sseLastEvent } = useAppSSE(workspace?.id ?? '', appId, !loading && !loadError, token)
   const docRef = useRef(history.doc)
   docRef.current = history.doc
   const [runErrorWidgetId, setRunErrorWidgetId] = useState<string | null>(null)
@@ -90,12 +90,6 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     setApp(nextApp)
     setNodeMetadata(nextApp.node_metadata ?? {})
 
-    console.info('[AppEditor] hydrateLoadedApp', {
-      appId: nextApp.id,
-      dslSourceBytes: nextApp.dsl_source?.length ?? 0,
-      dslEdges: nextApp.dsl_edges?.length ?? 0,
-    })
-
     if (!nextApp.dsl_source) {
       setLoadError('')
       history.reset({ nodes: [], edges: nextApp.dsl_edges ?? [] })
@@ -107,29 +101,13 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
       // dsl_edges is the authoritative edge set (includes AI-generated widget wiring).
       // Fall back to edges embedded in dsl_source only when dsl_edges is absent.
       const edges = (nextApp.dsl_edges && nextApp.dsl_edges.length > 0) ? nextApp.dsl_edges : parsed.edges
-      console.info('[AppEditor] hydrateLoadedApp parsed', {
-        appId: nextApp.id,
-        parsedNodes: parsed.nodes.length,
-        parsedEdges: parsed.edges.length,
-        effectiveEdges: edges.length,
-      })
       history.reset({ ...parsed, edges })
       setLoadError('')
     } catch (error: unknown) {
-      console.error(`Failed to parse saved DSL for app ${nextApp.id}`, error, {
-        dslPreview: nextApp.dsl_source.slice(0, 400),
-      })
+      console.error(`Failed to parse saved DSL for app ${nextApp.id}`, error)
       setLoadError(error instanceof Error ? `Failed to load saved DSL: ${error.message}` : 'Failed to load saved DSL')
     }
   }
-
-  useEffect(() => {
-    console.info('[AppEditor] history document changed', {
-      nodes: history.doc.nodes.length,
-      edges: history.doc.edges.length,
-      canvasNodes: history.doc.nodes.filter(n => !n.element.startsWith('step:') && n.element !== 'flow:group').length,
-    })
-  }, [history.doc])
 
   // Load app and seed history
   useEffect(() => {
@@ -739,18 +717,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
                 try {
                   setLoadError('')
                   const parsed = parseV2(src)
-                  console.info('[AppEditor] onDSLUpdate parsed', {
-                    sourceBytes: src.length,
-                    parsedNodes: parsed.nodes.length,
-                    parsedEdges: parsed.edges.length,
-                    incomingEdges: newEdges?.length ?? 0,
-                  })
                   history.set({ ...parsed, edges: newEdges ?? parsed.edges })
-                } catch (error) {
-                  console.warn('[AppEditor] onDSLUpdate ignored invalid DSL', error, {
-                    dslPreview: src.slice(0, 400),
-                    incomingEdges: newEdges?.length ?? 0,
-                  })
+                } catch {
+                  /* ignore invalid DSL */
                 }
               }}
             />

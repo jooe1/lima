@@ -66,21 +66,11 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
         for (const msg of newMsgs) {
           if (msg.role === 'assistant' && msg.dsl_patch?.new_source) {
             try {
-              const parsed = parseV2(msg.dsl_patch.new_source) // validate before applying
-              console.info('[ChatPanel] applying polled DSL patch', {
-                messageId: msg.id,
-                sourceBytes: msg.dsl_patch.new_source.length,
-                parsedNodes: parsed.nodes.length,
-                parsedEdges: parsed.edges.length,
-                incomingEdges: msg.dsl_patch.new_edges?.length ?? 0,
-              })
+              parseV2(msg.dsl_patch.new_source) // validate before applying
               onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
               newlyApplied.push(msg.id)
             } catch (err) {
-              console.warn('[ChatPanel] DSL patch parse error — patch ignored', err, {
-                messageId: msg.id,
-                dslPreview: msg.dsl_patch.new_source.slice(0, 400),
-              })
+              console.warn('[ChatPanel] DSL patch parse error — patch ignored', err)
             }
           }
         }
@@ -140,20 +130,10 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
                 const msg = msgs[i]
                 if (msg.role === 'assistant' && msg.dsl_patch?.new_source) {
                   try {
-                    const parsed = parseV2(msg.dsl_patch.new_source)
-                    console.info('[ChatPanel] applying initial DSL patch', {
-                      messageId: msg.id,
-                      sourceBytes: msg.dsl_patch.new_source.length,
-                      parsedNodes: parsed.nodes.length,
-                      parsedEdges: parsed.edges.length,
-                      incomingEdges: msg.dsl_patch.new_edges?.length ?? 0,
-                    })
+                    parseV2(msg.dsl_patch.new_source)
                     onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
                   } catch (err) {
-                    console.warn('[ChatPanel] initial DSL patch parse error — patch ignored', err, {
-                      messageId: msg.id,
-                      dslPreview: msg.dsl_patch.new_source.slice(0, 400),
-                    })
+                    console.warn('[ChatPanel] initial DSL patch parse error — patch ignored', err)
                   }
                   break // only apply the most recent patch
                 }

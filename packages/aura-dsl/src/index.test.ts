@@ -99,6 +99,21 @@ table tickets @ root
     const doc2 = parse(src2)
     expect(doc2).toEqual(doc1)
   })
+
+  it('parses comma-separated with entries for form config', () => {
+    const source = `
+form order_form @ root
+  with fields="OrderID,Date,CustomerName", submitLabel="Save Order"
+  style { gridX: "0"; gridY: "2"; gridW: "5"; gridH: "8" }
+;
+`
+
+    const doc = parse(source)
+    expect(doc[0].with).toEqual({
+      fields: 'OrderID,Date,CustomerName',
+      submitLabel: 'Save Order',
+    })
+  })
 })
 
 describe('validate', () => {

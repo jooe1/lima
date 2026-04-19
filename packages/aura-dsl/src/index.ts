@@ -754,6 +754,10 @@ function parseWithMap(
 ): Record<string, string> {
   const map: Record<string, string> = {}
   while (peek() !== ';' && peek() !== 'style' && peek() !== 'transform' && !isClause(peek())) {
+    if (peek() === ',') {
+      consume()
+      continue
+    }
     const pair = consume() // e.g. connector="pg-main"
     const eq = pair.indexOf('=')
     if (eq === -1) break

@@ -20,6 +20,7 @@ export function useAppSSE(
   workspaceId: string,
   appId: string,
   enabled: boolean,
+  token: string | null,
 ): { connected: boolean; lastEvent: AppSSEEvent | null } {
   const [connected, setConnected] = useState(false)
   const [lastEvent, setLastEvent] = useState<AppSSEEvent | null>(null)
@@ -31,8 +32,6 @@ export function useAppSSE(
 
   useEffect(() => {
     if (!enabled || !workspaceId || !appId) return
-
-    const token = typeof window !== 'undefined' ? localStorage.getItem('lima_token') : null
     if (!token) return
 
     let isCurrent = true
@@ -128,8 +127,7 @@ export function useAppSSE(
       if (reconnectRef.current) clearTimeout(reconnectRef.current)
       setConnected(false)
     }
-  }, [enabled, workspaceId, appId]) // eslint-disable-line react-hooks/exhaustive-deps
-  // token read from localStorage — intentionally not a dep
+  }, [enabled, workspaceId, appId, token])
 
   return { connected, lastEvent }
 }
