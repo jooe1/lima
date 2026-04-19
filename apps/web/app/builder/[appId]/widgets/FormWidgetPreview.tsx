@@ -18,6 +18,7 @@ export function FormWidgetPreview({ node, onUpdate }: FormWidgetPreviewProps) {
 
   const fieldsStr = node.style?.fields ?? node.with?.fields ?? ''
   const fields = parseFormFields(fieldsStr)
+  const submitLabel = node.style?.submitLabel ?? node.with?.submitLabel ?? node.text ?? 'Submit'
 
   if (editing) {
     return (
@@ -60,10 +61,27 @@ export function FormWidgetPreview({ node, onUpdate }: FormWidgetPreviewProps) {
         </>
       )}
 
-      {/* Edit fields toggle — submit button removed; use attached Button widgets instead */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          disabled
+          style={{
+            background: '#1d4ed8',
+            border: 'none',
+            borderRadius: 4,
+            color: '#fff',
+            cursor: 'default',
+            fontSize: '0.65rem',
+            fontWeight: 500,
+            opacity: 0.9,
+            padding: '4px 10px',
+          }}
+        >
+          {submitLabel}
+        </button>
         {fields.length > 0 && (
           <button
+            type="button"
             onClick={() => setEditing(true)}
             style={{
               background: 'transparent',

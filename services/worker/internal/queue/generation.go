@@ -369,6 +369,7 @@ func buildConnectorContextBlock(connectors []genConnector) string {
 		}
 		sb.WriteString("\n")
 	}
+	sb.WriteString("Prefer the connector whose name and columns best match the requested entity. If a matching managed connector exists, use it for both the table binding and any create/update/delete workflow instead of leaving the mutation step unconfigured.\n")
 	return sb.String()
 }
 
@@ -533,7 +534,7 @@ func buildWorkflowContextBlock(workflows []existingWorkflowInfo) string {
 		return "No workflows exist for this app yet.\n"
 	}
 	var sb strings.Builder
-	sb.WriteString("Existing workflows for this app (reference these UUIDs directly in onSubmit/onClick — do NOT wrap them in {{flow:...}}):\n")
+	sb.WriteString("Existing workflows for this app (reference these UUIDs directly in the action clause — do NOT wrap them in {{flow:...}}):\n")
 	for _, w := range workflows {
 		fmt.Fprintf(&sb, "- id=%q  name=%q  trigger_type=%s\n", w.id, w.name, w.triggerType)
 	}
@@ -791,17 +792,33 @@ Each widget declaration looks like:
   - Do NOT set other widgets' parent to a container id — they must stay @ root.
 - text: static or dynamic label
 - button: clickable action
+	- Use the text clause for the visible label.
+	- If the button should run a workflow, use the action clause with either an existing workflow UUID or a placeholder such as action {{flow:deleteOrder}}.
 - table: data grid
 - form: data-entry form — MUST include a fields key listing every input field name.
   - Required with keys: fields (comma-separated field names, e.g. with fields="name,email,phone").
-  - Optional with keys: submitLabel (button text, default "Submit").
-  - Optional with keys: onSubmit (workflow ID to trigger on submit).
+	- Optional style key: submitLabel (button text, default "Submit").
+	- If the form should submit to a workflow, use the action clause with either an existing workflow UUID or a placeholder such as action {{flow:saveOrder}}.
 - chart: chart widget
 - kpi: single metric display
 - filter: filter control
 - modal: overlay dialog (not yet supported in the production runtime — do not use)
 - tabs: tabbed container (not yet supported in the production runtime — do not use)
 - markdown: rich text block
+
+## Workflow trigger placeholders in layout stage
+
+If the user's request includes create/save/update/delete behavior, the triggering form or button MUST include an action placeholder in the layout DSL so the flow stage can resolve it later.
+
+Example:
+
+		form orderForm @ root
+			with fields="customer,amount"
+			action {{flow:saveOrder}}
+			style { submitLabel: "Save Order"; gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
+		;
+
+When editing an existing app, preserve a valid action UUID or replace it with a new {{flow:ref}} placeholder only if the requested workflow behavior is changing.
 
 ## Response format
 
@@ -874,7 +891,9 @@ Emit a flows block only when the user's intent requires persisting data to a con
 Rules:
 - trigger_type must be one of: manual, form_submit, button_click, schedule, webhook.
 - step_type must be one of: query, mutation, condition, approval_gate, notification.
-- Use {{flow:ref}} in the widget DSL onSubmit/onClick to reference a flow by ref.
+- The layout stage references workflows through the action clause, e.g. action {{flow:saveOrder}}.
+- If the layout already contains an action {{flow:ref}} placeholder, emit a flow with that exact ref.
+- If the user's intent includes create/save/update/delete behavior and the layout contains a form or button trigger, a flows block is required. Returning only edges is invalid.
 - If no workflow is needed, omit the flows block entirely.
 
 ## Response format
@@ -920,8 +939,8 @@ Each widget declaration looks like:
 - table: data grid
 - form: data-entry form — MUST include a fields key listing every input field name.
   - Required with keys: fields (comma-separated field names, e.g. with fields="name,email,phone").
-  - Optional with keys: submitLabel (button text, default "Submit").
-  - Optional with keys: onSubmit (workflow ID to trigger on submit).
+	- Optional style key: submitLabel (button text, default "Submit").
+	- If the form should run a workflow, use the action clause with a workflow UUID or a {{flow:ref}} placeholder.
 - chart: chart widget
 - kpi: single metric display
 - filter: filter control
@@ -1003,10 +1022,9 @@ table ordersTable @ root
 ;
 form editOrderForm @ root
   text "Edit Order"
-  with fields="customer,amount"
-       submitLabel="Update Order"
-       onSubmit="{{flow:updateOrder}}"
-  style { gridX: "16"; gridY: "0"; gridW: "8"; gridH: "8" }
+	with fields="customer,amount"
+	action {{flow:updateOrder}}
+	style { submitLabel: "Update Order"; gridX: "16"; gridY: "0"; gridW: "8"; gridH: "8" }
 ;
 ` + "```" + `
 
@@ -1037,8 +1055,12 @@ form editOrderForm @ root
         "step_type": "mutation",
         "config": {
           "connector_id": "CONNECTOR_ID",
-          "query": "UPDATE orders SET customer = :customer, amount = :amount WHERE id = :id",
-          "params": {}
+	          "operation": "update",
+	          "row_id": "{{input.OrderID}}",
+	          "data": {
+	            "customer": "{{input.customer}}",
+	            "amount": "{{input.amount}}"
+	          }
         }
       }
     ]
@@ -1053,11 +1075,12 @@ form editOrderForm @ root
 Use these ` + "`with`" + ` keys to bind a table or chart widget to a connector:
 
     with connector="<connector-id>"
-         connectorType="<csv|postgres|mysql|mssql|rest|graphql>"
+	         connectorType="<csv|managed|postgres|mysql|mssql|rest|graphql>"
          sql="<value>"
 
 The meaning of the sql field depends on the connector type:
 - csv:                  sql is always: SELECT * FROM csv  (the backend ignores this value; it is a required sentinel)
+- managed:              omit sql (or leave it empty); Lima returns all rows from the managed table directly
 - postgres/mysql/mssql: sql is a normal SQL SELECT statement, e.g. SELECT * FROM users ORDER BY created_at DESC
 - rest:                 sql is the endpoint path to call on the base URL, e.g. /users or /orders/recent  (not SQL)
 - graphql:              dashboard queries are not supported; do not bind a table to a graphql connector
@@ -1121,9 +1144,8 @@ A form that collects name, email, and message fields:
 ` + "```aura" + `
 form contactForm @ root
   text "Contact Us"
-  with fields="name,email,message"
-       submitLabel="Send"
-  style { gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
+	with fields="name,email,message"
+	style { submitLabel: "Send"; gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
 ;
 ` + "```" + `
 
@@ -1178,18 +1200,18 @@ Do NOT generate a flows block for read-only apps (tables, charts, KPI tiles, fil
 
 ### DSL reference syntax
 
-In the Aura DSL, refer to a generated workflow by its ` + "`ref`" + ` using the placeholder ` + "`{{flow:refName}}`" + `:
+In the Aura DSL, refer to a generated workflow by its ` + "`ref`" + ` using the action clause with the placeholder ` + "`{{flow:refName}}`" + `:
 
     form myForm @ root
-      with fields="name,email"
-           onSubmit="{{flow:submitContact}}"
-      style { ... }
+			with fields="name,email"
+			action {{flow:submitContact}}
+			style { submitLabel: "Send"; ... }
     ;
 
     button myBtn @ root
       text "Delete"
-      with onClick="{{flow:deleteRecord}}"
-      style { ... }
+			action {{flow:deleteRecord}}
+			style { ... }
     ;
 
 The placeholder will be replaced with the real workflow UUID before the DSL is saved.
@@ -1212,8 +1234,10 @@ If an existing workflow is listed in the context block below, reference its real
         "step_type": "mutation",
         "config": {
           "connector_id": "<connector-id-from-context>",
-          "query": "INSERT INTO table (col) VALUES (:col)",
-          "params": {}
+	          "operation": "insert",
+	          "data": {
+	            "col": "{{input.col}}"
+	          }
         }
       }
     ]
@@ -1226,9 +1250,15 @@ If an existing workflow is listed in the context block below, reference its real
 - ` + "`ref`" + `: short camelCase slug, unique within the response. Used in ` + "`{{flow:ref}}`" + ` DSL placeholders.
 - ` + "`trigger_type`" + `: one of ` + "`form_submit`" + `, ` + "`button_click`" + `, ` + "`manual`" + `. Match the widget type.
 - ` + "`trigger_widget_ref`" + `: the widget id from the DSL that triggers this workflow.
+- If the DSL already contains ` + "`action {{flow:someRef}}`" + ` on a form or button, emit a flow whose ` + "`ref`" + ` is ` + "`someRef`" + `.
+- If the request involves create/save/update/delete behavior and the layout contains the triggering form or button, a flows block is mandatory.
 - ` + "`requires_approval`" + `: set ` + "`true`" + ` for any workflow with mutation steps; set ` + "`false`" + ` for query-only flows.
 - ` + "`step_type`" + `: one of ` + "`query`" + `, ` + "`mutation`" + `, ` + "`condition`" + `, ` + "`approval_gate`" + `, ` + "`notification`" + `.
-- ` + "`config`" + ` for ` + "`query`" + `/` + "`mutation`" + ` steps: ` + "`{ \"connector_id\": \"...\", \"query\": \"...\", \"params\": {} }`" + `.
+- ` + "`config`" + ` for ` + "`query`" + ` steps: ` + "`{ \"connector_id\": \"...\", \"sql\": \"SELECT ...\" }`" + `.
+- ` + "`config`" + ` for ` + "`mutation`" + ` steps on managed connectors: ` + "`{ \"connector_id\": \"...\", \"operation\": \"insert|update|delete\", \"data\": { ... }, \"row_id\": \"{{input.id}}\" }`" + `.
+- ` + "`config`" + ` for ` + "`mutation`" + ` steps on postgres/mysql/mssql connectors: ` + "`{ \"connector_id\": \"...\", \"sql\": \"UPDATE ...\" }`" + `.
+- If a matching managed connector already exists in the connector context, prefer it over inventing SQL.
+- Never leave a mutation step without connector_id and the required config fields when a matching connector exists in context.
 - ` + "`config`" + ` for ` + "`condition`" + ` steps: ` + "`{ \"expression\": \"<JS expression>\" }`" + `.
 - ` + "`config`" + ` for ` + "`approval_gate`" + ` steps: ` + "`{ \"description\": \"...\" }`" + `.
 - ` + "`config`" + ` for ` + "`notification`" + ` steps: ` + "`{ \"message\": \"...\" }`" + `.
@@ -1240,10 +1270,9 @@ If an existing workflow is listed in the context block below, reference its real
 ` + "```aura" + `
 form newOrderForm @ root
   text "New Order"
-  with fields="customer_name,amount"
-       submitLabel="Place Order"
-       onSubmit="{{flow:placeOrder}}"
-  style { gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
+	with fields="customer_name,amount"
+	action {{flow:placeOrder}}
+	style { submitLabel: "Place Order"; gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
 ;
 ` + "```" + `
 
@@ -1261,8 +1290,11 @@ form newOrderForm @ root
         "step_type": "mutation",
         "config": {
           "connector_id": "CONNECTOR_ID",
-          "query": "INSERT INTO orders (customer_name, amount) VALUES (:customer_name, :amount)",
-          "params": {}
+	          "operation": "insert",
+	          "data": {
+	            "customer_name": "{{input.customer_name}}",
+	            "amount": "{{input.amount}}"
+	          }
         }
       }
     ]

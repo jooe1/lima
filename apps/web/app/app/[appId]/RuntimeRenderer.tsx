@@ -480,6 +480,14 @@ function RuntimeText({ node }: { node: AuraNode }) {
   )
 }
 
+function getWorkflowActionId(node: AuraNode): string | undefined {
+  return node.action ?? node.with?.onSubmit ?? node.with?.onClick
+}
+
+function getFormSubmitLabel(node: AuraNode): string {
+  return node.style?.submitLabel ?? node.with?.submitLabel ?? node.text ?? 'Submit'
+}
+
 function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
   const missing = getMissingRequiredProps(node)
   if (missing.length > 0) return <RuntimeConfigurationRequired node={node} missing={missing} />
@@ -492,15 +500,16 @@ function RuntimeButton({ node, workspaceId, appId }: WidgetProps) {
   const bg = variant === 'danger' ? '#7f1d1d' : variant === 'secondary' ? '#1a1a1a' : '#1d4ed8'
   const hoverBg = variant === 'danger' ? '#991b1b' : variant === 'secondary' ? '#252525' : '#1e40af'
   const color = variant === 'danger' ? '#fca5a5' : variant === 'secondary' ? '#ccc' : '#fff'
+  const actionId = getWorkflowActionId(node)
 
   async function handleClick() {
     if (status === 'pending') return
     setStatus('pending')
     setStatusMessage('')
     try {
-      if (node.action) {
+      if (actionId) {
         const { triggerWorkflow } = await import('../../../lib/api')
-        const run = await triggerWorkflow(workspaceId, appId, node.action, {})
+        const run = await triggerWorkflow(workspaceId, appId, actionId, {})
         if (run.status === 'awaiting_approval') {
           setStatusMessage('Submitted for approval')
         } else {
@@ -746,6 +755,7 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
   const { bumpRefreshSeq } = useDashboardFilters()
   const { portValues, firePort } = useFlowEngine()
   const formPorts = portValues[node.id] ?? {}
+  const actionId = getWorkflowActionId(node)
 
   // setValues port — populate fields programmatically (whole object)
   const inboundFormValues = formPorts['setValues'] as Record<string, string> | undefined
@@ -816,10 +826,10 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
     setStatus('pending')
     setStatusMessage('')
     try {
-      if (node.action) {
+      if (actionId) {
         const { triggerWorkflow } = await import('../../../lib/api')
         const inputData: Record<string, unknown> = { ...values }
-        const run = await triggerWorkflow(workspaceId, appId, node.action, inputData)
+        const run = await triggerWorkflow(workspaceId, appId, actionId, inputData)
         if (run.status === 'awaiting_approval') {
           setStatusMessage('Submitted for approval')
         } else {
@@ -891,7 +901,7 @@ function RuntimeForm({ node, workspaceId, appId }: WidgetProps) {
           fontSize: '0.8rem', fontWeight: 500, padding: '0.4rem 1rem',
         }}
       >
-        {status === 'pending' ? 'Submitting…' : (node.style?.submitLabel ?? node.text ?? 'Submit')}
+        {status === 'pending' ? 'Submitting…' : getFormSubmitLabel(node)}
       </button>
     </form>
   )
