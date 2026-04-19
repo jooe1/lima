@@ -56,6 +56,30 @@ describe('serialize → parse round-trip', () => {
     expect(doc2).toEqual(doc1)
   })
 
+  it('round-trips style values containing markdown headings (#)', () => {
+    const content = '## Heading\n\n#asda dasd as\nsome text'
+    const source = `
+markdown md1 @ root
+  style { content: ${JSON.stringify(content)}; }
+;
+`
+    const doc1 = parse(source)
+    expect(doc1[0].style?.content).toBe(content)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
+
+  it('round-trips text clause containing # characters', () => {
+    const text = '## Bold heading'
+    const source = `markdown md2 @ root\n  text ${JSON.stringify(text)}\n;`
+    const doc1 = parse(source)
+    expect(doc1[0].text).toBe(text)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
+
   it('round-trips multiline quoted with values', () => {
     const source = `
 table tickets @ root

@@ -124,7 +124,7 @@ export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
     activeTab: { type: 'expression', label: 'Active tab index', default: '0' },
   },
   markdown: {
-    content: { type: 'string', label: 'Markdown content', required: true },
+    content: { type: 'string', label: 'Markdown content' },
   },
 }
 

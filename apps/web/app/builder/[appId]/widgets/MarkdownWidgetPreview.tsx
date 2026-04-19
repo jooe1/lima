@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useRef } from 'react'
+import { marked } from 'marked'
 import { type AuraNode } from '@lima/aura-dsl'
 
 interface MarkdownWidgetPreviewProps {
@@ -12,7 +13,19 @@ export function MarkdownWidgetPreview({ node, onUpdate }: MarkdownWidgetPreviewP
   const content = node.text ?? node.style?.content ?? ''
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(content)
+  const [renderedHtml, setRenderedHtml] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Re-render markdown whenever content changes
+  useEffect(() => {
+    if (!content) { setRenderedHtml(''); return }
+    const result = marked.parse(content)
+    if (typeof result === 'string') {
+      setRenderedHtml(result)
+    } else {
+      result.then(setRenderedHtml)
+    }
+  }, [content])
 
   // Reset when node changes (undo, AI edit, different widget selected)
   useEffect(() => {
@@ -55,24 +68,24 @@ export function MarkdownWidgetPreview({ node, onUpdate }: MarkdownWidgetPreviewP
       <textarea
         ref={textareaRef}
         autoFocus
+        data-interactive-preview="1"
         value={draft}
         onChange={e => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={e => {
           if (e.key === 'Escape') { e.preventDefault(); cancel() }
-          // Allow Enter for newlines — Shift+Enter is not needed
         }}
         style={{
           width: '100%',
           height: '100%',
-          background: '#1a1a1a',
+          background: '#111',
           border: '1px solid #3b82f6',
           borderRadius: 3,
           color: '#e5e5e5',
-          fontSize: '0.72rem',
+          fontSize: '0.78rem',
           fontFamily: 'monospace',
-          lineHeight: 1.5,
-          padding: '4px 6px',
+          lineHeight: 1.6,
+          padding: '6px 8px',
           boxSizing: 'border-box',
           outline: 'none',
           resize: 'none',
@@ -89,17 +102,23 @@ export function MarkdownWidgetPreview({ node, onUpdate }: MarkdownWidgetPreviewP
       style={{
         width: '100%',
         height: '100%',
-        color: content ? '#555' : '#333',
-        fontSize: '0.65rem',
-        fontFamily: 'monospace',
-        overflow: 'hidden',
-        whiteSpace: 'pre-wrap',
-        lineHeight: 1.5,
+        overflow: 'auto',
         cursor: 'text',
-        fontStyle: content ? 'normal' : 'italic',
+        padding: '4px 6px',
+        boxSizing: 'border-box',
       }}
     >
-      {content || 'Double-click to set markdown…'}
+      {renderedHtml ? (
+        <div
+          className="md-preview"
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: renderedHtml }}
+        />
+      ) : (
+        <span style={{ color: '#333', fontSize: '0.65rem', fontStyle: 'italic' }}>
+          Double-click to set markdown…
+        </span>
+      )}
     </div>
   )
 }

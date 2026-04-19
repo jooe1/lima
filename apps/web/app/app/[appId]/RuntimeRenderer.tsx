@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { marked } from 'marked'
 import { type AuraDocument, type AuraEdge, type AuraNode } from '@lima/aura-dsl'
 import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { runConnectorQuery, type DashboardQueryResponse } from '../../../lib/api'
@@ -1329,17 +1330,24 @@ function RuntimeMarkdown({ node }: { node: AuraNode }) {
   const content = dynamicMarkdownContent !== undefined
     ? (dynamicMarkdownContent !== null && typeof dynamicMarkdownContent === 'object' ? JSON.stringify(dynamicMarkdownContent, null, 2) : String(dynamicMarkdownContent))
     : (node.style?.content ?? node.text ?? '')
-  // Minimal markdown rendering without a library — just paragraphs
-  const lines = content.split('\n')
+
+  const [renderedHtml, setRenderedHtml] = useState('')
+  useEffect(() => {
+    if (!content) { setRenderedHtml(''); return }
+    const result = marked.parse(content)
+    if (typeof result === 'string') {
+      setRenderedHtml(result)
+    } else {
+      result.then(setRenderedHtml)
+    }
+  }, [content])
+
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: '0.75rem', color: '#aaa', fontSize: '0.8rem', lineHeight: 1.6 }}>
-      {lines.map((line, i) => {
-        if (line.startsWith('# ')) return <h1 key={i} style={{ color: '#e5e5e5', fontSize: '1.2rem', margin: '0 0 0.5rem' }}>{line.slice(2)}</h1>
-        if (line.startsWith('## ')) return <h2 key={i} style={{ color: '#e5e5e5', fontSize: '1rem', margin: '0 0 0.5rem' }}>{line.slice(3)}</h2>
-        if (line.startsWith('### ')) return <h3 key={i} style={{ color: '#e5e5e5', fontSize: '0.875rem', margin: '0 0 0.5rem' }}>{line.slice(4)}</h3>
-        if (line === '') return <br key={i} />
-        return <p key={i} style={{ margin: '0 0 0.25rem' }}>{line}</p>
-      })}
-    </div>
+    <div
+      className="md-preview"
+      // eslint-disable-next-line react/no-danger
+      dangerouslySetInnerHTML={{ __html: renderedHtml }}
+      style={{ height: '100%', overflow: 'auto', padding: '0.75rem', boxSizing: 'border-box' }}
+    />
   )
 }

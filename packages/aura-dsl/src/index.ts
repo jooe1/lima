@@ -729,8 +729,10 @@ function consumeEdgeString(_tokens: string[], consume: () => string): string {
 
 function tokenise(source: string): string[] {
   const tokens: string[] = []
-  // Strip line comments (# ...)
-  const stripped = source.replace(/#[^\n]*/g, '')
+  // Strip line comments (# ...) — only when # appears at the start of a line
+  // (with optional leading whitespace). This preserves # inside quoted string
+  // values such as markdown headings: content: "## Heading".
+  const stripped = source.replace(/^\s*#[^\n]*/gm, '')
   // Match: key="quoted values", standalone quoted strings, style-block
   // delimiters, semicolons, or bare words.
   const re = /[^\s=]+=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[{}:;]|\S+/g
@@ -795,8 +797,7 @@ function parseStyleBlock(
       expect(':')
     }
     const val = consume() // e.g. "\"100%\""
-    const cleanVal =
-      val.startsWith('"') || val.startsWith("'") ? val.slice(1, val.length - 1) : val
+    const cleanVal = decodeStringToken(val)
     if (peek() === ';') consume() // trailing semicolon inside style block
     map[prop] = cleanVal
   }
