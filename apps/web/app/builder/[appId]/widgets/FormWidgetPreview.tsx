@@ -33,7 +33,7 @@ export function FormWidgetPreview({ node, onUpdate }: FormWidgetPreviewProps) {
   }
 
   return (
-    <div>
+    <div style={{ height: '100%', overflow: 'auto' }}>
       {fields.length === 0 ? (
         <div style={{
           border: '1px dashed #1e3a8a',

@@ -36,6 +36,20 @@ export function InlineTextEditor({
     setDraft(value)
   }, [node.id, value])
 
+  // Commit when a mousedown fires outside the input — handles the case where
+  // the canvas calls e.preventDefault() on its own mousedown, suppressing blur.
+  useEffect(() => {
+    if (!editing) return
+    function handleOutsideMouseDown(e: MouseEvent) {
+      if (inputRef.current && !inputRef.current.contains(e.target as Node)) {
+        commit()
+      }
+    }
+    document.addEventListener('mousedown', handleOutsideMouseDown, true)
+    return () => document.removeEventListener('mousedown', handleOutsideMouseDown, true)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, draft])
+
   function commit() {
     if (!allowEmpty && !draft.trim()) {
       cancel()
@@ -71,8 +85,10 @@ export function InlineTextEditor({
           fontSize: '0.75rem',
           padding: '2px 6px',
           width: '100%',
+          height: '100%',
           boxSizing: 'border-box',
           outline: 'none',
+          display: 'block',
         }}
       />
     )
@@ -82,7 +98,7 @@ export function InlineTextEditor({
     <div
       onDoubleClick={() => { setDraft(value); setEditing(true) }}
       title="Double-click to edit"
-      style={{ cursor: 'text', outline: 'none' }}
+      style={{ cursor: 'text', outline: 'none', width: '100%', height: '100%' }}
     >
       {children}
     </div>

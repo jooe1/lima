@@ -10,6 +10,7 @@ import { TextWidgetPreview } from './TextWidgetPreview'
 import { ButtonWidgetPreview } from './ButtonWidgetPreview'
 import { TableWidgetPreview } from './TableWidgetPreview'
 import { ChartWidgetPreview } from './ChartWidgetPreview'
+import { MarkdownWidgetPreview } from './MarkdownWidgetPreview'
 import { buildChartSeries } from '../../../../lib/charting'
 import { applyTableDataBinding, getConnectorQuerySQL, getVisibleTableColumns } from '../../../../lib/tableBinding'
 import { useDashboardFilters } from '../../../../lib/dashboardFilters'
@@ -30,31 +31,9 @@ function formatCellValue(v: unknown): string {
 }
 
 export function WidgetRenderer({ node, workspaceId, onUpdate }: Props) {
-  const meta = WIDGET_REGISTRY[node.element as keyof typeof WIDGET_REGISTRY]
-
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', fontSize: '0.75rem', userSelect: 'none', overflow: 'hidden' }}>
-      {/* Widget label bar */}
-      <div style={{
-        background: '#0d0d0d',
-        padding: '3px 8px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        borderBottom: '1px solid #1e1e1e',
-        flexShrink: 0,
-      }}>
-        <span style={{ color: '#555', fontSize: '0.65rem', fontWeight: 500 }}>
-          {meta?.displayName ?? node.element}
-        </span>
-        <span style={{ color: '#333', fontSize: '0.6rem', marginLeft: 'auto', fontFamily: 'monospace' }}>
-          {node.id}
-        </span>
-      </div>
-      {/* Widget body */}
-      <div style={{ flex: 1, overflow: 'hidden', padding: 6 }}>
-        {renderBody(node, workspaceId, onUpdate)}
-      </div>
+    <div style={{ width: '100%', height: '100%', fontSize: '0.75rem', userSelect: 'none' }}>
+      {renderBody(node, workspaceId, onUpdate)}
     </div>
   )
 }
@@ -203,14 +182,11 @@ function renderBody(node: AuraNode, workspaceId: string, onUpdate?: (node: AuraN
     }
 
     case 'markdown': {
-      const missing = getMissingRequiredProps(node)
-      if (missing.length > 0) return <BuilderConfigurationRequired node={node} missing={missing} />
-
-      const content = node.text ?? node.style?.content ?? ''
       return (
-        <div style={{ color: '#555', fontSize: '0.65rem', fontFamily: 'monospace', overflow: 'hidden', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-          {content.slice(0, 120)}
-        </div>
+        <MarkdownWidgetPreview
+          node={node}
+          onUpdate={onUpdate}
+        />
       )
     }
 

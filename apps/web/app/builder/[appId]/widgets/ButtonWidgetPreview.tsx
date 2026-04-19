@@ -34,7 +34,9 @@ export function ButtonWidgetPreview({ node, onUpdate }: ButtonWidgetPreviewProps
       onCommit={handleCommit}
     >
       <div style={{
-        display: 'inline-flex',
+        display: 'flex',
+        width: '100%',
+        height: '100%',
         alignItems: 'center',
         justifyContent: 'center',
         background: bg,
@@ -45,6 +47,7 @@ export function ButtonWidgetPreview({ node, onUpdate }: ButtonWidgetPreviewProps
         fontSize: '0.75rem',
         fontStyle: label ? 'normal' : 'italic',
         opacity: label ? 1 : 0.6,
+        boxSizing: 'border-box',
       }}>
         {label || 'Double-click to set label…'}
       </div>

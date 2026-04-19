@@ -33,13 +33,14 @@ export function TextWidgetPreview({ node, onUpdate }: TextWidgetPreviewProps) {
       onCommit={handleCommit}
     >
       <div style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        alignItems: 'center',
         color: content ? '#aaa' : '#333',
         fontSize: fz,
         fontWeight: fw,
         overflow: 'hidden',
-        display: '-webkit-box',
-        WebkitLineClamp: 3,
-        WebkitBoxOrient: 'vertical',
         fontStyle: content ? 'normal' : 'italic',
       }}>
         {content || 'Double-click to set text…'}

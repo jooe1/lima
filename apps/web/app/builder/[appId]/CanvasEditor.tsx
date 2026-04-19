@@ -395,10 +395,10 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
                   top: g.y * CELL,
                   width: g.w * CELL,
                   height: g.h * CELL,
-                  background: '#111',
-                  border: `1px solid ${isSelected ? '#3b82f6' : isFormDragTarget ? '#7c3aed' : '#1e1e1e'}`,
+                  background: 'transparent',
+                  border: `1px solid ${isSelected ? '#3b82f6' : isFormDragTarget ? '#7c3aed' : 'transparent'}`,
                   borderRadius: 4,
-                  overflow: 'hidden',
+                  overflow: 'visible',
                   cursor: 'grab',
                   boxShadow: isSelected
                     ? '0 0 0 2px #3b82f620'
