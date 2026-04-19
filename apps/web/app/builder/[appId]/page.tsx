@@ -92,12 +92,16 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
 
     if (!nextApp.dsl_source) {
       setLoadError('')
-      history.reset({ nodes: [], edges: [] })
+      history.reset({ nodes: [], edges: nextApp.dsl_edges ?? [] })
       return
     }
 
     try {
-      history.reset(parseV2(nextApp.dsl_source))
+      const parsed = parseV2(nextApp.dsl_source)
+      // dsl_edges is the authoritative edge set (includes AI-generated widget wiring).
+      // Fall back to edges embedded in dsl_source only when dsl_edges is absent.
+      const edges = (nextApp.dsl_edges && nextApp.dsl_edges.length > 0) ? nextApp.dsl_edges : parsed.edges
+      history.reset({ ...parsed, edges })
       setLoadError('')
     } catch (error: unknown) {
       console.error(`Failed to parse saved DSL for app ${nextApp.id}`, error)
@@ -709,10 +713,11 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             <ChatPanel
               workspaceId={workspace.id}
               appId={appId}
-              onDSLUpdate={src => {
+              onDSLUpdate={(src, newEdges) => {
                 try {
                   setLoadError('')
-                  history.set(parseV2(src))
+                  const parsed = parseV2(src)
+                  history.set({ ...parsed, edges: newEdges ?? parsed.edges })
                 } catch {
                   /* ignore invalid DSL */
                 }

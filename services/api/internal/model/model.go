@@ -2,7 +2,10 @@
 // These structs map directly to the database tables defined in the migrations.
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ---- Tenancy ----------------------------------------------------------------
 
@@ -161,13 +164,14 @@ type WorkspaceAccessPolicyRuleInput struct {
 
 // AuraEdge represents a typed, directional data-flow edge in an AuraDocumentV2.
 // Stored as JSONB in apps.dsl_edges (migration 022).
+// JSON keys use camelCase to match the TypeScript AuraEdge interface.
 type AuraEdge struct {
 	ID         string `json:"id"`
-	FromNodeID string `json:"from_node_id"`
-	FromPort   string `json:"from_port"`
-	ToNodeID   string `json:"to_node_id"`
-	ToPort     string `json:"to_port"`
-	EdgeType   string `json:"edge_type"` // "reactive" | "async"
+	FromNodeID string `json:"fromNodeId"`
+	FromPort   string `json:"fromPort"`
+	ToNodeID   string `json:"toNodeId"`
+	ToPort     string `json:"toPort"`
+	EdgeType   string `json:"edgeType"` // "reactive" | "async"
 	Transform  string `json:"transform,omitempty"`
 }
 
@@ -246,8 +250,10 @@ type ConversationThread struct {
 
 // DSLPatch is the JSONB payload stored alongside an assistant message.
 // new_source contains the full updated Aura DSL produced by the generation job.
+// new_edges carries the full set of reactive/async wiring edges at the time of generation.
 type DSLPatch struct {
-	NewSource string `json:"new_source"`
+	NewSource string          `json:"new_source"`
+	NewEdges  json.RawMessage `json:"new_edges,omitempty"`
 }
 
 type ThreadMessage struct {

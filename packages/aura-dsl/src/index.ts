@@ -17,8 +17,13 @@
  * Rules:
  * - Every statement ends with `;`
  * - `@` is required; use `@root` for top-level widgets
- * - Clause order is fixed: text → value → forEach → key → if → with → transform → action → style
+ * - Clause order is fixed: text → value → forEach → key → if → with → transform → action → formRef → formFields → style
  * - No nested child blocks — parent/child is expressed through parentId references
+ *
+ * Button → Form attachment:
+ * - `formRef <formId>` on a button node attaches the button to a form widget.
+ *   At runtime the button reads that form's validated field values as its workflow payload.
+ * - `formFields "field1,field2"` narrows which fields are submitted; omit or leave blank for all.
  */
 
 // ---- AST types -------------------------------------------------------------
@@ -50,6 +55,10 @@ export interface AuraNode {
   with?: Record<string, string>
   transform?: string
   action?: string   // workflow ID to trigger on form submit / button click
+  /** ID of the form widget this button is attached to (Option 2/3 multi-button forms). */
+  formRef?: string
+  /** Comma-separated subset of form fields this button submits; empty or absent means all fields. */
+  formFields?: string
   widget_bindings?: Record<string, WidgetBinding>
   output_bindings?: OutputBinding[]
   style?: StyleMap
@@ -304,6 +313,12 @@ function parseNode(
       case 'action':
         node.action = consume()
         break
+      case 'formRef':
+        node.formRef = consume()
+        break
+      case 'formFields':
+        node.formFields = consumeString(tokens, getPos() - 1, () => consume())
+        break
       case 'widget_bindings':
         node.widget_bindings = JSON.parse(consumeString(tokens, getPos() - 1, () => consume()))
         break
@@ -363,6 +378,8 @@ function serializeNode(n: AuraNode): string {
   }
   if (n.transform !== undefined) lines.push(`  transform ${JSON.stringify(n.transform)}`)
   if (n.action !== undefined) lines.push(`  action ${n.action}`)
+  if (n.formRef !== undefined) lines.push(`  formRef ${n.formRef}`)
+  if (n.formFields !== undefined) lines.push(`  formFields ${JSON.stringify(n.formFields)}`)
   if (n.widget_bindings && Object.keys(n.widget_bindings).length > 0) {
     lines.push(`  widget_bindings ${JSON.stringify(JSON.stringify(n.widget_bindings))}`)
   }
@@ -787,7 +804,7 @@ function parseStyleBlock(
   return map
 }
 
-const CLAUSES = new Set(['text', 'value', 'forEach', 'key', 'if', 'with', 'transform', 'action', 'widget_bindings', 'output_bindings', 'style'])
+const CLAUSES = new Set(['text', 'value', 'forEach', 'key', 'if', 'with', 'transform', 'action', 'formRef', 'formFields', 'widget_bindings', 'output_bindings', 'style'])
 function isClause(t: string): boolean {
   return CLAUSES.has(t)
 }

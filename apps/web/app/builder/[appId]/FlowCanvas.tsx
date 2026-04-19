@@ -46,6 +46,8 @@ interface WidgetNodeData extends Record<string, unknown> {
   auraNode: AuraNode
   displayName: string
   element: string
+  /** Buttons that have `formRef` pointing to this widget (only populated for form nodes). */
+  attachedButtons?: AuraNode[]
 }
 
 // ---- Pure conversion helpers (exported for tests) --------------------------
@@ -57,7 +59,12 @@ interface WidgetNodeData extends Record<string, unknown> {
  * Flow:group nodes → type 'group', positioned from flowX/Y with explicit size.
  */
 export function docV2ToFlowNodes(doc: AuraDocumentV2): Node[] {
-  return doc.nodes.map((node, index) => {
+  // Buttons with formRef are absorbed into their form node — no standalone flow node
+  const absorbedButtonIds = new Set(
+    doc.nodes.filter(n => n.element === 'button' && n.formRef).map(n => n.id),
+  )
+
+  return doc.nodes.filter(node => !absorbedButtonIds.has(node.id)).map((node, index) => {
     const hasFlowPos = node.style?.flowX !== undefined && node.style?.flowY !== undefined
 
     if (node.element === 'flow:group') {
@@ -104,15 +111,19 @@ export function docV2ToFlowNodes(doc: AuraDocumentV2): Node[] {
     const y = hasFlowPos ? parseFloat(node.style!.flowY!) : gy * 60
 
     const meta = WIDGET_REGISTRY[node.element as WidgetType]
+    const data: WidgetNodeData = {
+      auraNode: node,
+      displayName: meta?.displayName ?? node.element,
+      element: node.element,
+    }
+    if (node.element === 'form') {
+      data.attachedButtons = doc.nodes.filter(n => n.element === 'button' && n.formRef === node.id)
+    }
     return {
       id: node.id,
       type: 'widgetNode',
       position: { x, y },
-      data: {
-        auraNode: node,
-        displayName: meta?.displayName ?? node.element,
-        element: node.element,
-      } satisfies WidgetNodeData,
+      data,
     } satisfies Node
   })
 }
@@ -124,15 +135,30 @@ export function docV2ToFlowNodes(doc: AuraDocumentV2): Node[] {
  * Binding → purple dashed (drag-to-wire data bindings).
  */
 export function docV2ToFlowEdges(doc: AuraDocumentV2): Edge[] {
+  // Build map: absorbed button ID -> its form node ID
+  const absorbedToForm = new Map<string, string>()
+  for (const node of doc.nodes) {
+    if (node.element === 'button' && node.formRef) {
+      absorbedToForm.set(node.id, node.formRef)
+    }
+  }
+
   return doc.edges.map(edge => {
+    // Remap edges that touch an absorbed button to use the form node
+    // with a compound handle ID: `btn:<buttonId>:<portName>`
+    const fromNodeId = absorbedToForm.has(edge.fromNodeId) ? absorbedToForm.get(edge.fromNodeId)! : edge.fromNodeId
+    const fromPort   = absorbedToForm.has(edge.fromNodeId) ? `btn:${edge.fromNodeId}:${edge.fromPort}` : edge.fromPort
+    const toNodeId   = absorbedToForm.has(edge.toNodeId)   ? absorbedToForm.get(edge.toNodeId)!   : edge.toNodeId
+    const toPort     = absorbedToForm.has(edge.toNodeId)   ? `btn:${edge.toNodeId}:${edge.toPort}` : edge.toPort
+
     const isReactive = edge.edgeType === 'reactive'
     const isBinding  = edge.edgeType === 'binding'
     return {
       id: edge.id,
-      source: edge.fromNodeId,
-      sourceHandle: edge.fromPort,
-      target: edge.toNodeId,
-      targetHandle: edge.toPort,
+      source: fromNodeId,
+      sourceHandle: fromPort,
+      target: toNodeId,
+      targetHandle: toPort,
       type: 'smoothstep',
       animated: isReactive,
       style: {
@@ -285,6 +311,7 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
   const [areFieldOutputsExpanded, setAreFieldOutputsExpanded] = useState(false)
   const [expandedInputPorts, setExpandedInputPorts] = useState<Map<string, boolean>>(new Map())
   const [expandedOutputPorts, setExpandedOutputPorts] = useState<Map<string, boolean>>(new Map())
+  const [expandedButtonIds, setExpandedButtonIds] = useState<Set<string>>(new Set())
   const rawPorts = meta?.ports ?? []
   const ports = expandWidgetPorts({ ...(wData.auraNode.style ?? {}), ...(wData.auraNode.with ?? {}) }, rawPorts)
   const inputPorts = ports.filter(p => p.direction === 'input')
@@ -552,6 +579,113 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
           )}
         </div>
       </div>
+
+      {/* Attached button sections — one per button linked via formRef */}
+      {wData.attachedButtons && wData.attachedButtons.length > 0 && (
+        <div style={{ borderTop: '1px solid #1a1a1a' }}>
+          <div style={{ padding: '3px 10px 2px', fontSize: '0.55rem', color: '#7c3aed', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+            Attached buttons
+          </div>
+          {wData.attachedButtons.map((btn: AuraNode) => {
+            const isExpanded = expandedButtonIds.has(btn.id)
+            const btnLabel = btn.text ?? btn.id
+            const scopedFields = btn.formFields ? btn.formFields.split(',').map((f: string) => f.trim()).filter(Boolean) : []
+            const allFormFields = String(wData.auraNode.with?.fields ?? wData.auraNode.style?.fields ?? '')
+              .split(',').map((f: string) => f.trim()).filter(Boolean)
+            const displayFields = scopedFields.length > 0 ? scopedFields : allFormFields
+            const btnMeta = WIDGET_REGISTRY['button']
+            const btnPorts = btnMeta?.ports ?? []
+            const btnInputPorts = btnPorts.filter(p => p.direction === 'input')
+            const btnOutputPorts = btnPorts.filter(p => p.direction === 'output')
+            return (
+              <div key={btn.id} style={{ borderTop: '1px solid #111' }}>
+                {/* Button header row */}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '3px 10px',
+                    gap: 6,
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                  }}
+                  onClick={() => setExpandedButtonIds(prev => {
+                    const next = new Set(prev)
+                    if (next.has(btn.id)) next.delete(btn.id)
+                    else next.add(btn.id)
+                    return next
+                  })}
+                >
+                  <span style={{ fontSize: '0.6rem', color: '#a78bfa', fontWeight: 600 }}>◈</span>
+                  <span style={{ fontSize: '0.65rem', color: '#d4d4d4', flex: 1 }}>{btnLabel}</span>
+                  {btn.action && (
+                    <span style={{ fontSize: '0.5rem', color: '#f59e0b', fontFamily: 'monospace' }}>wf</span>
+                  )}
+                  <span style={{ fontSize: '0.55rem', color: '#555' }}>{isExpanded ? '▲' : '▼'}</span>
+                </div>
+                {/* Expanded: port handles + optional scoped field list */}
+                {isExpanded && (
+                  <div style={{ paddingBottom: 4 }}>
+                    {/* Port grid — mirrors the main widget port layout */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, padding: '2px 0' }}>
+                        {btnInputPorts.map(port => (
+                          <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
+                            <Handle
+                              type="target"
+                              position={Position.Left}
+                              id={`btn:${btn.id}:${port.name}`}
+                              style={{ width: 7, height: 7, background: '#3b82f6', border: '1px solid #2a2a2a', left: -4 }}
+                            />
+                            <span style={{ fontSize: '0.6rem', color: '#888', marginLeft: 6 }}>{port.name}</span>
+                            <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginLeft: 3 }}>{dataTypeBadge(port.dataType)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, padding: '2px 0', alignItems: 'flex-end' }}>
+                        {btnOutputPorts.map(port => (
+                          <div key={port.name} title={port.description} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10 }}>
+                            <span style={{ fontSize: '0.5rem', color: '#444', fontFamily: 'monospace', marginRight: 3 }}>{dataTypeBadge(port.dataType)}</span>
+                            <span style={{ fontSize: '0.6rem', color: '#888', marginRight: 6 }}>{port.name}</span>
+                            <Handle
+                              type="source"
+                              position={Position.Right}
+                              id={`btn:${btn.id}:${port.name}`}
+                              style={{ width: 7, height: 7, background: port.dataType === 'trigger' ? '#f59e0b' : '#f97316', border: '1px solid #2a2a2a', right: -4 }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Scoped field indicator */}
+                    {displayFields.length > 0 && (
+                      <div style={{ padding: '4px 10px 0 18px' }}>
+                        <div style={{ fontSize: '0.5rem', color: '#555', marginBottom: 2 }}>
+                          {scopedFields.length > 0 ? 'scoped fields:' : 'fields (all):'}
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 8px' }}>
+                          {displayFields.map((field: string) => (
+                            <span key={field} style={{
+                              fontSize: '0.55rem',
+                              color: scopedFields.length > 0 ? '#a78bfa' : '#666',
+                              fontFamily: 'monospace',
+                            }}>{field}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {btn.action && (
+                      <div style={{ padding: '3px 10px 0', fontSize: '0.5rem', color: '#f59e0b', fontFamily: 'monospace' }}>
+                        → {btn.action}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

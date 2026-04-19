@@ -164,6 +164,53 @@ button submit-btn @ root
   })
 })
 
+describe('formRef and formFields clauses', () => {
+  it('parses formRef on a button node', () => {
+    const doc = parse('button save-btn @ root text "Save" action wf-123 formRef form1 ;')
+    expect(doc[0]).toMatchObject({
+      element: 'button',
+      id: 'save-btn',
+      action: 'wf-123',
+      formRef: 'form1',
+    })
+    expect(doc[0].formFields).toBeUndefined()
+  })
+
+  it('parses formRef + formFields on a button node', () => {
+    const doc = parse('button update-btn @ root text "Update" formRef form1 formFields "name,email" ;')
+    expect(doc[0]).toMatchObject({
+      formRef: 'form1',
+      formFields: 'name,email',
+    })
+  })
+
+  it('round-trips formRef and formFields through parse → serialize → parse', () => {
+    const source = `
+button save-btn @ root
+  text "Save"
+  action wf-abc
+  formRef contact-form
+  formFields "firstName,lastName"
+;
+`
+    const doc1 = parse(source)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+    expect(doc2[0].formRef).toBe('contact-form')
+    expect(doc2[0].formFields).toBe('firstName,lastName')
+  })
+
+  it('nodes without formRef/formFields parse and serialize cleanly', () => {
+    const doc = parse('button btn @ root text "Click" ;')
+    expect(doc[0].formRef).toBeUndefined()
+    expect(doc[0].formFields).toBeUndefined()
+    const src = serialize(doc)
+    expect(src).not.toContain('formRef')
+    expect(src).not.toContain('formFields')
+  })
+})
+
 describe('widget_bindings and output_bindings', () => {
   const WB: Record<string, WidgetBinding> = {
     'config.form': { widget_id: 'form1', port: 'data', page_id: 'page-1' },

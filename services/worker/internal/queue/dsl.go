@@ -179,13 +179,14 @@ func applyProtectedDiff(current, candidate string, nodeMetadata map[string]nodeM
 // ---- DSL step-graph helpers -------------------------------------------------
 
 // dslEdge mirrors model.AuraEdge locally to avoid cross-module imports.
+// JSON keys use camelCase to match the TypeScript AuraEdge interface.
 type dslEdge struct {
 	ID         string `json:"id"`
-	FromNodeID string `json:"from_node_id"`
-	FromPort   string `json:"from_port"`
-	ToNodeID   string `json:"to_node_id"`
-	ToPort     string `json:"to_port"`
-	EdgeType   string `json:"edge_type"`
+	FromNodeID string `json:"fromNodeId"`
+	FromPort   string `json:"fromPort"`
+	ToNodeID   string `json:"toNodeId"`
+	ToPort     string `json:"toPort"`
+	EdgeType   string `json:"edgeType"`
 	Transform  string `json:"transform,omitempty"`
 }
 

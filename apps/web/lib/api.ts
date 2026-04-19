@@ -364,6 +364,7 @@ export interface ConversationThread {
 
 export interface DSLPatch {
   new_source: string
+  new_edges?: AuraEdge[]
 }
 
 export interface ThreadMessage {

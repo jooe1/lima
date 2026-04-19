@@ -66,6 +66,10 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
   const dragRef = useRef<DragState | null>(null)
   const panRef = useRef<PanState | null>(null)
   const [isPanning, setIsPanning] = React.useState(false)
+  // IDs of form widgets highlighted as drop targets while dragging a button
+  const [formDragTargetIds, setFormDragTargetIds] = useState<string[]>([])
+  // The specific form currently being hovered over during a button drag
+  const formHoverTargetRef = useRef<string | null>(null)
 
   // Gallery state: show when canvas is empty, re-show if user clears all widgets
   const [showGallery, setShowGallery] = useState(doc.length === 0)
@@ -168,6 +172,39 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
         el.style.width = `${newW * CELL}px`
         el.style.height = `${newH * CELL}px`
       }
+
+      // Button drag: highlight the form being hovered over
+      if (drag.type === 'move') {
+        const draggedNode = docRef.current.find(n => n.id === drag.nodeId)
+        if (draggedNode?.element === 'button') {
+          const btnCx = (newX + drag.snapW / 2) * CELL
+          const btnCy = (newY + drag.snapH / 2) * CELL
+          let newHover: string | null = null
+          for (const n of docRef.current) {
+            if (n.element !== 'form') continue
+            const fg = getGrid(n)
+            if (btnCx >= fg.x * CELL && btnCx <= (fg.x + fg.w) * CELL &&
+                btnCy >= fg.y * CELL && btnCy <= (fg.y + fg.h) * CELL) {
+              newHover = n.id
+              break
+            }
+          }
+          if (newHover !== formHoverTargetRef.current) {
+            if (formHoverTargetRef.current) {
+              const oldEl = container.querySelector(`[data-widget-id="${formHoverTargetRef.current}"]`) as HTMLElement | null
+              if (oldEl) { oldEl.style.boxShadow = ''; oldEl.style.borderColor = '' }
+            }
+            if (newHover) {
+              const hoverEl = container.querySelector(`[data-widget-id="${newHover}"]`) as HTMLElement | null
+              if (hoverEl) {
+                hoverEl.style.boxShadow = '0 0 0 2px #a78bfa, 0 0 28px 8px #a78bfa55'
+                hoverEl.style.borderColor = '#a78bfa'
+              }
+            }
+            formHoverTargetRef.current = newHover
+          }
+        }
+      }
     }
 
     function handleMouseUp() {
@@ -182,18 +219,31 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
       if (!drag) return
       dragRef.current = null
 
+      // Clear any form hover highlight DOM style
+      if (formHoverTargetRef.current) {
+        const hoveredEl = containerRef.current?.querySelector(`[data-widget-id="${formHoverTargetRef.current}"]`) as HTMLElement | null
+        if (hoveredEl) { hoveredEl.style.boxShadow = ''; hoveredEl.style.borderColor = '' }
+      }
+      const droppedOnFormId = formHoverTargetRef.current
+      formHoverTargetRef.current = null
+      setFormDragTargetIds([])
+
+      const draggedNode = docRef.current.find(n => n.id === drag.nodeId)
+      const isButtonDrop = draggedNode?.element === 'button' && droppedOnFormId !== null
+
       const newDoc = docRef.current.map(node => {
         if (node.id !== drag.nodeId) return node
-        return {
-          ...node,
-          style: {
-            ...(node.style ?? {}),
-            gridX: String(drag.snapX),
-            gridY: String(drag.snapY),
-            gridW: String(drag.snapW),
-            gridH: String(drag.snapH),
-          },
+        const updatedStyle = {
+          ...(node.style ?? {}),
+          gridX: String(drag.snapX),
+          gridY: String(drag.snapY),
+          gridW: String(drag.snapW),
+          gridH: String(drag.snapH),
         }
+        if (isButtonDrop) {
+          return { ...node, style: updatedStyle, formRef: droppedOnFormId! }
+        }
+        return { ...node, style: updatedStyle }
       })
       onChangeRef.current(newDoc)
     }
@@ -255,6 +305,12 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
         snapY: g.y,
         snapW: g.w,
         snapH: g.h,
+      }
+
+      // When moving a button, highlight all form widgets as potential drop targets
+      if (type === 'move' && node.element === 'button') {
+        const formIds = docRef.current.filter(n => n.element === 'form').map(n => n.id)
+        setFormDragTargetIds(formIds)
       }
 
       onSelectRef.current(nodeId)
@@ -327,6 +383,7 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
             const g = getGrid(node)
             const isSelected = selectedId === node.id
             const isHighlighted = highlightedWidgetIds?.includes(node.id) ?? false
+            const isFormDragTarget = formDragTargetIds.includes(node.id)
 
             return (
               <div
@@ -339,7 +396,7 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
                   width: g.w * CELL,
                   height: g.h * CELL,
                   background: '#111',
-                  border: `1px solid ${isSelected ? '#3b82f6' : '#1e1e1e'}`,
+                  border: `1px solid ${isSelected ? '#3b82f6' : isFormDragTarget ? '#7c3aed' : '#1e1e1e'}`,
                   borderRadius: 4,
                   overflow: 'hidden',
                   cursor: 'grab',
@@ -347,9 +404,11 @@ export function CanvasEditor({ doc, selectedId, onChange, onSelect, onApplyTempl
                     ? '0 0 0 2px #3b82f620'
                     : isHighlighted
                       ? '0 0 0 2px #3b82f6, 0 0 16px 4px #3b82f644'
-                      : 'none',
+                      : isFormDragTarget
+                        ? '0 0 0 1px #7c3aed66, 0 0 12px 4px #7c3aed33'
+                        : 'none',
                   outline: 'none',
-                  transition: 'box-shadow 0.2s ease',
+                  transition: 'box-shadow 0.15s ease, border-color 0.15s ease',
                   zIndex: isSelected ? 10 : isHighlighted ? 5 : 1,
                 }}
                 onMouseDown={e => {

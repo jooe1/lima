@@ -60,11 +60,8 @@ export function FormWidgetPreview({ node, onUpdate }: FormWidgetPreviewProps) {
         </>
       )}
 
-      {/* Submit button + edit fields toggle */}
+      {/* Edit fields toggle — submit button removed; use attached Button widgets instead */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-        <div style={{ display: 'inline-block', background: '#1d4ed8', borderRadius: 3, padding: '3px 12px', color: '#c7d9ff', fontSize: '0.65rem' }}>
-          {node.text ?? node.style?.submitLabel ?? 'Submit'}
-        </div>
         {fields.length > 0 && (
           <button
             onClick={() => setEditing(true)}

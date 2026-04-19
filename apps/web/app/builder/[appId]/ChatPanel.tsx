@@ -17,7 +17,7 @@ interface Props {
   workspaceId: string
   appId: string
   /** Called when the assistant returns a new DSL to apply to the canvas. */
-  onDSLUpdate: (newSource: string) => void
+  onDSLUpdate: (newSource: string, newEdges?: import('../../../lib/api').AuraEdge[]) => void
 }
 
 export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
@@ -67,7 +67,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
           if (msg.role === 'assistant' && msg.dsl_patch?.new_source) {
             try {
               parse(msg.dsl_patch.new_source) // validate before applying
-              onDSLUpdate(msg.dsl_patch.new_source)
+              onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
               newlyApplied.push(msg.id)
             } catch {
               // DSL parse error — ignore this patch

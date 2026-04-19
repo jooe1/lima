@@ -83,6 +83,44 @@ type userAISettings struct {
 }
 
 var auraBlockRe = regexp.MustCompile("(?s)```(?:aura)?\\s*\n(.*?)\\s*```")
+var flowsBlockRe = regexp.MustCompile("(?s)```flows\\s*\n(.*?)\\s*```")
+var edgesBlockRe = regexp.MustCompile("(?s)```edges\\s*\n(.*?)\\s*```")
+
+// genWorkflowStep is the shape the AI emits for a single workflow step.
+type genWorkflowStep struct {
+	Name     string         `json:"name"`
+	StepType string         `json:"step_type"`
+	Config   map[string]any `json:"config"`
+}
+
+// genWorkflow is the shape the AI emits for a complete workflow.
+type genWorkflow struct {
+	Ref              string            `json:"ref"`
+	Name             string            `json:"name"`
+	TriggerType      string            `json:"trigger_type"`
+	TriggerWidgetRef string            `json:"trigger_widget_ref,omitempty"`
+	RequiresApproval bool              `json:"requires_approval"`
+	Steps            []genWorkflowStep `json:"steps"`
+}
+
+// existingWorkflowInfo holds lightweight info about a workflow already in the DB.
+type existingWorkflowInfo struct {
+	id          string
+	name        string
+	triggerType string
+}
+
+// validStepTypes is the set of step_type values accepted by the DB enum.
+var validStepTypes = map[string]bool{
+	"query": true, "mutation": true, "condition": true,
+	"approval_gate": true, "notification": true,
+}
+
+// validTriggerTypes is the set of trigger_type values accepted by the DB enum.
+var validTriggerTypes = map[string]bool{
+	"manual": true, "form_submit": true, "button_click": true,
+	"schedule": true, "webhook": true,
+}
 
 func callOpenAI(ctx context.Context, settings userAISettings, messages []chatMessage) (string, error) {
 	body, err := json.Marshal(chatRequest{
@@ -287,9 +325,11 @@ func buildConnectorContextBlock(connectors []genConnector) string {
 	return sb.String()
 }
 
-func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector) string {
+func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector, existingWorkflows []existingWorkflowInfo) string {
 	var builder strings.Builder
 	builder.WriteString(buildConnectorContextBlock(connectors))
+	builder.WriteString("\n")
+	builder.WriteString(buildWorkflowContextBlock(existingWorkflows))
 	builder.WriteString("\nCurrent app DSL:\n```aura\n")
 	builder.WriteString(currentDSL)
 	builder.WriteString("\n```\n\nConversation history:\n")
@@ -302,7 +342,7 @@ func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, c
 	}
 	builder.WriteString("\nLatest request:\n")
 	builder.WriteString(latestUserPrompt)
-	builder.WriteString("\n\nReturn the complete updated Aura DSL document.")
+	builder.WriteString("\n\nReturn the complete updated Aura DSL document and, when the app requires write actions, a flows block.")
 	return builder.String()
 }
 
@@ -315,6 +355,257 @@ func titleCaseFirst(value string) string {
 		return value
 	}
 	return string(unicode.ToTitle(firstRune)) + value[size:]
+}
+
+// fetchExistingWorkflows returns lightweight workflow info for all non-archived
+// workflows belonging to the given app.
+func fetchExistingWorkflows(ctx context.Context, pool *pgxpool.Pool, appID string) ([]existingWorkflowInfo, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT id, name, trigger_type FROM workflows WHERE app_id = $1 AND status != 'archived' ORDER BY name`,
+		appID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fetch existing workflows: %w", err)
+	}
+	defer rows.Close()
+
+	var result []existingWorkflowInfo
+	for rows.Next() {
+		var w existingWorkflowInfo
+		if err := rows.Scan(&w.id, &w.name, &w.triggerType); err != nil {
+			return nil, fmt.Errorf("scan workflow: %w", err)
+		}
+		result = append(result, w)
+	}
+	return result, rows.Err()
+}
+
+// buildWorkflowContextBlock renders existing workflows into a plain-text block
+// injected into the AI prompt so the model can reference them by real UUID.
+func buildWorkflowContextBlock(workflows []existingWorkflowInfo) string {
+	if len(workflows) == 0 {
+		return "No workflows exist for this app yet.\n"
+	}
+	var sb strings.Builder
+	sb.WriteString("Existing workflows for this app (reference these UUIDs directly in onSubmit/onClick — do NOT wrap them in {{flow:...}}):\n")
+	for _, w := range workflows {
+		fmt.Fprintf(&sb, "- id=%q  name=%q  trigger_type=%s\n", w.id, w.name, w.triggerType)
+	}
+	return sb.String()
+}
+
+// extractFlows parses the AI-generated flows JSON block from the response text.
+// Returns nil, nil when no flows block is present.
+func extractFlows(content string) ([]genWorkflow, error) {
+	match := flowsBlockRe.FindStringSubmatch(content)
+	if len(match) < 2 {
+		return nil, nil
+	}
+	raw := strings.TrimSpace(match[1])
+	if raw == "" || raw == "[]" {
+		return nil, nil
+	}
+	var flows []genWorkflow
+	if err := json.Unmarshal([]byte(raw), &flows); err != nil {
+		return nil, fmt.Errorf("parse flows block: %w", err)
+	}
+	return flows, nil
+}
+
+// extractEdges parses a ```edges JSON block from the AI response.
+// Returns nil (no error) if no edges block is present.
+func extractEdges(content string) ([]dslEdge, error) {
+	match := edgesBlockRe.FindStringSubmatch(content)
+	if len(match) < 2 {
+		return nil, nil
+	}
+	raw := strings.TrimSpace(match[1])
+	if raw == "" || raw == "[]" {
+		return nil, nil
+	}
+	var edges []dslEdge
+	if err := json.Unmarshal([]byte(raw), &edges); err != nil {
+		return nil, fmt.Errorf("parse edges block: %w", err)
+	}
+	// Assign stable IDs to any edge that omitted one.
+	for i := range edges {
+		if edges[i].ID == "" {
+			edges[i].ID = fmt.Sprintf("edge_%s_%s_%s_%s",
+				edges[i].FromNodeID, edges[i].FromPort,
+				edges[i].ToNodeID, edges[i].ToPort)
+		}
+	}
+	return edges, nil
+}
+
+// persistGeneratedFlows inserts AI-generated workflows and their steps into the
+// DB (status='draft', ai_generated=true on each step). Returns a map of
+// ref → real UUID so callers can substitute {{flow:ref}} placeholders in DSL.
+func persistGeneratedFlows(ctx context.Context, pool *pgxpool.Pool, workspaceID, appID, userID string, flows []genWorkflow) (map[string]string, error) {
+	refToID := make(map[string]string, len(flows))
+	for _, f := range flows {
+		if strings.TrimSpace(f.Ref) == "" || strings.TrimSpace(f.Name) == "" {
+			continue
+		}
+
+		triggerType := f.TriggerType
+		if !validTriggerTypes[triggerType] {
+			triggerType = "manual"
+		}
+
+		triggerConfig := map[string]any{}
+		if (triggerType == "form_submit" || triggerType == "button_click") && f.TriggerWidgetRef != "" {
+			triggerConfig["widget_id"] = f.TriggerWidgetRef
+		}
+		triggerConfigBytes, err := json.Marshal(triggerConfig)
+		if err != nil {
+			return nil, fmt.Errorf("marshal trigger config for ref %q: %w", f.Ref, err)
+		}
+
+		var sourceWidgetID *string
+		if f.TriggerWidgetRef != "" {
+			sourceWidgetID = &f.TriggerWidgetRef
+		}
+
+		var wfID string
+		err = pool.QueryRow(ctx, `
+			INSERT INTO workflows
+			    (workspace_id, app_id, name, trigger_type, trigger_config,
+			     status, requires_approval, created_by, source_widget_id)
+			VALUES ($1,$2,$3,$4,$5,'draft',$6,$7,$8)
+			RETURNING id`,
+			workspaceID, appID, f.Name,
+			triggerType, triggerConfigBytes,
+			f.RequiresApproval, userID, sourceWidgetID,
+		).Scan(&wfID)
+		if err != nil {
+			return nil, fmt.Errorf("insert workflow %q: %w", f.Ref, err)
+		}
+		refToID[f.Ref] = wfID
+
+		for i, step := range f.Steps {
+			if !validStepTypes[step.StepType] {
+				continue
+			}
+			name := strings.TrimSpace(step.Name)
+			if name == "" {
+				name = fmt.Sprintf("Step %d", i+1)
+			}
+			cfgBytes, err := json.Marshal(step.Config)
+			if err != nil {
+				cfgBytes = []byte("{}")
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO workflow_steps
+				    (workflow_id, step_order, name, step_type, config, ai_generated)
+				VALUES ($1,$2,$3,$4,$5,true)`,
+				wfID, i, name, step.StepType, cfgBytes,
+			); err != nil {
+				return nil, fmt.Errorf("insert step %d for workflow %q: %w", i, f.Ref, err)
+			}
+		}
+	}
+	return refToID, nil
+}
+
+// substituteFlowRefs replaces {{flow:ref}} placeholders in DSL with real UUIDs.
+func substituteFlowRefs(dsl string, refToID map[string]string) string {
+	for ref, id := range refToID {
+		dsl = strings.ReplaceAll(dsl, "{{flow:"+ref+"}}", id)
+	}
+	return dsl
+}
+
+// buildFlowNodesAndEdges generates Aura DSL statements (flow:group + step:*
+// nodes) and async edges for every persisted workflow. The DSL is appended to
+// the widget DSL so the Flow View canvas can render the step nodes. The edges
+// wire each widget's submit/click output port to the first step's "run" input,
+// and connect consecutive steps to each other.
+func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string) (string, []dslEdge) {
+	var dslParts []string
+	var edges []dslEdge
+
+	for _, f := range flows {
+		if _, ok := refToID[f.Ref]; !ok {
+			continue
+		}
+		if len(f.Steps) == 0 {
+			continue
+		}
+
+		groupID := f.Ref + "_group"
+		name := f.Name
+		if name == "" {
+			name = f.Ref
+		}
+
+		// Flow group node (visual container in the Flow View).
+		dslParts = append(dslParts, fmt.Sprintf("flow:group %s @ root\n  text %q\n;", groupID, name))
+
+		// Step nodes + step-to-step edges.
+		prevStepID := ""
+		for i, step := range f.Steps {
+			stepNodeID := fmt.Sprintf("%s_step%d", f.Ref, i)
+			stepType := step.StepType
+			if !validStepTypes[stepType] {
+				stepType = "query"
+			}
+			stepName := strings.TrimSpace(step.Name)
+			if stepName == "" {
+				stepName = fmt.Sprintf("Step %d", i+1)
+			}
+			dslParts = append(dslParts,
+				fmt.Sprintf("step:%s %s @ %s\n  text %q\n;", stepType, stepNodeID, groupID, stepName))
+
+			if prevStepID != "" {
+				edges = append(edges, dslEdge{
+					ID:         fmt.Sprintf("edge_%s_output_%s_run", prevStepID, stepNodeID),
+					FromNodeID: prevStepID,
+					FromPort:   "output",
+					ToNodeID:   stepNodeID,
+					ToPort:     "run",
+					EdgeType:   "async",
+				})
+			}
+			prevStepID = stepNodeID
+		}
+
+		// Widget trigger edge: widget.submitted (or .clicked) → first step.run.
+		if f.TriggerWidgetRef != "" {
+			firstStepID := fmt.Sprintf("%s_step0", f.Ref)
+			fromPort := "submitted"
+			if f.TriggerType == "button_click" {
+				fromPort = "clicked"
+			}
+			edges = append(edges, dslEdge{
+				ID:         fmt.Sprintf("edge_%s_%s_%s_run", f.TriggerWidgetRef, fromPort, firstStepID),
+				FromNodeID: f.TriggerWidgetRef,
+				FromPort:   fromPort,
+				ToNodeID:   firstStepID,
+				ToPort:     "run",
+				EdgeType:   "async",
+			})
+		}
+	}
+
+	return strings.Join(dslParts, "\n"), edges
+}
+
+// fetchAppEdges loads the current dsl_edges from an app row.
+func fetchAppEdges(ctx context.Context, pool *pgxpool.Pool, appID string) ([]dslEdge, error) {
+	var edgesRaw []byte
+	err := pool.QueryRow(ctx, `SELECT dsl_edges FROM apps WHERE id = $1`, appID).Scan(&edgesRaw)
+	if err != nil {
+		return nil, fmt.Errorf("fetch app edges: %w", err)
+	}
+	if len(edgesRaw) == 0 {
+		return nil, nil
+	}
+	var edges []dslEdge
+	if err := json.Unmarshal(edgesRaw, &edges); err != nil {
+		return nil, fmt.Errorf("unmarshal app edges: %w", err)
+	}
+	return edges, nil
 }
 
 const systemPrompt = `You are an AI assistant that generates and modifies user interface definitions for an internal tools platform called Lima.
@@ -363,6 +654,123 @@ Each widget declaration looks like:
 - modal: overlay dialog (not yet supported in the production runtime — do not use)
 - tabs: tabbed container (not yet supported in the production runtime — do not use)
 - markdown: rich text block
+
+## Widget Port Wiring
+
+Widgets communicate by firing named output ports and receiving values on named input ports.
+These connections are expressed as a separate ` + "```edges" + ` JSON block (see below).
+
+### table widget ports
+
+Output ports (fired by user interactions):
+- ` + "`selectedRow`" + ` — the full row object when the user clicks a row (e.g. ` + "`{ id: 1, name: \"Alice\" }`" + `)
+- ` + "`selectedRowIndex`" + ` — the clicked row's zero-based integer index
+- ` + "`selectedRow.<column>`" + ` — the value of a specific column in the clicked row (e.g. ` + "`selectedRow.id`" + `)
+- ` + "`rows`" + ` — the currently displayed rows array (fires when data loads or is filtered)
+
+### form widget ports
+
+Input ports (set by wiring another widget's output to them):
+- ` + "`setValues`" + ` — populate all form fields at once; accepts an object whose keys match field names
+- ` + "`setValues.<field>`" + ` — populate a single named field (e.g. ` + "`setValues.email`" + `)
+- ` + "`reset`" + ` — clear all fields when triggered with any value
+
+Output ports (fired by user interactions):
+- ` + "`submitted`" + ` — fires the form values object when the user clicks Submit
+- ` + "`values`" + ` — same payload as ` + "`submitted`" + `
+- ` + "`<fieldName>`" + ` — fires the individual field value (e.g. ` + "`email`" + `)
+
+### button widget ports
+
+Output ports:
+- ` + "`clicked`" + ` — fires when the user clicks the button
+
+### Edges block format
+
+Emit an ` + "```edges" + ` block **after** the ` + "```aura" + ` block to declare widget-to-widget wiring edges.
+Each edge routes an output port from one widget to an input port of another.
+
+Supported ` + "`edgeType`" + ` values:
+- ` + "`reactive`" + ` — wire a widget output directly to another widget input (e.g. table row → form fields).
+  Use this for most widget-to-widget connections.
+- ` + "`async`" + ` — trigger step execution; used automatically by the workflow engine.
+- ` + "`binding`" + ` — carry SQL parameter values into a step; used automatically by the workflow engine.
+
+` + "```edges" + `
+[
+  {
+    "id": "edge_unique_id",
+    "fromNodeId": "sourceWidgetId",
+    "fromPort": "selectedRow",
+    "toNodeId": "targetWidgetId",
+    "toPort": "setValues",
+    "edgeType": "reactive"
+  }
+]
+` + "```" + `
+
+Rules for edges:
+- ` + "`id`" + ` must be unique. Use ` + "`edge_<fromId>_<fromPort>_<toId>_<toPort>`" + ` as a naming convention.
+- Emit ` + "`edgeType`" + ` as ` + "`\"reactive\"`" + ` for all widget-to-widget data wiring.
+- Only emit edges for explicit wiring you are adding; the workflow engine manages flow edges automatically.
+- Do NOT emit an edges block if there is no widget-to-widget wiring needed.
+
+### Worked example: table row selection populates a form
+
+When the user clicks a row in an orders table, the fields of an edit form are pre-populated with
+that row's data. Include the wiring edge in an ` + "```edges" + ` block:
+
+` + "```aura" + `
+table ordersTable @ root
+  with connector="CONNECTOR_ID"
+       connectorType="postgres"
+       sql="SELECT id, customer, amount FROM orders ORDER BY created_at DESC"
+  style { gridX: "0"; gridY: "0"; gridW: "16"; gridH: "12" }
+;
+form editOrderForm @ root
+  text "Edit Order"
+  with fields="customer,amount"
+       submitLabel="Update Order"
+       onSubmit="{{flow:updateOrder}}"
+  style { gridX: "16"; gridY: "0"; gridW: "8"; gridH: "8" }
+;
+` + "```" + `
+
+` + "```edges" + `
+[
+  {
+    "id": "edge_ordersTable_selectedRow_editOrderForm_setValues",
+    "fromNodeId": "ordersTable",
+    "fromPort": "selectedRow",
+    "toNodeId": "editOrderForm",
+    "toPort": "setValues",
+    "edgeType": "reactive"
+  }
+]
+` + "```" + `
+
+` + "```flows" + `
+[
+  {
+    "ref": "updateOrder",
+    "name": "Update Order",
+    "trigger_type": "form_submit",
+    "trigger_widget_ref": "editOrderForm",
+    "requires_approval": true,
+    "steps": [
+      {
+        "name": "Update order row",
+        "step_type": "mutation",
+        "config": {
+          "connector_id": "CONNECTOR_ID",
+          "query": "UPDATE orders SET customer = :customer, amount = :amount WHERE id = :id",
+          "params": {}
+        }
+      }
+    ]
+  }
+]
+` + "```" + `
 
 ## Data Binding (with clause)
 
@@ -481,6 +889,112 @@ The container is purely a visual layer placed behind other widgets via grid posi
 10. Every form widget MUST include with fields="..." listing at least one field name. A form without fields is invalid.
 11. Every widget's parent must be @ root. Never use a container's id as a parent — all widgets are siblings at the root level. Use grid coordinates to position widgets on top of or next to a container.
 12. Do not use modal or tabs widgets — they are not yet supported in the production runtime.
+
+## Workflow (flow) generation
+
+When the user's request requires a form submission or button click to **write data or run business logic**, you must also generate a workflow. Emit the workflow definitions in a fenced ` + "```flows" + ` code block (JSON array) that appears **after** the ` + "```aura" + ` block.
+
+### When to generate a flows block
+
+Generate a flows block whenever:
+- The app has a form that should write to a database or API (use trigger_type: "form_submit")
+- The app has a button that should trigger an action (use trigger_type: "button_click")
+
+Do NOT generate a flows block for read-only apps (tables, charts, KPI tiles, filters with no write actions).
+
+### DSL reference syntax
+
+In the Aura DSL, refer to a generated workflow by its ` + "`ref`" + ` using the placeholder ` + "`{{flow:refName}}`" + `:
+
+    form myForm @ root
+      with fields="name,email"
+           onSubmit="{{flow:submitContact}}"
+      style { ... }
+    ;
+
+    button myBtn @ root
+      text "Delete"
+      with onClick="{{flow:deleteRecord}}"
+      style { ... }
+    ;
+
+The placeholder will be replaced with the real workflow UUID before the DSL is saved.
+
+If an existing workflow is listed in the context block below, reference its real UUID directly in the DSL instead of using a ` + "`{{flow:...}}`" + ` placeholder.
+
+### Flows block format
+
+` + "```flows" + `
+[
+  {
+    "ref": "shortCamelCaseSlug",
+    "name": "Human readable workflow name",
+    "trigger_type": "form_submit",
+    "trigger_widget_ref": "widgetIdFromDSL",
+    "requires_approval": true,
+    "steps": [
+      {
+        "name": "Step name",
+        "step_type": "mutation",
+        "config": {
+          "connector_id": "<connector-id-from-context>",
+          "query": "INSERT INTO table (col) VALUES (:col)",
+          "params": {}
+        }
+      }
+    ]
+  }
+]
+` + "```" + `
+
+### Flows rules
+
+- ` + "`ref`" + `: short camelCase slug, unique within the response. Used in ` + "`{{flow:ref}}`" + ` DSL placeholders.
+- ` + "`trigger_type`" + `: one of ` + "`form_submit`" + `, ` + "`button_click`" + `, ` + "`manual`" + `. Match the widget type.
+- ` + "`trigger_widget_ref`" + `: the widget id from the DSL that triggers this workflow.
+- ` + "`requires_approval`" + `: set ` + "`true`" + ` for any workflow with mutation steps; set ` + "`false`" + ` for query-only flows.
+- ` + "`step_type`" + `: one of ` + "`query`" + `, ` + "`mutation`" + `, ` + "`condition`" + `, ` + "`approval_gate`" + `, ` + "`notification`" + `.
+- ` + "`config`" + ` for ` + "`query`" + `/` + "`mutation`" + ` steps: ` + "`{ \"connector_id\": \"...\", \"query\": \"...\", \"params\": {} }`" + `.
+- ` + "`config`" + ` for ` + "`condition`" + ` steps: ` + "`{ \"expression\": \"<JS expression>\" }`" + `.
+- ` + "`config`" + ` for ` + "`approval_gate`" + ` steps: ` + "`{ \"description\": \"...\" }`" + `.
+- ` + "`config`" + ` for ` + "`notification`" + ` steps: ` + "`{ \"message\": \"...\" }`" + `.
+- Always use the exact connector IDs from the provided connector list. Do not invent IDs.
+- Generated workflows are created as ` + "`draft`" + ` and require a builder to review and activate them.
+
+### Worked example: form that inserts a row
+
+` + "```aura" + `
+form newOrderForm @ root
+  text "New Order"
+  with fields="customer_name,amount"
+       submitLabel="Place Order"
+       onSubmit="{{flow:placeOrder}}"
+  style { gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
+;
+` + "```" + `
+
+` + "```flows" + `
+[
+  {
+    "ref": "placeOrder",
+    "name": "Place Order",
+    "trigger_type": "form_submit",
+    "trigger_widget_ref": "newOrderForm",
+    "requires_approval": true,
+    "steps": [
+      {
+        "name": "Insert order row",
+        "step_type": "mutation",
+        "config": {
+          "connector_id": "CONNECTOR_ID",
+          "query": "INSERT INTO orders (customer_name, amount) VALUES (:customer_name, :amount)",
+          "params": {}
+        }
+      }
+    ]
+  }
+]
+` + "```" + `
 `
 
 func fetchAppAndMessages(ctx context.Context, pool *pgxpool.Pool, payload GenerationPayload) (appRow, []msgRow, error) {
@@ -548,11 +1062,12 @@ func fetchUserAISettings(ctx context.Context, cfg *config.Config, pool *pgxpool.
 	return settings, nil
 }
 
-func writeAssistantMessage(ctx context.Context, pool *pgxpool.Pool, threadID, content, newDSL string) error {
+func writeAssistantMessage(ctx context.Context, pool *pgxpool.Pool, threadID, content, newDSL string, edges []dslEdge) error {
 	type dslPatch struct {
-		NewSource string `json:"new_source"`
+		NewSource string    `json:"new_source"`
+		NewEdges  []dslEdge `json:"new_edges,omitempty"`
 	}
-	patch, err := json.Marshal(dslPatch{NewSource: newDSL})
+	patch, err := json.Marshal(dslPatch{NewSource: newDSL, NewEdges: edges})
 	if err != nil {
 		return fmt.Errorf("marshal dsl patch: %w", err)
 	}
@@ -564,8 +1079,22 @@ func writeAssistantMessage(ctx context.Context, pool *pgxpool.Pool, threadID, co
 	return nil
 }
 
-func updateAppDSL(ctx context.Context, pool *pgxpool.Pool, appID, newDSL string) error {
-	_, err := pool.Exec(ctx, `UPDATE apps SET dsl_source = $1, updated_at = now() WHERE id = $2`, newDSL, appID)
+func updateAppDSL(ctx context.Context, pool *pgxpool.Pool, appID, newDSL string, edges []dslEdge) error {
+	var edgesBytes []byte
+	if edges != nil {
+		var err error
+		edgesBytes, err = json.Marshal(edges)
+		if err != nil {
+			return fmt.Errorf("marshal dsl_edges: %w", err)
+		}
+	}
+	_, err := pool.Exec(ctx,
+		`UPDATE apps SET
+		    dsl_source = $1,
+		    dsl_edges  = COALESCE($3::jsonb, dsl_edges),
+		    updated_at = now()
+		 WHERE id = $2`,
+		newDSL, appID, edgesBytes)
 	return err
 }
 
@@ -619,12 +1148,18 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			log.Warn("fetch workspace connectors for generation (non-fatal)", zap.Error(connErr))
 		}
 
+		existingWorkflows, wfErr := fetchExistingWorkflows(ctx, pool, payload.AppID)
+		if wfErr != nil {
+			log.Warn("fetch existing workflows for generation (non-fatal)", zap.Error(wfErr))
+		}
+
 		var responseText string
 		switch settings.Provider {
 		case "openai":
 			requestMessages := []chatMessage{
 				{Role: "system", Content: systemPrompt},
 				{Role: "system", Content: buildConnectorContextBlock(connectors)},
+				{Role: "system", Content: buildWorkflowContextBlock(existingWorkflows)},
 				{Role: "system", Content: "Current app DSL:\n```aura\n" + currentDSL + "\n```"},
 			}
 			for index, message := range messages {
@@ -636,7 +1171,7 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			requestMessages = append(requestMessages, chatMessage{Role: "user", Content: latestUserPrompt})
 			responseText, err = callOpenAI(ctx, settings, requestMessages)
 		case "github_copilot":
-			responseText, err = callGitHubCopilot(ctx, settings, buildCopilotPrompt(currentDSL, latestUserPrompt, messages, connectors))
+			responseText, err = callGitHubCopilot(ctx, settings, buildCopilotPrompt(currentDSL, latestUserPrompt, messages, connectors, existingWorkflows))
 		default:
 			err = fmt.Errorf("unsupported ai provider %q", settings.Provider)
 		}
@@ -661,6 +1196,59 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			return nil
 		}
 
+		// Extract and persist AI-generated workflows. Must happen before DSL
+		// validation so that {{flow:ref}} placeholders can be substituted with
+		// real UUIDs, producing a valid DSL document.
+		generatedFlows, flowsErr := extractFlows(responseText)
+		if flowsErr != nil {
+			log.Warn("flows block parse error (non-fatal)", zap.Error(flowsErr))
+		}
+
+		// Extract any explicit widget-to-widget wiring edges the AI emitted.
+		generatedEdges, edgesErr := extractEdges(responseText)
+		if edgesErr != nil {
+			log.Warn("edges block parse error (non-fatal)", zap.Error(edgesErr))
+		}
+
+		var allEdges []dslEdge // nil → keep existing dsl_edges untouched
+		if len(generatedFlows) > 0 || len(generatedEdges) > 0 {
+			// Fetch existing edges once; we'll merge everything into them.
+			existing, existingEdgeErr := fetchAppEdges(ctx, pool, payload.AppID)
+			if existingEdgeErr != nil {
+				log.Warn("fetch existing edges (non-fatal)", zap.Error(existingEdgeErr))
+			}
+			allEdges = existing
+
+			if len(generatedFlows) > 0 {
+				refToID, persistErr := persistGeneratedFlows(ctx, pool, payload.WorkspaceID, payload.AppID, payload.UserID, generatedFlows)
+				if persistErr != nil {
+					log.Warn("persist generated flows (non-fatal)", zap.Error(persistErr))
+				} else if len(refToID) > 0 {
+					newDSL = substituteFlowRefs(newDSL, refToID)
+
+					// Build flow group + step node DSL and async trigger edges.
+					flowNodesDSL, flowEdges := buildFlowNodesAndEdges(generatedFlows, refToID)
+					if flowNodesDSL != "" {
+						newDSL = newDSL + "\n" + flowNodesDSL
+					}
+					allEdges = append(allEdges, flowEdges...)
+
+					log.Info("generated workflows persisted",
+						zap.Int("count", len(refToID)),
+						zap.Int("flow_edges", len(flowEdges)),
+						zap.String("app_id", payload.AppID))
+				}
+			}
+
+			// Append explicit wiring edges emitted by the AI (e.g. table.selectedRow → form.setValues).
+			if len(generatedEdges) > 0 {
+				allEdges = append(allEdges, generatedEdges...)
+				log.Info("applied explicit widget edges",
+					zap.Int("count", len(generatedEdges)),
+					zap.String("app_id", payload.AppID))
+			}
+		}
+
 		// Validation gate: refuse to persist structurally malformed DSL.
 		if err := validateDSL(newDSL); err != nil {
 			log.Warn("candidate DSL is malformed; refusing to persist",
@@ -679,18 +1267,18 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			return err
 		}
 
-		if err := updateAppDSL(ctx, pool, payload.AppID, resultDSL); err != nil {
+		if err := updateAppDSL(ctx, pool, payload.AppID, resultDSL, allEdges); err != nil {
 			log.Error("update app dsl", zap.Error(err))
 			writeErrorMessage(ctx, pool, payload.ThreadID, "failed to save generated layout")
 			return err
 		}
 
-		explanation := strings.TrimSpace(auraBlockRe.ReplaceAllString(responseText, ""))
+		explanation := strings.TrimSpace(auraBlockRe.ReplaceAllString(flowsBlockRe.ReplaceAllString(edgesBlockRe.ReplaceAllString(responseText, ""), ""), ""))
 		if explanation == "" {
 			explanation = "Updated the app layout."
 		}
 
-		if err := writeAssistantMessage(ctx, pool, payload.ThreadID, explanation, resultDSL); err != nil {
+		if err := writeAssistantMessage(ctx, pool, payload.ThreadID, explanation, resultDSL, allEdges); err != nil {
 			log.Error("write assistant message", zap.Error(err))
 			return err
 		}

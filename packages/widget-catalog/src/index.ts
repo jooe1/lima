@@ -82,8 +82,6 @@ export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
   },
   form: {
     fields: { type: 'string', label: 'Fields', description: 'Comma-separated field names (can be empty; add fields using the + button on the canvas)', default: '' },
-    submitLabel: { type: 'string', label: 'Submit label', default: 'Submit' },
-    onSubmit: { type: 'workflow_trigger', label: 'On submit' },
   },
   text: {
     content: { type: 'string', label: 'Content', required: true },
@@ -94,6 +92,8 @@ export const WidgetPropSchemas: Record<WidgetType, PropSchema> = {
     onClick: { type: 'workflow_trigger', label: 'On click' },
     variant: { type: 'string', label: 'Variant', description: 'primary | secondary | danger', default: 'primary' },
     disabled: { type: 'expression', label: 'Disabled', default: 'false' },
+    formRef: { type: 'string', label: 'Form', description: 'Widget ID of a form to read values from on click; leave blank for a standalone button' },
+    formFields: { type: 'string', label: 'Form fields', description: 'Comma-separated field names to include from the form; leave blank to include all fields' },
   },
   chart: {
     type: { type: 'string', label: 'Chart type', description: 'bar', default: 'bar' },
@@ -174,11 +174,10 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     propSchema: WidgetPropSchemas.form,
     dashboardHint: {
       pattern: 'none',
-      description: 'Forms do not consume a query; they produce data on submit.',
+      description: 'Forms collect data; submission is driven by attached Button widgets.',
     },
     ports: [
       { name: 'values', direction: 'output', dataType: 'object', description: 'Current form field values as an object' },
-      { name: 'submitted', direction: 'output', dataType: 'trigger', description: 'Triggered when the form is submitted' },
       { name: '*', direction: 'output', dataType: 'string', description: 'One port per form field, keyed by field name', dynamic: true },
       { name: 'reset', direction: 'input', dataType: 'trigger', description: 'Reset the form to initial values' },
       { name: 'setValues', direction: 'input', dataType: 'object', description: 'Populate form fields programmatically', expandable: true, childKeySource: 'fields' },
