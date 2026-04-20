@@ -385,11 +385,15 @@ func nodeOnlyDSL(src string) string {
 	return src
 }
 
-func buildLayoutCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector, existingWorkflows []existingWorkflowInfo) string {
+func buildLayoutCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector, existingWorkflows []existingWorkflowInfo, plan *appPlan) string {
 	var builder strings.Builder
 	builder.WriteString(buildConnectorContextBlock(connectors))
 	builder.WriteString("\n")
 	builder.WriteString(buildWorkflowContextBlock(existingWorkflows))
+	if planCtx := buildPlanContextBlock(plan); planCtx != "" {
+		builder.WriteString("\n")
+		builder.WriteString(planCtx)
+	}
 	builder.WriteString("\nCurrent app DSL:\n```aura\n")
 	builder.WriteString(nodeOnlyDSL(currentDSL))
 	builder.WriteString("\n```\n\nConversation history:\n")
@@ -406,11 +410,15 @@ func buildLayoutCopilotPrompt(currentDSL, latestUserPrompt string, history []msg
 	return builder.String()
 }
 
-func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector, existingWorkflows []existingWorkflowInfo) string {
+func buildCopilotPrompt(currentDSL, latestUserPrompt string, history []msgRow, connectors []genConnector, existingWorkflows []existingWorkflowInfo, plan *appPlan) string {
 	var builder strings.Builder
 	builder.WriteString(buildConnectorContextBlock(connectors))
 	builder.WriteString("\n")
 	builder.WriteString(buildWorkflowContextBlock(existingWorkflows))
+	if planCtx := buildPlanContextBlock(plan); planCtx != "" {
+		builder.WriteString("\n")
+		builder.WriteString(planCtx)
+	}
 	builder.WriteString("\nCurrent app DSL:\n```aura\n")
 	builder.WriteString(nodeOnlyDSL(currentDSL))
 	builder.WriteString("\n```\n\nConversation history:\n")
@@ -435,13 +443,17 @@ func buildLayoutMessages(
 	history []msgRow,
 	connectors []genConnector,
 	existingWorkflows []existingWorkflowInfo,
+	plan *appPlan,
 ) []chatMessage {
 	msgs := []chatMessage{
 		{Role: "system", Content: layoutSystemPrompt},
 		{Role: "system", Content: buildConnectorContextBlock(connectors)},
 		{Role: "system", Content: buildWorkflowContextBlock(existingWorkflows)},
-		{Role: "system", Content: "Current app DSL:\n```aura\n" + nodeOnlyDSL(currentDSL) + "\n```"},
 	}
+	if planCtx := buildPlanContextBlock(plan); planCtx != "" {
+		msgs = append(msgs, chatMessage{Role: "system", Content: planCtx})
+	}
+	msgs = append(msgs, chatMessage{Role: "system", Content: "Current app DSL:\n```aura\n" + nodeOnlyDSL(currentDSL) + "\n```"})
 	for i, m := range history {
 		if i == len(history)-1 && m.role == "user" {
 			break
@@ -459,16 +471,21 @@ func buildFlowMessages(
 	validatedDSL, latestUserPrompt string,
 	connectors []genConnector,
 	existingWorkflows []existingWorkflowInfo,
+	plan *appPlan,
 ) []chatMessage {
 	portManifest := BuildPortManifest()
-	return []chatMessage{
+	msgs := []chatMessage{
 		{Role: "system", Content: flowSystemPrompt},
 		{Role: "system", Content: buildConnectorContextBlock(connectors)},
 		{Role: "system", Content: buildWorkflowContextBlock(existingWorkflows)},
 		{Role: "system", Content: "## Widget port reference\n\n" + portManifest},
-		{Role: "system", Content: "Finalised widget layout (Stage 1 output):\n```aura\n" + validatedDSL + "\n```"},
-		{Role: "user", Content: "Original user intent: " + latestUserPrompt + "\n\nEmit only the wiring (edges and/or flows blocks) required by the user's intent. If no wiring is needed, respond with a single sentence explaining why."},
 	}
+	if planCtx := buildFlowPlanContextBlock(plan); planCtx != "" {
+		msgs = append(msgs, chatMessage{Role: "system", Content: planCtx})
+	}
+	msgs = append(msgs, chatMessage{Role: "system", Content: "Finalised widget layout (Stage 1 output):\n```aura\n" + validatedDSL + "\n```"})
+	msgs = append(msgs, chatMessage{Role: "user", Content: "Original user intent: " + latestUserPrompt + "\n\nEmit only the wiring (edges and/or flows blocks) required by the user's intent. If no wiring is needed, respond with a single sentence explaining why."})
+	return msgs
 }
 
 // buildFlowCopilotPrompt constructs the Copilot prompt string for the flow
@@ -477,6 +494,7 @@ func buildFlowCopilotPrompt(
 	validatedDSL, latestUserPrompt string,
 	connectors []genConnector,
 	existingWorkflows []existingWorkflowInfo,
+	plan *appPlan,
 ) string {
 	portManifest := BuildPortManifest()
 	var builder strings.Builder
@@ -485,6 +503,10 @@ func buildFlowCopilotPrompt(
 	builder.WriteString(buildWorkflowContextBlock(existingWorkflows))
 	builder.WriteString("\n## Widget port reference\n\n")
 	builder.WriteString(portManifest)
+	if planCtx := buildFlowPlanContextBlock(plan); planCtx != "" {
+		builder.WriteString("\n")
+		builder.WriteString(planCtx)
+	}
 	builder.WriteString("\nFinalised widget layout:\n```aura\n")
 	builder.WriteString(validatedDSL)
 	builder.WriteString("\n```\n\nOriginal user intent: ")
@@ -539,6 +561,231 @@ func buildWorkflowContextBlock(workflows []existingWorkflowInfo) string {
 		fmt.Fprintf(&sb, "- id=%q  name=%q  trigger_type=%s\n", w.id, w.name, w.triggerType)
 	}
 	return sb.String()
+}
+
+// ── Stage 0: planning ─────────────────────────────────────────────────────────
+
+// appPlan is the structured output of Stage 0 (the planning stage). It grounds
+// layout and flow generation in a specific connector and CRUD contract so the
+// model does not have to infer data-source intent from prose alone.
+type appPlan struct {
+	Intent          string   `json:"intent"` // "crud", "read_only", "informational"
+	ConnectorID     string   `json:"connector_id"`
+	ConnectorType   string   `json:"connector_type"`
+	Entity          string   `json:"entity"`
+	FormFields      []string `json:"form_fields"`
+	TableFields     []string `json:"table_fields"`
+	CRUDMode        string   `json:"crud_mode"` // "insert", "update", "upsert"
+	PrimaryKeyField string   `json:"primary_key_field"`
+	WorkflowName    string   `json:"workflow_name"`
+	WorkflowRef     string   `json:"workflow_ref"`
+}
+
+func (p *appPlan) isCRUD() bool {
+	return p != nil && p.Intent == "crud"
+}
+
+// planSystemPrompt is the system prompt for Stage 0 (planning).
+const planSystemPrompt = `You are the planning stage of an AI-driven UI generator for an internal tools platform called Lima.
+
+Your sole output is a single JSON object — no explanation, no markdown, no code fences.
+
+Given a user request and a list of available connectors, decide:
+1. Is this a CRUD (create/update/delete) request, a read-only dashboard, or something else?
+2. If CRUD: which connector best matches the entity being operated on?
+3. Which of that connector's columns belong in the form vs the table?
+
+Output a JSON object with exactly these keys:
+{
+  "intent": "crud" | "read_only" | "informational",
+  "connector_id": "<exact id from the connector list, or empty string>",
+  "connector_type": "<managed | postgres | mysql | mssql | csv | rest | graphql, or empty>",
+  "entity": "<lowercase singular entity name, e.g. order, lead, contact>",
+  "form_fields": ["<column>", ...],
+  "table_fields": ["<column>", ...],
+  "crud_mode": "insert" | "update" | "upsert" | "",
+  "primary_key_field": "<column used as row identifier for update/upsert, or empty>",
+  "workflow_name": "<Human readable name, e.g. Save Order>",
+  "workflow_ref": "<camelCase slug matching workflow_name, e.g. saveOrder>"
+}
+
+Rules:
+- connector_id MUST be an exact id value from the connector list. Never invent one.
+- If the request involves saving, creating, updating, or deleting data and a matching connector exists, set intent to "crud".
+- form_fields and table_fields must be column names from that connector's columns list.
+- If intent is not "crud", set connector_id, form_fields, table_fields, crud_mode, primary_key_field, workflow_name, workflow_ref all to empty string or empty array.
+- For managed connectors: if a column is obviously a primary key (named id, ID, OrderID, row_id, etc.), set crud_mode to "upsert" and primary_key_field to that column. Otherwise set crud_mode to "insert".
+- Output JSON only. No other text before or after.
+`
+
+// buildPlanMessages constructs the message slice for Stage 0 (planning).
+func buildPlanMessages(userPrompt string, connectors []genConnector) []chatMessage {
+	return []chatMessage{
+		{Role: "system", Content: planSystemPrompt},
+		{Role: "system", Content: buildConnectorContextBlock(connectors)},
+		{Role: "user", Content: userPrompt},
+	}
+}
+
+// parsePlanResponse decodes a raw LLM response from Stage 0 into an appPlan.
+// The model may wrap the JSON in markdown fences despite the instruction; this
+// function strips them before parsing.
+func parsePlanResponse(raw string) (*appPlan, error) {
+	raw = strings.TrimSpace(raw)
+	for _, fence := range []string{"```json", "```"} {
+		if strings.HasPrefix(raw, fence) {
+			raw = strings.TrimPrefix(raw, fence)
+		}
+	}
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+	var plan appPlan
+	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+		return nil, fmt.Errorf("parse plan JSON: %w", err)
+	}
+	return &plan, nil
+}
+
+// generatePlan runs Stage 0 and returns a grounded appPlan.
+// Returns nil, nil for unsupported providers.
+func generatePlan(ctx context.Context, settings userAISettings, userPrompt string, connectors []genConnector) (*appPlan, error) {
+	var raw string
+	var err error
+	switch settings.Provider {
+	case "openai":
+		raw, err = callOpenAI(ctx, settings, buildPlanMessages(userPrompt, connectors))
+	case "github_copilot":
+		var sb strings.Builder
+		sb.WriteString(buildConnectorContextBlock(connectors))
+		sb.WriteString("\n\nUser request: ")
+		sb.WriteString(userPrompt)
+		raw, err = callGitHubCopilot(ctx, settings, sb.String(), planSystemPrompt)
+	default:
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parsePlanResponse(raw)
+}
+
+// buildPlanContextBlock renders an appPlan into a concise instruction block
+// injected into the layout-generation prompt.
+func buildPlanContextBlock(plan *appPlan) string {
+	if plan == nil || plan.Intent == "" {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Generation plan — follow exactly\n")
+	fmt.Fprintf(&sb, "intent: %s\n", plan.Intent)
+	if plan.ConnectorID != "" {
+		fmt.Fprintf(&sb, "connector_id: %s\n", plan.ConnectorID)
+		fmt.Fprintf(&sb, "connector_type: %s\n", plan.ConnectorType)
+	}
+	if plan.Entity != "" {
+		fmt.Fprintf(&sb, "entity: %s\n", plan.Entity)
+	}
+	if len(plan.FormFields) > 0 {
+		fmt.Fprintf(&sb, "form_fields: %s\n", strings.Join(plan.FormFields, ", "))
+	}
+	if len(plan.TableFields) > 0 {
+		fmt.Fprintf(&sb, "table_fields: %s\n", strings.Join(plan.TableFields, ", "))
+	}
+	if plan.CRUDMode != "" {
+		fmt.Fprintf(&sb, "crud_mode: %s\n", plan.CRUDMode)
+	}
+	if plan.PrimaryKeyField != "" {
+		fmt.Fprintf(&sb, "primary_key_field: %s\n", plan.PrimaryKeyField)
+	}
+	if plan.WorkflowRef != "" {
+		fmt.Fprintf(&sb, "workflow_ref: %s — use as action {{flow:%s}} on the triggering form or button\n", plan.WorkflowRef, plan.WorkflowRef)
+	}
+	if plan.WorkflowName != "" {
+		fmt.Fprintf(&sb, "workflow_name: %s\n", plan.WorkflowName)
+	}
+	return sb.String()
+}
+
+// buildFlowPlanContextBlock renders an appPlan into a strict constraint block
+// for the flow-generation stage, requiring exact connector binding.
+func buildFlowPlanContextBlock(plan *appPlan) string {
+	if !plan.isCRUD() || plan.ConnectorID == "" {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## REQUIRED: generation plan — follow exactly\n")
+	fmt.Fprintf(&sb, "This is a CRUD app for entity '%s'. You MUST emit a flows block.\n", plan.Entity)
+	fmt.Fprintf(&sb, "Every mutation step config MUST include connector_id: %q\n", plan.ConnectorID)
+	fmt.Fprintf(&sb, "connector_type: %s\n", plan.ConnectorType)
+	if plan.ConnectorType == "managed" {
+		crudMode := plan.CRUDMode
+		if crudMode == "" {
+			crudMode = "insert"
+		}
+		fmt.Fprintf(&sb, "operation: %s\n", crudMode)
+		if plan.PrimaryKeyField != "" {
+			fmt.Fprintf(&sb, "primary_key_field: %s — set row_id to {{input.%s}} in update/upsert/delete steps.\n", plan.PrimaryKeyField, plan.PrimaryKeyField)
+		}
+		if len(plan.FormFields) > 0 {
+			fmt.Fprintf(&sb, "data fields: %s — bind each to {{input.<field>}} in the data map.\n", strings.Join(plan.FormFields, ", "))
+		}
+	}
+	if plan.WorkflowRef != "" {
+		fmt.Fprintf(&sb, "workflow_ref: %s — emit a flow with this exact ref to match the action placeholder in the layout.\n", plan.WorkflowRef)
+	}
+	if plan.WorkflowName != "" {
+		fmt.Fprintf(&sb, "workflow_name: %s\n", plan.WorkflowName)
+	}
+	return sb.String()
+}
+
+// applyPlanToFlows patches AI-generated workflows using the plan to fill in any
+// connector_id and config fields that the model failed to emit. This ensures
+// that even a half-configured mutation step ends up with the correct connector
+// and a usable config.
+func applyPlanToFlows(flows []genWorkflow, plan *appPlan) {
+	if !plan.isCRUD() || plan.ConnectorID == "" {
+		return
+	}
+	for i := range flows {
+		for j := range flows[i].Steps {
+			step := &flows[i].Steps[j]
+			if step.StepType != "mutation" {
+				continue
+			}
+			if step.Config == nil {
+				step.Config = map[string]any{}
+			}
+			// Fill missing connector_id from plan.
+			if cid, _ := step.Config["connector_id"].(string); cid == "" {
+				step.Config["connector_id"] = plan.ConnectorID
+			}
+			// For managed connectors, fill missing operation and data.
+			if plan.ConnectorType == "managed" {
+				if op, _ := step.Config["operation"].(string); op == "" {
+					mode := plan.CRUDMode
+					if mode == "" {
+						mode = "insert"
+					}
+					step.Config["operation"] = mode
+				}
+				if _, ok := step.Config["data"]; !ok && len(plan.FormFields) > 0 {
+					data := make(map[string]any, len(plan.FormFields))
+					for _, f := range plan.FormFields {
+						data[f] = "{{input." + f + "}}"
+					}
+					step.Config["data"] = data
+				}
+				if plan.PrimaryKeyField != "" {
+					if op, _ := step.Config["operation"].(string); op == "update" || op == "upsert" || op == "delete" {
+						if rid, _ := step.Config["row_id"].(string); rid == "" {
+							step.Config["row_id"] = "{{input." + plan.PrimaryKeyField + "}}"
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 // extractFlows parses the AI-generated flows JSON block from the response text.
@@ -672,7 +919,7 @@ func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string) (str
 	var dslParts []string
 	var edges []dslEdge
 
-	for _, f := range flows {
+	for gi, f := range flows {
 		if _, ok := refToID[f.Ref]; !ok {
 			continue
 		}
@@ -686,8 +933,21 @@ func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string) (str
 			name = f.Ref
 		}
 
-		// Flow group node (visual container in the Flow View).
-		dslParts = append(dslParts, fmt.Sprintf("flow:group %s @ root\n  text %q\n;", groupID, name))
+		// Position the group in the flow canvas. Multiple groups are laid out
+		// side-by-side with enough vertical space for their steps.
+		stepCount := len(f.Steps)
+		groupH := 80 + stepCount*140
+		groupX := 520 + gi*380
+		groupY := 40
+
+		// Flow group node (visual container in the Flow View). Uses @ root and
+		// carries its own flowX/Y/W/H positioning via the style clause.
+		dslParts = append(dslParts, fmt.Sprintf(
+			"flow:group %s @ root\n  text %q\n  style { flowX: %q; flowY: %q; flowW: \"300\"; flowH: %q }\n;",
+			groupID, name,
+			fmt.Sprintf("%d", groupX), fmt.Sprintf("%d", groupY),
+			fmt.Sprintf("%d", groupH),
+		))
 
 		// Step nodes + step-to-step edges.
 		prevStepID := ""
@@ -701,8 +961,25 @@ func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string) (str
 			if stepName == "" {
 				stepName = fmt.Sprintf("Step %d", i+1)
 			}
-			dslParts = append(dslParts,
-				fmt.Sprintf("step:%s %s @ %s\n  text %q\n;", stepType, stepNodeID, groupID, stepName))
+
+			// Embed key config fields as with keys so the Flow canvas can
+			// display a config summary (e.g. "connector: conn_abc123") instead
+			// of "Not configured". Only top-level string scalars are inlined;
+			// complex nested objects (data, params) are skipped.
+			withLine := buildStepWithLine(step.Config)
+
+			// Step nodes use @ root in the DSL but carry style.parentGroupId so
+			// the React Flow canvas correctly places them inside the group node.
+			// flowX/flowY are relative to the group's top-left corner.
+			stepX := 30
+			stepY := 60 + i*140
+			dslParts = append(dslParts, fmt.Sprintf(
+				"step:%s %s @ root\n  text %q\n%s  style { parentGroupId: %q; flowX: %q; flowY: %q }\n;",
+				stepType, stepNodeID, stepName,
+				withLine,
+				groupID,
+				fmt.Sprintf("%d", stepX), fmt.Sprintf("%d", stepY),
+			))
 
 			if prevStepID != "" {
 				edges = append(edges, dslEdge{
@@ -736,6 +1013,36 @@ func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string) (str
 	}
 
 	return strings.Join(dslParts, "\n"), edges
+}
+
+// buildStepWithLine produces a DSL "with ..." line from the top-level scalar
+// fields of a step config map. Returns an empty string when there is nothing
+// to embed. Only fields used by the Flow canvas config-summary logic are
+// included (connector_id, operation, sql, row_id). Complex nested values
+// (data, params) are intentionally omitted — they live in the DB config column.
+func buildStepWithLine(config map[string]any) string {
+	if len(config) == 0 {
+		return ""
+	}
+	// Priority order matches what FlowCanvas configSummary reads first.
+	keys := []string{"connector_id", "operation", "sql", "row_id"}
+	var parts []string
+	for _, k := range keys {
+		v, ok := config[k]
+		if !ok {
+			continue
+		}
+		sv, isStr := v.(string)
+		if !isStr || sv == "" {
+			continue
+		}
+		// Escape any embedded double-quotes in the value.
+		parts = append(parts, fmt.Sprintf("%s=%q", k, sv))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  with " + strings.Join(parts, " ") + "\n"
 }
 
 // fetchAppEdges loads the current dsl_edges from an app row.
@@ -786,49 +1093,160 @@ Each widget declaration looks like:
 ## Available Widget Types
 
 - container: flex layout container — use as a visual background or grouping panel.
-  - Required with keys: none.
   - Optional with keys: direction ("row" or "column", default "column"), gap (CSS value, default "16px").
   - All other widgets that sit inside it visually still use @ root as their parent (the canvas is always flat).
   - Do NOT set other widgets' parent to a container id — they must stay @ root.
 - text: static or dynamic label
 - button: clickable action
-	- Use the text clause for the visible label.
-	- If the button should run a workflow, use the action clause with either an existing workflow UUID or a placeholder such as action {{flow:deleteOrder}}.
-- table: data grid
+  - Use the text clause for the visible label.
+  - If the button should run a workflow, use the action clause with either an existing workflow UUID or a placeholder such as action {{flow:deleteOrder}}.
+- table: data grid — MUST include with connector, connectorType, and (for SQL connectors) sql keys.
 - form: data-entry form — MUST include a fields key listing every input field name.
   - Required with keys: fields (comma-separated field names, e.g. with fields="name,email,phone").
-	- Optional style key: submitLabel (button text, default "Submit").
-	- If the form should submit to a workflow, use the action clause with either an existing workflow UUID or a placeholder such as action {{flow:saveOrder}}.
-- chart: chart widget
+  - Optional style key: submitLabel (button text, default "Submit").
+  - If the form should submit to a workflow, use the action clause with either an existing workflow UUID or a placeholder such as action {{flow:saveOrder}}.
+- chart: chart widget — same connector binding keys as table.
 - kpi: single metric display
-- filter: filter control
-- modal: overlay dialog (not yet supported in the production runtime — do not use)
-- tabs: tabbed container (not yet supported in the production runtime — do not use)
+- filter: filter control — can be linked to a table/chart with filterWidgets/filterWidgetColumns on that table.
+- modal: overlay dialog (not yet supported — do not use)
+- tabs: tabbed container (not yet supported — do not use)
 - markdown: rich text block
+
+## Data Binding (connecting widgets to connectors)
+
+### Connecting a table or chart to a data source
+
+Use these with keys to bind a table or chart widget to a connector:
+
+    with connector="<connector-id>"
+         connectorType="<csv|managed|postgres|mysql|mssql|rest|graphql>"
+         sql="<value>"
+
+The meaning of sql depends on the connector type:
+- csv:                  sql must be exactly: SELECT * FROM csv  (required sentinel value)
+- managed:              omit sql entirely; Lima returns all rows from the managed table directly
+- postgres/mysql/mssql: sql is a full SELECT statement, e.g. SELECT id, name, email FROM users ORDER BY created_at DESC
+- rest:                 sql is the endpoint path, e.g. /users or /orders/recent  (not SQL)
+- graphql:              tables cannot be bound to graphql connectors — do not attempt
+
+Always use the exact connector id from the connector list provided in context. Never invent an id.
+
+### Linking a filter widget to a table or chart
+
+Add these with keys to the table or chart (not the filter) to make it react to a filter widget:
+
+    with filterWidgets="<filterId>"           (semicolon-separated for multiple filters)
+         filterWidgetColumns="<columnName>"   (semicolon-separated, same order as filterWidgets)
+
+### Populating a filter widget's dropdown from a connector
+
+Add these with keys to the filter widget itself:
+
+For csv and managed connectors:
+
+    with optionsConnector="<connector-id>"
+         optionsColumn="<column-name>"
+         optionsConnectorType="csv"    (or "managed")
+
+For rest connectors:
+
+    with optionsConnector="<connector-id>"
+         optionsEndpoint="<endpoint-path>"
+         optionsColumn="<field-name>"
+         optionsConnectorType="rest"
 
 ## Workflow trigger placeholders in layout stage
 
 If the user's request includes create/save/update/delete behavior, the triggering form or button MUST include an action placeholder in the layout DSL so the flow stage can resolve it later.
 
-Example:
+    form orderForm @ root
+      with fields="customer,amount"
+      action {{flow:saveOrder}}
+      style { submitLabel: "Save Order"; gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
+    ;
 
-		form orderForm @ root
-			with fields="customer,amount"
-			action {{flow:saveOrder}}
-			style { submitLabel: "Save Order"; gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
-		;
+    button deleteBtn @ root
+      text "Delete"
+      action {{flow:deleteOrder}}
+      style { gridX: "0"; gridY: "11"; gridW: "4"; gridH: "2" }
+    ;
 
 When editing an existing app, preserve a valid action UUID or replace it with a new {{flow:ref}} placeholder only if the requested workflow behavior is changing.
 
-## Response format
+## Worked example: table bound to a managed connector
 
-Return ONLY the Aura DSL inside a fenced code block and optionally a brief explanation before or after it. Do NOT include an edges block or a flows block.
+A table showing all orders from a managed connector:
 
 ` + "```" + `aura
-<your DSL here>
+table ordersTable @ root
+  with connector="conn_abc123"
+       connectorType="managed"
+  style { gridX: "0"; gridY: "0"; gridW: "24"; gridH: "12" }
+;
 ` + "```" + `
 
-If the user's request does not require any layout change (e.g. a pure data-wiring question), return the existing DSL unchanged inside the code block with a brief explanation of why no layout change is needed.
+## Worked example: table bound to a postgres connector
+
+` + "```" + `aura
+table ordersTable @ root
+  with connector="conn_pg001"
+       connectorType="postgres"
+       sql="SELECT id, customer, amount, status FROM orders ORDER BY created_at DESC"
+  style { gridX: "0"; gridY: "0"; gridW: "24"; gridH: "12" }
+;
+` + "```" + `
+
+## Worked example: table with a filter
+
+` + "```" + `aura
+filter statusFilter @ root
+  text "Status"
+  with optionsConnector="conn_abc123"
+       optionsColumn="status"
+       optionsConnectorType="managed"
+  style { gridX: "0"; gridY: "0"; gridW: "6"; gridH: "2" }
+;
+table ordersTable @ root
+  with connector="conn_abc123"
+       connectorType="managed"
+       filterWidgets="statusFilter"
+       filterWidgetColumns="status"
+  style { gridX: "0"; gridY: "2"; gridW: "24"; gridH: "12" }
+;
+` + "```" + `
+
+## Worked example: CRUD app (table + form, clicking a row pre-populates the form)
+
+` + "```" + `aura
+table ordersTable @ root
+  with connector="conn_abc123"
+       connectorType="managed"
+  style { gridX: "0"; gridY: "0"; gridW: "14"; gridH: "14" }
+;
+form editOrderForm @ root
+  text "Edit Order"
+  with fields="customer,amount,status"
+  action {{flow:saveOrder}}
+  style { submitLabel: "Save Order"; gridX: "15"; gridY: "0"; gridW: "9"; gridH: "12" }
+;
+` + "```" + `
+
+## Rules
+
+1. Always return the complete updated DSL document, not just a diff.
+2. Always return the DSL inside a fenced ` + "```" + `aura ... ` + "```" + ` code block.
+3. You may include a short explanation before the code block.
+4. Preserve nodes marked manuallyEdited unless the user explicitly asks to change them.
+5. Keep grid placements non-overlapping. The grid is 24 columns wide.
+6. Keep IDs short and descriptive (e.g. ordersTable, editForm, statusFilter).
+7. Every table or chart MUST include with connector, connectorType (and sql for SQL connectors). A table without a connector binding shows no data.
+8. Every form MUST include with fields="..." listing at least one field name.
+9. Every widget's parent must be @ root. Never use a container's id as a parent.
+10. Do not use modal or tabs widgets — not yet supported.
+11. Do not include an edges block or a flows block — those are handled in the next stage.
+12. Always use exact connector IDs from the provided connector list. Never invent IDs.
+13. If the generation plan specifies connector_id and table_fields, bind the table to that connector and include those columns in the sql SELECT (for SQL connectors) or omit sql (for managed connectors).
+14. If the generation plan specifies form_fields, use exactly those field names in with fields="...".
 `
 
 const flowSystemPrompt = `You are an AI assistant specialised in wiring widgets and workflow steps together for the Lima internal tools platform.
@@ -893,12 +1311,105 @@ Rules:
 - step_type must be one of: query, mutation, condition, approval_gate, notification.
 - The layout stage references workflows through the action clause, e.g. action {{flow:saveOrder}}.
 - If the layout already contains an action {{flow:ref}} placeholder, emit a flow with that exact ref.
-- If the user's intent includes create/save/update/delete behavior and the layout contains a form or button trigger, a flows block is required. Returning only edges is invalid.
+- If the user's intent includes create/save/update/delete behavior and the layout contains a form or button trigger, a flows block is REQUIRED. Returning only edges is invalid.
 - If no workflow is needed, omit the flows block entirely.
+- requires_approval must be true for any flow with mutation steps.
+- Never leave a mutation step without connector_id. Use the exact connector id from the connector list.
+
+### Step config by type
+
+mutation step on a managed connector:
+` + "```" + `json
+{
+  "connector_id": "<exact id from context>",
+  "operation": "insert",
+  "data": { "col1": "{{input.col1}}", "col2": "{{input.col2}}" }
+}
+` + "```" + `
+For update/upsert, also include "row_id": "{{input.<pk_field>}}"
+
+mutation step on a postgres/mysql/mssql connector:
+` + "```" + `json
+{
+  "connector_id": "<exact id from context>",
+  "sql": "INSERT INTO table (col1, col2) VALUES ('{{input.col1}}', '{{input.col2}}')"
+}
+` + "```" + `
+
+query step:
+` + "```" + `json
+{ "connector_id": "<id>", "sql": "SELECT ..." }
+` + "```" + `
+
+condition step:
+` + "```" + `json
+{ "expression": "<JS expression>" }
+` + "```" + `
+
+approval_gate step:
+` + "```" + `json
+{ "description": "Describe what will happen when approved" }
+` + "```" + `
+
+## Worked example: form that inserts into a managed connector
+
+Layout stage emitted:
+` + "```" + `aura
+form newOrderForm @ root
+  text "New Order"
+  with fields="customer,amount"
+  action {{flow:placeOrder}}
+  style { submitLabel: "Place Order"; gridX: "0"; gridY: "0"; gridW: "8"; gridH: "10" }
+;
+` + "```" + `
+
+Correct flows block:
+` + "```flows" + `
+[
+  {
+    "ref": "placeOrder",
+    "name": "Place Order",
+    "trigger_type": "form_submit",
+    "trigger_widget_ref": "newOrderForm",
+    "requires_approval": true,
+    "steps": [
+      {
+        "name": "Insert order row",
+        "step_type": "mutation",
+        "config": {
+          "connector_id": "conn_abc123",
+          "operation": "insert",
+          "data": {
+            "customer": "{{input.customer}}",
+            "amount": "{{input.amount}}"
+          }
+        }
+      }
+    ]
+  }
+]
+` + "```" + `
+
+## Worked example: table row selection pre-populates a form
+
+This requires a reactive edge so clicking a table row sets form field values.
+
+` + "```edges" + `
+[
+  {
+    "id": "edge_ordersTable_selectedRow_editOrderForm_setValues",
+    "fromNodeId": "ordersTable",
+    "fromPort": "selectedRow",
+    "toNodeId": "editOrderForm",
+    "toPort": "setValues",
+    "edgeType": "reactive"
+  }
+]
+` + "```" + `
 
 ## Response format
 
-Return ONLY edges and/or flows blocks (or nothing). Do not explain the layout. A brief one-sentence explanation is acceptable if helpful, but keep it before any code blocks.
+Return ONLY edges and/or flows blocks (or nothing). Do not emit an aura block. A brief one-sentence explanation is acceptable before any code blocks.
 `
 
 const systemPrompt = `You are an AI assistant that generates and modifies user interface definitions for an internal tools platform called Lima.
@@ -1465,9 +1976,29 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			log.Warn("fetch existing workflows for generation (non-fatal)", zap.Error(wfErr))
 		}
 
+		// ── Stage 0: planning ──────────────────────────────────────────────────────
+		// Run a lightweight planning pass to ground layout and flow generation in a
+		// specific connector and CRUD contract. Non-fatal: if planning fails, we
+		// proceed without a plan and fall back to inference-based behavior.
+		var plan *appPlan
+		if len(connectors) > 0 {
+			planResult, planErr := generatePlan(ctx, layoutSettings, latestUserPrompt, connectors)
+			if planErr != nil {
+				log.Warn("plan stage failed (non-fatal)", zap.Error(planErr))
+			} else if planResult != nil {
+				plan = planResult
+				log.Info("plan stage complete",
+					zap.String("intent", plan.Intent),
+					zap.String("entity", plan.Entity),
+					zap.String("connector_id", plan.ConnectorID),
+					zap.String("workflow_ref", plan.WorkflowRef),
+				)
+			}
+		}
+
 		// ── Stage 1: layout ────────────────────────────────────────────────────────
-		layoutMessages := buildLayoutMessages(currentDSL, latestUserPrompt, messages, connectors, existingWorkflows)
-		layoutCopilotPrompt := buildLayoutCopilotPrompt(currentDSL, latestUserPrompt, messages, connectors, existingWorkflows)
+		layoutMessages := buildLayoutMessages(currentDSL, latestUserPrompt, messages, connectors, existingWorkflows, plan)
+		layoutCopilotPrompt := buildLayoutCopilotPrompt(currentDSL, latestUserPrompt, messages, connectors, existingWorkflows, plan)
 		layoutStart := time.Now()
 		layoutResponse, layoutErr := generateLayout(ctx, layoutSettings, layoutMessages, layoutCopilotPrompt)
 		if layoutErr != nil {
@@ -1508,8 +2039,8 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 		// Run the flow model against the validated layout DSL and merge its output
 		// (edges/flows blocks) into responseText so the existing extraction path
 		// processes it transparently.
-		flowMessages := buildFlowMessages(newDSL, latestUserPrompt, connectors, existingWorkflows)
-		flowCopilotPrompt := buildFlowCopilotPrompt(newDSL, latestUserPrompt, connectors, existingWorkflows)
+		flowMessages := buildFlowMessages(newDSL, latestUserPrompt, connectors, existingWorkflows, plan)
+		flowCopilotPrompt := buildFlowCopilotPrompt(newDSL, latestUserPrompt, connectors, existingWorkflows, plan)
 		flowStart := time.Now()
 		flowFailed := false
 		flowResponse, flowErr := generateFlow(ctx, flowSettings, flowMessages, flowCopilotPrompt)
@@ -1547,6 +2078,15 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 		generatedFlows, flowsErr := extractFlows(responseText)
 		if flowsErr != nil {
 			log.Warn("flows block parse error (non-fatal)", zap.Error(flowsErr))
+		}
+
+		// Apply plan-driven corrections to any incomplete mutation steps.
+		applyPlanToFlows(generatedFlows, plan)
+		if plan.isCRUD() && len(generatedFlows) == 0 {
+			log.Warn("CRUD plan produced no workflows — flow stage may have omitted the flows block",
+				zap.String("entity", plan.Entity),
+				zap.String("expected_connector_id", plan.ConnectorID),
+			)
 		}
 
 		// Extract any explicit widget-to-widget wiring edges the AI emitted.
