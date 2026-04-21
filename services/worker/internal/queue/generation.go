@@ -100,12 +100,12 @@ var actionTokenRe = regexp.MustCompile(`(?m)^\s*action\s+([^\s;]+)`)
 
 // genWorkflowStep is the shape the AI emits for a single workflow step.
 type genWorkflowStep struct {
-	Ref               string         `json:"ref,omitempty"`
-	Name              string         `json:"name"`
-	StepType          string         `json:"step_type"`
-	Config            map[string]any `json:"config"`
-	NextStepRef       string         `json:"next_step_ref,omitempty"`
-	FalseBranchStepRef string        `json:"false_branch_step_ref,omitempty"`
+	Ref                string         `json:"ref,omitempty"`
+	Name               string         `json:"name"`
+	StepType           string         `json:"step_type"`
+	Config             map[string]any `json:"config"`
+	NextStepRef        string         `json:"next_step_ref,omitempty"`
+	FalseBranchStepRef string         `json:"false_branch_step_ref,omitempty"`
 }
 
 // genWorkflow is the shape the AI emits for a complete workflow.
@@ -864,8 +864,8 @@ func expandManagedUpsertFlow(flow *genWorkflow, plan *appPlan) {
 
 	flow.Steps = []genWorkflowStep{
 		{
-			Ref: conditionRef,
-			Name: "Existing row?",
+			Ref:      conditionRef,
+			Name:     "Existing row?",
 			StepType: "condition",
 			Config: map[string]any{
 				"left":  "{{input." + plan.PrimaryKeyField + "}}",
