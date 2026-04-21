@@ -96,12 +96,16 @@ func stageSettings(base userAISettings, override string) userAISettings {
 var auraBlockRe = regexp.MustCompile("(?s)```(?:aura)?\\s*\n(.*?)\\s*```")
 var flowsBlockRe = regexp.MustCompile("(?s)```flows\\s*\n(.*?)\\s*```")
 var edgesBlockRe = regexp.MustCompile("(?s)```edges\\s*\n(.*?)\\s*```")
+var actionTokenRe = regexp.MustCompile(`(?m)^\s*action\s+([^\s;]+)`)
 
 // genWorkflowStep is the shape the AI emits for a single workflow step.
 type genWorkflowStep struct {
-	Name     string         `json:"name"`
-	StepType string         `json:"step_type"`
-	Config   map[string]any `json:"config"`
+	Ref               string         `json:"ref,omitempty"`
+	Name              string         `json:"name"`
+	StepType          string         `json:"step_type"`
+	Config            map[string]any `json:"config"`
+	NextStepRef       string         `json:"next_step_ref,omitempty"`
+	FalseBranchStepRef string        `json:"false_branch_step_ref,omitempty"`
 }
 
 // genWorkflow is the shape the AI emits for a complete workflow.
@@ -615,6 +619,7 @@ Rules:
 - form_fields and table_fields must be column names from that connector's columns list.
 - If intent is not "crud", set connector_id, form_fields, table_fields, crud_mode, primary_key_field, workflow_name, workflow_ref all to empty string or empty array.
 - For managed connectors: if a column is obviously a primary key (named id, ID, OrderID, row_id, etc.), set crud_mode to "upsert" and primary_key_field to that column. Otherwise set crud_mode to "insert".
+- For update/upsert CRUD plans, form_fields MUST include primary_key_field so the submitted form values contain the row identifier.
 - Output JSON only. No other text before or after.
 `
 
@@ -643,7 +648,23 @@ func parsePlanResponse(raw string) (*appPlan, error) {
 	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
 		return nil, fmt.Errorf("parse plan JSON: %w", err)
 	}
+	normalizeAppPlan(&plan)
 	return &plan, nil
+}
+
+func normalizeAppPlan(plan *appPlan) {
+	if plan == nil || !plan.isCRUD() || plan.PrimaryKeyField == "" {
+		return
+	}
+	if plan.CRUDMode != "update" && plan.CRUDMode != "upsert" {
+		return
+	}
+	for _, field := range plan.FormFields {
+		if field == plan.PrimaryKeyField {
+			return
+		}
+	}
+	plan.FormFields = append([]string{plan.PrimaryKeyField}, plan.FormFields...)
 }
 
 // generatePlan runs Stage 0 and returns a grounded appPlan.
@@ -696,6 +717,9 @@ func buildPlanContextBlock(plan *appPlan) string {
 	}
 	if plan.PrimaryKeyField != "" {
 		fmt.Fprintf(&sb, "primary_key_field: %s\n", plan.PrimaryKeyField)
+		if plan.CRUDMode == "update" || plan.CRUDMode == "upsert" {
+			fmt.Fprintf(&sb, "For update/upsert forms, include %s in form_fields so the submitted values object carries the row identifier.\n", plan.PrimaryKeyField)
+		}
 	}
 	if plan.WorkflowRef != "" {
 		fmt.Fprintf(&sb, "workflow_ref: %s — use as action {{flow:%s}} on the triggering form or button\n", plan.WorkflowRef, plan.WorkflowRef)
@@ -722,9 +746,17 @@ func buildFlowPlanContextBlock(plan *appPlan) string {
 		if crudMode == "" {
 			crudMode = "insert"
 		}
-		fmt.Fprintf(&sb, "operation: %s\n", crudMode)
+		if crudMode == "upsert" {
+			fmt.Fprintf(&sb, "operation_goal: create_or_update\n")
+			if plan.PrimaryKeyField != "" {
+				fmt.Fprintf(&sb, "For managed connectors, do NOT emit mutation operation \"upsert\". Instead emit a condition step that checks {{input.%s}} and branches to an update step on true and an insert step on false.\n", plan.PrimaryKeyField)
+			}
+		} else {
+			fmt.Fprintf(&sb, "operation: %s\n", crudMode)
+		}
 		if plan.PrimaryKeyField != "" {
-			fmt.Fprintf(&sb, "primary_key_field: %s — set row_id to {{input.%s}} in update/upsert/delete steps.\n", plan.PrimaryKeyField, plan.PrimaryKeyField)
+			fmt.Fprintf(&sb, "primary_key_field: %s — set row_id to {{input.%s}} in update/delete steps.\n", plan.PrimaryKeyField, plan.PrimaryKeyField)
+			fmt.Fprintf(&sb, "For form_submit workflows, the workflow input already is the submitted form values object. No extra prep step is needed before the flow.\n")
 		}
 		if len(plan.FormFields) > 0 {
 			fmt.Fprintf(&sb, "data fields: %s — bind each to {{input.<field>}} in the data map.\n", strings.Join(plan.FormFields, ", "))
@@ -748,6 +780,7 @@ func applyPlanToFlows(flows []genWorkflow, plan *appPlan) {
 		return
 	}
 	for i := range flows {
+		expandManagedUpsertFlow(&flows[i], plan)
 		for j := range flows[i].Steps {
 			step := &flows[i].Steps[j]
 			if step.StepType != "mutation" {
@@ -764,20 +797,16 @@ func applyPlanToFlows(flows []genWorkflow, plan *appPlan) {
 			if plan.ConnectorType == "managed" {
 				if op, _ := step.Config["operation"].(string); op == "" {
 					mode := plan.CRUDMode
-					if mode == "" {
+					if mode == "" || mode == "upsert" {
 						mode = "insert"
 					}
 					step.Config["operation"] = mode
 				}
 				if _, ok := step.Config["data"]; !ok && len(plan.FormFields) > 0 {
-					data := make(map[string]any, len(plan.FormFields))
-					for _, f := range plan.FormFields {
-						data[f] = "{{input." + f + "}}"
-					}
-					step.Config["data"] = data
+					step.Config["data"] = buildManagedMutationData(plan)
 				}
 				if plan.PrimaryKeyField != "" {
-					if op, _ := step.Config["operation"].(string); op == "update" || op == "upsert" || op == "delete" {
+					if op, _ := step.Config["operation"].(string); op == "update" || op == "delete" {
 						if rid, _ := step.Config["row_id"].(string); rid == "" {
 							step.Config["row_id"] = "{{input." + plan.PrimaryKeyField + "}}"
 						}
@@ -785,6 +814,79 @@ func applyPlanToFlows(flows []genWorkflow, plan *appPlan) {
 				}
 			}
 		}
+	}
+}
+
+func buildManagedMutationData(plan *appPlan) map[string]any {
+	data := make(map[string]any, len(plan.FormFields))
+	for _, field := range plan.FormFields {
+		data[field] = "{{input." + field + "}}"
+	}
+	return data
+}
+
+func cloneConfig(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return map[string]any{}
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func expandManagedUpsertFlow(flow *genWorkflow, plan *appPlan) {
+	if plan == nil || plan.ConnectorType != "managed" || plan.CRUDMode != "upsert" || plan.PrimaryKeyField == "" {
+		return
+	}
+	if len(flow.Steps) != 1 || flow.Steps[0].StepType != "mutation" {
+		return
+	}
+	base := flow.Steps[0]
+	baseConfig := cloneConfig(base.Config)
+	if _, ok := baseConfig["data"]; !ok && len(plan.FormFields) > 0 {
+		baseConfig["data"] = buildManagedMutationData(plan)
+	}
+	baseConfig["connector_id"] = plan.ConnectorID
+
+	conditionRef := flow.Ref + "_hasExistingRow"
+	updateRef := flow.Ref + "_update"
+	insertRef := flow.Ref + "_insert"
+
+	updateConfig := cloneConfig(baseConfig)
+	updateConfig["operation"] = "update"
+	updateConfig["row_id"] = "{{input." + plan.PrimaryKeyField + "}}"
+
+	insertConfig := cloneConfig(baseConfig)
+	insertConfig["operation"] = "insert"
+	delete(insertConfig, "row_id")
+
+	flow.Steps = []genWorkflowStep{
+		{
+			Ref: conditionRef,
+			Name: "Existing row?",
+			StepType: "condition",
+			Config: map[string]any{
+				"left":  "{{input." + plan.PrimaryKeyField + "}}",
+				"op":    "neq",
+				"right": "",
+			},
+			NextStepRef:        updateRef,
+			FalseBranchStepRef: insertRef,
+		},
+		{
+			Ref:      updateRef,
+			Name:     "Update row",
+			StepType: "mutation",
+			Config:   updateConfig,
+		},
+		{
+			Ref:      insertRef,
+			Name:     "Insert row",
+			StepType: "mutation",
+			Config:   insertConfig,
+		},
 	}
 }
 
@@ -837,7 +939,8 @@ func extractEdges(content string) ([]dslEdge, error) {
 // ref → real UUID so callers can substitute {{flow:ref}} placeholders in DSL.
 func persistGeneratedFlows(ctx context.Context, pool *pgxpool.Pool, workspaceID, appID, userID string, flows []genWorkflow) (map[string]string, error) {
 	refToID := make(map[string]string, len(flows))
-	for _, f := range flows {
+	for fi := range flows {
+		f := &flows[fi]
 		if strings.TrimSpace(f.Ref) == "" || strings.TrimSpace(f.Name) == "" {
 			continue
 		}
@@ -877,6 +980,8 @@ func persistGeneratedFlows(ctx context.Context, pool *pgxpool.Pool, workspaceID,
 		}
 		refToID[f.Ref] = wfID
 
+		stepRefToID := make(map[string]string, len(f.Steps))
+		stepIDsByIndex := make([]string, len(f.Steps))
 		for i, step := range f.Steps {
 			if !validStepTypes[step.StepType] {
 				continue
@@ -889,13 +994,47 @@ func persistGeneratedFlows(ctx context.Context, pool *pgxpool.Pool, workspaceID,
 			if err != nil {
 				cfgBytes = []byte("{}")
 			}
-			if _, err := pool.Exec(ctx, `
+			var stepID string
+			if err := pool.QueryRow(ctx, `
 				INSERT INTO workflow_steps
 				    (workflow_id, step_order, name, step_type, config, ai_generated)
-				VALUES ($1,$2,$3,$4,$5,true)`,
+				VALUES ($1,$2,$3,$4,$5,true)
+				RETURNING id`,
 				wfID, i, name, step.StepType, cfgBytes,
-			); err != nil {
+			).Scan(&stepID); err != nil {
 				return nil, fmt.Errorf("insert step %d for workflow %q: %w", i, f.Ref, err)
+			}
+			stepIDsByIndex[i] = stepID
+			stepRef := strings.TrimSpace(step.Ref)
+			if stepRef == "" {
+				stepRef = fmt.Sprintf("%s_step_%d", f.Ref, i)
+			}
+			stepRefToID[stepRef] = stepID
+		}
+
+		for i, step := range f.Steps {
+			if !validStepTypes[step.StepType] || stepIDsByIndex[i] == "" {
+				continue
+			}
+			var nextStepID *string
+			if targetID, ok := stepRefToID[strings.TrimSpace(step.NextStepRef)]; ok {
+				nextStepID = &targetID
+			}
+			var falseBranchStepID *string
+			if targetID, ok := stepRefToID[strings.TrimSpace(step.FalseBranchStepRef)]; ok {
+				falseBranchStepID = &targetID
+			}
+			if nextStepID == nil && falseBranchStepID == nil {
+				continue
+			}
+			if _, err := pool.Exec(ctx, `
+				UPDATE workflow_steps
+				SET next_step_id = $2,
+				    false_branch_step_id = $3
+				WHERE id = $1`,
+				stepIDsByIndex[i], nextStepID, falseBranchStepID,
+			); err != nil {
+				return nil, fmt.Errorf("link step branches for workflow %q: %w", f.Ref, err)
 			}
 		}
 	}
@@ -910,12 +1049,94 @@ func substituteFlowRefs(dsl string, refToID map[string]string) string {
 	return dsl
 }
 
+// deriveActionWidgetRefs scans DSL statements and returns action token -> widget
+// id for nodes that declare an action clause.
+func deriveActionWidgetRefs(dsl string) map[string]string {
+	stmts, order, err := parseDSLStatements(dsl)
+	if err != nil || len(order) == 0 {
+		return nil
+	}
+
+	result := make(map[string]string)
+	for _, nodeID := range order {
+		stmt := stmts[nodeID]
+		match := actionTokenRe.FindStringSubmatch(stmt)
+		if len(match) != 2 {
+			continue
+		}
+		result[match[1]] = nodeID
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// reconcileGeneratedFlowTriggerRefs aligns generated flow trigger widget refs
+// with the authoritative layout DSL before workflows are persisted.
+func reconcileGeneratedFlowTriggerRefs(flows []genWorkflow, dsl string) {
+	actionToWidget := deriveActionWidgetRefs(dsl)
+	if len(actionToWidget) == 0 {
+		return
+	}
+	for i := range flows {
+		token := "{{flow:" + flows[i].Ref + "}}"
+		if widgetID := actionToWidget[token]; widgetID != "" {
+			flows[i].TriggerWidgetRef = widgetID
+		}
+	}
+}
+
+// deriveTriggerWidgets scans a substituted DSL (where {{flow:ref}} has already
+// been replaced with real UUIDs) for `action <uuid>` clauses and returns a map
+// of workflow UUID → triggering widget ID. This is used as a reliable fallback
+// when the AI did not emit trigger_widget_ref, or emitted the wrong value.
+func deriveTriggerWidgets(dsl string, refToID map[string]string) map[string]string {
+	actionToWidget := deriveActionWidgetRefs(dsl)
+	if len(actionToWidget) == 0 {
+		return nil
+	}
+
+	result := make(map[string]string)
+	for _, wfUUID := range refToID {
+		if widgetID := actionToWidget[wfUUID]; widgetID != "" {
+			result[wfUUID] = widgetID
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func defaultAsyncSourcePort(stepType string) string {
+	switch stepType {
+	case "query":
+		return "result"
+	case "mutation":
+		return "result"
+	case "condition":
+		return "trueBranch"
+	case "approval_gate":
+		return "approved"
+	case "notification":
+		return "sent"
+	case "transform":
+		return "output"
+	case "http":
+		return "ok"
+	default:
+		return "result"
+	}
+}
+
 // buildFlowNodesAndEdges generates Aura DSL statements (flow:group + step:*
-// nodes) and async edges for every persisted workflow. The DSL is appended to
-// the widget DSL so the Flow View canvas can render the step nodes. The edges
-// wire each widget's submit/click output port to the first step's "run" input,
-// and connect consecutive steps to each other.
-func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string) (string, []dslEdge) {
+// nodes) and async edges for every persisted workflow. The dsl parameter is
+// the substituted layout DSL ({{flow:ref}} already replaced) used to derive
+// trigger widget refs when the AI omitted trigger_widget_ref.
+func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string, dsl string) (string, []dslEdge) {
+	// Derive trigger widgets from the DSL as a reliable fallback.
+	derived := deriveTriggerWidgets(dsl, refToID)
 	var dslParts []string
 	var edges []dslEdge
 
@@ -950,7 +1171,15 @@ func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string) (str
 		))
 
 		// Step nodes + step-to-step edges.
-		prevStepID := ""
+		stepRefToNodeID := make(map[string]string, len(f.Steps))
+		for i, step := range f.Steps {
+			stepNodeID := fmt.Sprintf("%s_step%d", f.Ref, i)
+			stepRef := strings.TrimSpace(step.Ref)
+			if stepRef == "" {
+				stepRef = fmt.Sprintf("%s_step_%d", f.Ref, i)
+			}
+			stepRefToNodeID[stepRef] = stepNodeID
+		}
 		for i, step := range f.Steps {
 			stepNodeID := fmt.Sprintf("%s_step%d", f.Ref, i)
 			stepType := step.StepType
@@ -980,30 +1209,91 @@ func buildFlowNodesAndEdges(flows []genWorkflow, refToID map[string]string) (str
 				groupID,
 				fmt.Sprintf("%d", stepX), fmt.Sprintf("%d", stepY),
 			))
+		}
+		for i, step := range f.Steps {
+			stepNodeID := fmt.Sprintf("%s_step%d", f.Ref, i)
+			stepType := step.StepType
+			if !validStepTypes[stepType] {
+				stepType = "query"
+			}
+			defaultPort := defaultAsyncSourcePort(stepType)
 
-			if prevStepID != "" {
+			if step.StepType == "condition" {
+				if targetID, ok := stepRefToNodeID[strings.TrimSpace(step.NextStepRef)]; ok {
+					edges = append(edges, dslEdge{
+						ID:         fmt.Sprintf("edge_%s_trueBranch_%s_run", stepNodeID, targetID),
+						FromNodeID: stepNodeID,
+						FromPort:   "trueBranch",
+						ToNodeID:   targetID,
+						ToPort:     "run",
+						EdgeType:   "async",
+					})
+				} else if i+1 < len(f.Steps) {
+					targetID := fmt.Sprintf("%s_step%d", f.Ref, i+1)
+					edges = append(edges, dslEdge{
+						ID:         fmt.Sprintf("edge_%s_trueBranch_%s_run", stepNodeID, targetID),
+						FromNodeID: stepNodeID,
+						FromPort:   "trueBranch",
+						ToNodeID:   targetID,
+						ToPort:     "run",
+						EdgeType:   "async",
+					})
+				}
+				if targetID, ok := stepRefToNodeID[strings.TrimSpace(step.FalseBranchStepRef)]; ok {
+					edges = append(edges, dslEdge{
+						ID:         fmt.Sprintf("edge_%s_falseBranch_%s_run", stepNodeID, targetID),
+						FromNodeID: stepNodeID,
+						FromPort:   "falseBranch",
+						ToNodeID:   targetID,
+						ToPort:     "run",
+						EdgeType:   "async",
+					})
+				}
+				continue
+			}
+
+			if targetID, ok := stepRefToNodeID[strings.TrimSpace(step.NextStepRef)]; ok {
 				edges = append(edges, dslEdge{
-					ID:         fmt.Sprintf("edge_%s_output_%s_run", prevStepID, stepNodeID),
-					FromNodeID: prevStepID,
-					FromPort:   "output",
-					ToNodeID:   stepNodeID,
+					ID:         fmt.Sprintf("edge_%s_%s_%s_run", stepNodeID, defaultPort, targetID),
+					FromNodeID: stepNodeID,
+					FromPort:   defaultPort,
+					ToNodeID:   targetID,
+					ToPort:     "run",
+					EdgeType:   "async",
+				})
+			} else if i+1 < len(f.Steps) {
+				targetID := fmt.Sprintf("%s_step%d", f.Ref, i+1)
+				edges = append(edges, dslEdge{
+					ID:         fmt.Sprintf("edge_%s_%s_%s_run", stepNodeID, defaultPort, targetID),
+					FromNodeID: stepNodeID,
+					FromPort:   defaultPort,
+					ToNodeID:   targetID,
 					ToPort:     "run",
 					EdgeType:   "async",
 				})
 			}
-			prevStepID = stepNodeID
 		}
 
-		// Widget trigger edge: widget.submitted (or .clicked) → first step.run.
-		if f.TriggerWidgetRef != "" {
+		// Widget trigger edge: form.values / button.clicked → first step.run.
+		// Use the AI-provided TriggerWidgetRef when available, falling back to
+		// the widget that has `action <workflowUUID>` in the DSL.
+		triggerRef := f.TriggerWidgetRef
+		wfUUID := refToID[f.Ref]
+		if triggerRef == "" && wfUUID != "" {
+			triggerRef = derived[wfUUID]
+		}
+		if triggerRef != "" {
 			firstStepID := fmt.Sprintf("%s_step0", f.Ref)
-			fromPort := "submitted"
+			// The form widget fires its current values on submit via the "values"
+			// output port (the form has no "submitted" port in the widget catalog).
+			// Buttons fire via "clicked".
+			fromPort := "values"
 			if f.TriggerType == "button_click" {
 				fromPort = "clicked"
 			}
 			edges = append(edges, dslEdge{
-				ID:         fmt.Sprintf("edge_%s_%s_%s_run", f.TriggerWidgetRef, fromPort, firstStepID),
-				FromNodeID: f.TriggerWidgetRef,
+				ID:         fmt.Sprintf("edge_%s_%s_%s_run", triggerRef, fromPort, firstStepID),
+				FromNodeID: triggerRef,
 				FromPort:   fromPort,
 				ToNodeID:   firstStepID,
 				ToPort:     "run",
@@ -1105,6 +1395,7 @@ Each widget declaration looks like:
   - Required with keys: fields (comma-separated field names, e.g. with fields="name,email,phone").
   - Optional style key: submitLabel (button text, default "Submit").
   - If the form should submit to a workflow, use the action clause with either an existing workflow UUID or a placeholder such as action {{flow:saveOrder}}.
+	- For update/upsert CRUD forms, include the primary key field in fields so the submit values object contains the row identifier.
 - chart: chart widget — same connector binding keys as table.
 - kpi: single metric display
 - filter: filter control — can be linked to a table/chart with filterWidgets/filterWidgetColumns on that table.
@@ -1225,7 +1516,7 @@ table ordersTable @ root
 ;
 form editOrderForm @ root
   text "Edit Order"
-  with fields="customer,amount,status"
+	with fields="id,customer,amount,status"
   action {{flow:saveOrder}}
   style { submitLabel: "Save Order"; gridX: "15"; gridY: "0"; gridW: "9"; gridH: "12" }
 ;
@@ -1281,6 +1572,9 @@ Rules:
 - id must be unique and follow the naming convention above.
 - fromNodeId and toNodeId must be widget IDs that exist in the layout above.
 - fromPort must be an output port and toPort must be an input port listed in the port reference.
+- The edges block is an array, not a single connection. Emit as many edge objects as needed.
+- A single widget may participate in multiple edges at once, as a source and/or as a target. Fan-out and fan-in are both valid.
+- Do not collapse several required connections into one edge. If one widget needs to drive two targets, emit two separate edge objects.
 - Only emit an edges block if explicit wiring is needed. If not, omit it entirely.
 
 ## Workflow definition (flows block)
@@ -1297,9 +1591,12 @@ Emit a flows block only when the user's intent requires persisting data to a con
     "requires_approval": true,
     "steps": [
       {
+				"ref": "stepRef",
         "name": "Step name",
         "step_type": "query|mutation|condition|approval_gate|notification",
-        "config": {}
+				"config": {},
+				"next_step_ref": "nextStepRef",
+				"false_branch_step_ref": "falseStepRef"
       }
     ]
   }
@@ -1315,6 +1612,12 @@ Rules:
 - If no workflow is needed, omit the flows block entirely.
 - requires_approval must be true for any flow with mutation steps.
 - Never leave a mutation step without connector_id. Use the exact connector id from the connector list.
+- Use ` + "`ref`" + ` on steps whenever another step branches to them.
+- Use ` + "`next_step_ref`" + ` to point to the success / true branch target.
+- Use ` + "`false_branch_step_ref`" + ` only on condition steps.
+- For ` + "`form_submit`" + ` flows, the workflow input already is the submitted form values object. Do not add a prep step just to expose form values; use ` + "`{{input.field}}`" + ` directly.
+- Managed connector mutation operations are only ` + "`insert`" + `, ` + "`update`" + `, or ` + "`delete`" + `. Do NOT emit ` + "`upsert`" + ` as a mutation operation.
+- If the goal is create-or-update on a managed connector, emit a condition step that checks whether the input row id is present, then branch to an update step on true and an insert step on false.
 
 ### Step config by type
 
@@ -1343,7 +1646,7 @@ query step:
 
 condition step:
 ` + "```" + `json
-{ "expression": "<JS expression>" }
+{ "left": "{{input.id}}", "op": "neq", "right": "" }
 ` + "```" + `
 
 approval_gate step:
@@ -1404,6 +1707,89 @@ This requires a reactive edge so clicking a table row sets form field values.
     "toPort": "setValues",
     "edgeType": "reactive"
   }
+]
+` + "```" + `
+
+## Worked example: one widget drives multiple edges
+
+If selecting a row should both populate a form and refresh a details panel, emit two edges. The same source node can appear multiple times in the array.
+
+` + "```edges" + `
+[
+	{
+		"id": "edge_ordersTable_selectedRow_editOrderForm_setValues",
+		"fromNodeId": "ordersTable",
+		"fromPort": "selectedRow",
+		"toNodeId": "editOrderForm",
+		"toPort": "setValues",
+		"edgeType": "reactive"
+	},
+	{
+		"id": "edge_ordersTable_selectedRow_orderDetails_setContent",
+		"fromNodeId": "ordersTable",
+		"fromPort": "selectedRow",
+		"toNodeId": "orderDetails",
+		"toPort": "setContent",
+		"edgeType": "reactive"
+	}
+]
+` + "```" + `
+
+## Worked example: managed connector create-or-update flow
+
+When the same form must create a new managed row or update an existing one, do not use a mutation operation named ` + "`upsert`" + `. Emit a condition step and branch to separate update and insert steps.
+The triggering form must include the primary key field in ` + "`with fields=...`" + ` so ` + "`{{input.id}}`" + ` is present on submit.
+
+` + "```flows" + `
+[
+	{
+		"ref": "saveOrder",
+		"name": "Save Order",
+		"trigger_type": "form_submit",
+		"trigger_widget_ref": "orderForm",
+		"requires_approval": true,
+		"steps": [
+			{
+				"ref": "hasExistingRow",
+				"name": "Existing row?",
+				"step_type": "condition",
+				"config": {
+					"left": "{{input.id}}",
+					"op": "neq",
+					"right": ""
+				},
+				"next_step_ref": "updateOrder",
+				"false_branch_step_ref": "insertOrder"
+			},
+			{
+				"ref": "updateOrder",
+				"name": "Update order row",
+				"step_type": "mutation",
+				"config": {
+					"connector_id": "conn_abc123",
+					"operation": "update",
+					"row_id": "{{input.id}}",
+					"data": {
+						"customer": "{{input.customer}}",
+						"amount": "{{input.amount}}"
+					}
+				}
+			},
+			{
+				"ref": "insertOrder",
+				"name": "Insert order row",
+				"step_type": "mutation",
+				"config": {
+					"connector_id": "conn_abc123",
+					"operation": "insert",
+					"data": {
+						"customer": "{{input.customer}}",
+						"amount": "{{input.amount}}"
+					}
+				}
+			}
+		]
+	}
 ]
 ` + "```" + `
 
@@ -2105,6 +2491,8 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			allEdges = existing
 
 			if len(generatedFlows) > 0 {
+				reconcileGeneratedFlowTriggerRefs(generatedFlows, newDSL)
+
 				refToID, persistErr := persistGeneratedFlows(ctx, pool, payload.WorkspaceID, payload.AppID, payload.UserID, generatedFlows)
 				if persistErr != nil {
 					log.Warn("persist generated flows (non-fatal)", zap.Error(persistErr))
@@ -2112,7 +2500,7 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 					newDSL = substituteFlowRefs(newDSL, refToID)
 
 					// Build flow group + step node DSL and async trigger edges.
-					flowNodesDSL, flowEdges := buildFlowNodesAndEdges(generatedFlows, refToID)
+					flowNodesDSL, flowEdges := buildFlowNodesAndEdges(generatedFlows, refToID, newDSL)
 					if flowNodesDSL != "" {
 						newDSL = newDSL + "\n" + flowNodesDSL
 					}

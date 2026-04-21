@@ -5,6 +5,87 @@ import (
 	"testing"
 )
 
+func TestParsePlanResponse_upsertAddsPrimaryKeyToFormFields(t *testing.T) {
+	t.Parallel()
+
+	plan, err := parsePlanResponse(`{
+		"intent": "crud",
+		"connector_id": "conn_orders",
+		"connector_type": "managed",
+		"entity": "order",
+		"form_fields": ["customer", "amount"],
+		"table_fields": ["id", "customer", "amount"],
+		"crud_mode": "upsert",
+		"primary_key_field": "id",
+		"workflow_name": "Save Order",
+		"workflow_ref": "saveOrder"
+	}`)
+	if err != nil {
+		t.Fatalf("parsePlanResponse() error = %v", err)
+	}
+	if len(plan.FormFields) != 3 {
+		t.Fatalf("len(form_fields) = %d, want 3 (%v)", len(plan.FormFields), plan.FormFields)
+	}
+	if plan.FormFields[0] != "id" {
+		t.Fatalf("form_fields[0] = %q, want id (%v)", plan.FormFields[0], plan.FormFields)
+	}
+}
+
+func TestApplyPlanToFlows_managedUpsertExpandsSingleMutation(t *testing.T) {
+	t.Parallel()
+
+	flows := []genWorkflow{
+		{
+			Ref:         "saveOrder",
+			Name:        "Save Order",
+			TriggerType: "form_submit",
+			Steps: []genWorkflowStep{{
+				Name:     "Upsert order row",
+				StepType: "mutation",
+				Config:   map[string]any{},
+			}},
+		},
+	}
+	plan := &appPlan{
+		Intent:          "crud",
+		ConnectorID:     "conn_orders",
+		ConnectorType:   "managed",
+		FormFields:      []string{"id", "customer", "amount"},
+		CRUDMode:        "upsert",
+		PrimaryKeyField: "id",
+	}
+
+	applyPlanToFlows(flows, plan)
+
+	if len(flows[0].Steps) != 3 {
+		t.Fatalf("len(steps) = %d, want 3", len(flows[0].Steps))
+	}
+	cond := flows[0].Steps[0]
+	if cond.StepType != "condition" {
+		t.Fatalf("step0 type = %q, want condition", cond.StepType)
+	}
+	if cond.Config["left"] != "{{input.id}}" || cond.Config["op"] != "neq" {
+		t.Fatalf("condition config = %+v, want left={{input.id}} op=neq", cond.Config)
+	}
+	if cond.NextStepRef == "" || cond.FalseBranchStepRef == "" {
+		t.Fatalf("condition branches missing: %+v", cond)
+	}
+	updateStep := flows[0].Steps[1]
+	if got, _ := updateStep.Config["operation"].(string); got != "update" {
+		t.Fatalf("update operation = %q, want update", got)
+	}
+	if got, _ := updateStep.Config["row_id"].(string); got != "{{input.id}}" {
+		t.Fatalf("update row_id = %q, want {{input.id}}", got)
+	}
+	insertStep := flows[0].Steps[2]
+	if got, _ := insertStep.Config["operation"].(string); got != "insert" {
+		t.Fatalf("insert operation = %q, want insert", got)
+	}
+	if _, ok := insertStep.Config["row_id"]; ok {
+		t.Fatalf("insert step should not include row_id: %+v", insertStep.Config)
+	}
+}
+
 // ---- extractFlows -----------------------------------------------------------
 
 func TestExtractFlows_noBlock(t *testing.T) {
@@ -17,6 +98,43 @@ func TestExtractFlows_noBlock(t *testing.T) {
 	}
 	if flows != nil {
 		t.Fatalf("expected nil flows, got %v", flows)
+	}
+}
+
+func TestBuildFlowNodesAndEdges_conditionBranchesUseRefs(t *testing.T) {
+	t.Parallel()
+
+	flows := []genWorkflow{
+		{
+			Ref:         "saveOrder",
+			Name:        "Save Order",
+			TriggerType: "form_submit",
+			Steps: []genWorkflowStep{
+				{
+					Ref:                "hasExistingRow",
+					Name:               "Existing row?",
+					StepType:           "condition",
+					Config:             map[string]any{"left": "{{input.id}}", "op": "neq", "right": ""},
+					NextStepRef:        "updateOrder",
+					FalseBranchStepRef: "insertOrder",
+				},
+				{Ref: "updateOrder", Name: "Update row", StepType: "mutation", Config: map[string]any{"operation": "update"}},
+				{Ref: "insertOrder", Name: "Insert row", StepType: "mutation", Config: map[string]any{"operation": "insert"}},
+			},
+		},
+	}
+	refToID := map[string]string{"saveOrder": "uuid-wf"}
+
+	_, edges := buildFlowNodesAndEdges(flows, refToID, "")
+
+	if len(edges) != 3 {
+		t.Fatalf("expected 3 edges, got %d: %+v", len(edges), edges)
+	}
+	if edges[0].FromPort != "trueBranch" || edges[0].ToNodeID != "saveOrder_step1" {
+		t.Fatalf("true branch edge = %+v, want trueBranch -> saveOrder_step1", edges[0])
+	}
+	if edges[1].FromPort != "falseBranch" || edges[1].ToNodeID != "saveOrder_step2" {
+		t.Fatalf("false branch edge = %+v, want falseBranch -> saveOrder_step2", edges[1])
 	}
 }
 
@@ -131,6 +249,21 @@ button b1 @ root
 	}
 }
 
+func TestReconcileGeneratedFlowTriggerRefs_fromLayoutAction(t *testing.T) {
+	t.Parallel()
+
+	flows := []genWorkflow{{Ref: "placeOrder", Name: "Place Order", TriggerType: "form_submit"}}
+	dsl := `form orderForm @ root
+  action {{flow:placeOrder}}
+;`
+
+	reconcileGeneratedFlowTriggerRefs(flows, dsl)
+
+	if flows[0].TriggerWidgetRef != "orderForm" {
+		t.Fatalf("trigger_widget_ref = %q, want orderForm", flows[0].TriggerWidgetRef)
+	}
+}
+
 // ---- extractEdges -----------------------------------------------------------
 
 func TestExtractEdges_noBlock(t *testing.T) {
@@ -215,7 +348,7 @@ func TestBuildFlowNodesAndEdges_singleStepForm(t *testing.T) {
 	}
 	refToID := map[string]string{"placeOrder": "uuid-wf"}
 
-	dsl, edges := buildFlowNodesAndEdges(flows, refToID)
+	dsl, edges := buildFlowNodesAndEdges(flows, refToID, "")
 
 	// DSL should contain a flow:group and a step:mutation
 	if !strings.Contains(dsl, "flow:group placeOrder_group") {
@@ -228,18 +361,21 @@ func TestBuildFlowNodesAndEdges_singleStepForm(t *testing.T) {
 	if !strings.Contains(dsl, "flow:group placeOrder_group @ root") {
 		t.Errorf("flow group parent should be @ root; got:\n%s", dsl)
 	}
-	// Step parent must be the group
-	if !strings.Contains(dsl, "step:mutation placeOrder_step0 @ placeOrder_group") {
-		t.Errorf("step parent should be @ placeOrder_group; got:\n%s", dsl)
+	// Step parent stays root; group membership is carried in style.parentGroupId.
+	if !strings.Contains(dsl, "step:mutation placeOrder_step0 @ root") {
+		t.Errorf("step parent should be @ root; got:\n%s", dsl)
+	}
+	if !strings.Contains(dsl, `parentGroupId: "placeOrder_group"`) {
+		t.Errorf("step style should reference placeOrder_group; got:\n%s", dsl)
 	}
 
-	// Trigger edge: orderForm.submitted → placeOrder_step0.run
+	// Trigger edge: orderForm.values → placeOrder_step0.run
 	if len(edges) != 1 {
 		t.Fatalf("expected 1 edge, got %d: %+v", len(edges), edges)
 	}
 	e := edges[0]
-	if e.FromNodeID != "orderForm" || e.FromPort != "submitted" {
-		t.Errorf("trigger edge from = %q.%q, want orderForm.submitted", e.FromNodeID, e.FromPort)
+	if e.FromNodeID != "orderForm" || e.FromPort != "values" {
+		t.Errorf("trigger edge from = %q.%q, want orderForm.values", e.FromNodeID, e.FromPort)
 	}
 	if e.ToNodeID != "placeOrder_step0" || e.ToPort != "run" {
 		t.Errorf("trigger edge to = %q.%q, want placeOrder_step0.run", e.ToNodeID, e.ToPort)
@@ -267,7 +403,7 @@ func TestBuildFlowNodesAndEdges_multiStepButton(t *testing.T) {
 	}
 	refToID := map[string]string{"deleteRecord": "uuid-wf2"}
 
-	dsl, edges := buildFlowNodesAndEdges(flows, refToID)
+	dsl, edges := buildFlowNodesAndEdges(flows, refToID, "")
 
 	// Both step nodes
 	if !strings.Contains(dsl, "step:condition deleteRecord_step0") {
@@ -291,6 +427,37 @@ func TestBuildFlowNodesAndEdges_multiStepButton(t *testing.T) {
 	if chain.FromNodeID != "deleteRecord_step0" || chain.ToNodeID != "deleteRecord_step1" {
 		t.Errorf("chain edge = %q→%q, want step0→step1", chain.FromNodeID, chain.ToNodeID)
 	}
+	if chain.FromPort != "trueBranch" {
+		t.Errorf("chain fromPort = %q, want trueBranch", chain.FromPort)
+	}
+}
+
+func TestBuildFlowNodesAndEdges_missingTriggerUsesLayoutAction(t *testing.T) {
+	t.Parallel()
+
+	flows := []genWorkflow{
+		{
+			Ref:         "placeOrder",
+			Name:        "Place Order",
+			TriggerType: "form_submit",
+			Steps: []genWorkflowStep{
+				{Name: "Insert row", StepType: "mutation"},
+			},
+		},
+	}
+	refToID := map[string]string{"placeOrder": "uuid-wf"}
+	layoutDSL := `form orderForm @ root
+  action uuid-wf
+;`
+
+	_, edges := buildFlowNodesAndEdges(flows, refToID, layoutDSL)
+
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 edge, got %d: %+v", len(edges), edges)
+	}
+	if edges[0].FromNodeID != "orderForm" || edges[0].FromPort != "values" {
+		t.Fatalf("trigger edge = %q.%q, want orderForm.values", edges[0].FromNodeID, edges[0].FromPort)
+	}
 }
 
 func TestBuildFlowNodesAndEdges_noRefInMap(t *testing.T) {
@@ -300,7 +467,7 @@ func TestBuildFlowNodesAndEdges_noRefInMap(t *testing.T) {
 		{Ref: "unknownRef", Name: "X", Steps: []genWorkflowStep{{StepType: "query"}}},
 	}
 	// refToID does not contain "unknownRef"
-	dsl, edges := buildFlowNodesAndEdges(flows, map[string]string{})
+	dsl, edges := buildFlowNodesAndEdges(flows, map[string]string{}, "")
 	if dsl != "" {
 		t.Errorf("expected empty DSL when ref not in map, got: %q", dsl)
 	}
@@ -323,7 +490,7 @@ func TestBuildFlowNodesAndEdges_invalidStepTypeDefaultsToQuery(t *testing.T) {
 	}
 	refToID := map[string]string{"wf": "uuid"}
 
-	dsl, _ := buildFlowNodesAndEdges(flows, refToID)
+	dsl, _ := buildFlowNodesAndEdges(flows, refToID, "")
 	if !strings.Contains(dsl, "step:query wf_step0") {
 		t.Errorf("invalid step type should fall back to query; got:\n%s", dsl)
 	}
