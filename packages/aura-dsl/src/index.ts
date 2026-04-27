@@ -1119,5 +1119,7 @@ export function migrateV1ToV2(doc: AuraDocument, workflows: V1Workflow[]): AuraD
   return { nodes, edges }
 }
 
+export * from './authoring'
+
 // Re-export reactive runtime (dual-layer canvas Phase 1)
 export * from './reactive'

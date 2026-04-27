@@ -331,6 +331,37 @@ func TestValidateDSL_validInputClause(t *testing.T) {
 	}
 }
 
+func TestValidateDSL_validCompositeSourcePort(t *testing.T) {
+	t.Parallel()
+
+	dsl := "table orders_table @ root\n" +
+		"  with columns=\"OrderID,Status\"\n" +
+		"  output selectedRow.OrderID -> delete_order.bind:where:0\n" +
+		";\n" +
+		"step:mutation delete_order @ root\n" +
+		"  with connector=\"pg\" sql=\"DELETE FROM orders WHERE id='{{slot.where.0}}'\"\n" +
+		";"
+
+	if err := validateDSL(dsl); err != nil {
+		t.Fatalf("validateDSL() unexpected error = %v", err)
+	}
+}
+
+func TestValidateDSL_validCompositeTargetPort(t *testing.T) {
+	t.Parallel()
+
+	dsl := "filter status_filter @ root\n" +
+		"  output value -> orders_table.setFilter.Status\n" +
+		";\n" +
+		"table orders_table @ root\n" +
+		"  with columns=\"OrderID,Status\"\n" +
+		";"
+
+	if err := validateDSL(dsl); err != nil {
+		t.Fatalf("validateDSL() unexpected error = %v", err)
+	}
+}
+
 // TestValidateDSL_unknownTargetNode verifies that a link to a node not present
 // in the DSL source returns an error.
 func TestValidateDSL_unknownTargetNode(t *testing.T) {

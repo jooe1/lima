@@ -400,6 +400,8 @@ func buildGraphSystemPrompt(portManifest string) string {
 		"",
 		"Use inline step:* nodes for workflows unless the plan explicitly says managed CRUD behavior will be synthesized for you.",
 		"Do NOT emit a \"page\" element.",
+		"Exception: if you are intentionally returning a layout-only flat authoring document, you may emit page/widget/field/column/option/bind lines, but only when no run/effect lines or query-style action kinds are needed.",
+		"Exception: if the managed CRUD plan context explicitly authorizes flat authoring Aura, that plan override wins and you may emit page/widget/field/column/action lines for the managed CRUD subset.",
 		"Do NOT emit a separate edges section.",
 		"Do NOT emit flowX, flowY, flowW, or flowH style keys.",
 		"Do NOT emit legacy action fields that point to workflow IDs.",
@@ -465,9 +467,9 @@ func buildGraphCopilotPrompt(
 	builder.WriteString("- Do not use square-bracket metadata.\n")
 	builder.WriteString("- do not emit a page wrapper node.\n")
 	if plan != nil && plan.isCRUD() && plan.ConnectorType == "managed" {
-		builder.WriteString("- For managed CRUD plans, focus on the layout, field lists, and widget IDs. The worker synthesizes the managed data binding and save step.\n")
+		builder.WriteString("- For managed CRUD plans, you may use the flat authoring subset with page/widget/field/column/action lines. Prefer that format for first-generation CRUD screens and focus on layout, field lists, and widget IDs. The worker synthesizes the managed data binding and save step.\n")
 	} else {
-		builder.WriteString("- Use inline step:* nodes and inline links, not legacy flow action references.\n")
+		builder.WriteString("- For layout-only screens or widget-to-widget wiring with no executable actions, you may use the flat authoring subset with page/widget/field/column/option/bind lines. Otherwise use inline step:* nodes and inline links, not legacy flow action references.\n")
 	}
 	builder.WriteString("- Do not emit a separate edges section.\n")
 	builder.WriteString("- Do not emit flowX, flowY, flowW, or flowH style keys.\n")
@@ -677,7 +679,7 @@ func buildPlanContextBlock(plan *appPlan) string {
 		fmt.Fprintf(&sb, "workflow_name: %s\n", plan.WorkflowName)
 	}
 	if plan.isCRUD() && plan.ConnectorType == "managed" {
-		sb.WriteString("For managed CRUD plans, focus on the layout only: use the planned form fields and table columns, place delete/danger buttons where needed, and do not emit managed save step nodes or legacy flow action syntax. The worker will synthesize the managed table binding, save behavior, and delete-button wiring.\n")
+		sb.WriteString("For managed CRUD plans, you may return the flat managed CRUD authoring subset instead of canonical runtime Aura. Prefer that authoring form for first-generation CRUD screens. Use page/widget/field/column/action lines, focus on the planned layout only, place delete/danger buttons where needed, and do not emit managed save step nodes or legacy flow action syntax. Example authoring lines: page main title=\"Orders\" and action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders. The worker will lower that subset. The worker will synthesize the managed table binding, save behavior, and delete-button wiring.\n")
 	} else {
 		sb.WriteString("If the app needs write behavior, model it with explicit step:* nodes and inline on/input/output links, not legacy flow action syntax.\n")
 	}
@@ -1357,6 +1359,25 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 		// ── Stage 2: normalize inline links → edges ────────────────────────────────
 		// Parse the DSL into structured statements, extract inline on/input/output
 		// link clauses and convert them into canonical dslEdge entries.
+		compiledAuthoringDSL, authoringNotes, compiledAuthoring, authoringErr := compileManagedCRUDAuthoringRuntimeDSL(newDSL)
+		if authoringErr != nil {
+			log.Warn("flat authoring compile failed after graph stage",
+				zap.String("thread_id", payload.ThreadID),
+				zap.Error(authoringErr),
+			)
+			writeErrorMessage(ctx, pool, payload.ThreadID, "generated flat Aura authoring is not supported by the worker yet: "+authoringErr.Error())
+			return authoringErr
+		}
+		if compiledAuthoring {
+			newDSL = compiledAuthoringDSL
+			for _, note := range authoringNotes {
+				log.Info("authoring compiler note",
+					zap.String("thread_id", payload.ThreadID),
+					zap.String("note", note),
+				)
+			}
+		}
+
 		repairedDSL, repairNotes := repairGeneratedDSLCommonSyntax(newDSL)
 		if len(repairNotes) > 0 {
 			for _, note := range repairNotes {

@@ -21,6 +21,7 @@ import { CanvasEditor } from './CanvasEditor'
 import { ChatPanel } from './ChatPanel'
 import { FlowCanvas } from './FlowCanvas'
 import { Inspector } from './Inspector'
+import { normalizeAssistantDSL } from './assistantDSL'
 import { StepConfigPanel } from './StepConfigPanel'
 import { LayersPanel } from './LayersPanel'
 import { StepPalette } from './StepPalette'
@@ -97,11 +98,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     }
 
     try {
-      const parsed = parseV2(nextApp.dsl_source)
-      // dsl_edges is the authoritative edge set (includes AI-generated widget wiring).
-      // Fall back to edges embedded in dsl_source only when dsl_edges is absent.
-      const edges = (nextApp.dsl_edges && nextApp.dsl_edges.length > 0) ? nextApp.dsl_edges : parsed.edges
-      history.reset({ ...parsed, edges })
+      const normalized = normalizeAssistantDSL(nextApp.dsl_source, nextApp.dsl_edges)
+      history.reset(normalized.document)
       setLoadError('')
     } catch (error: unknown) {
       console.error(`Failed to parse saved DSL for app ${nextApp.id}`, error)
@@ -716,8 +714,8 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
               onDSLUpdate={(src, newEdges) => {
                 try {
                   setLoadError('')
-                  const parsed = parseV2(src)
-                  history.set({ ...parsed, edges: newEdges ?? parsed.edges })
+                  const normalized = normalizeAssistantDSL(src, newEdges)
+                  history.set(normalized.document)
                 } catch (err) {
                   console.error('[Builder] AI-generated DSL failed to parse:', err)
                   setLoadError('AI generation produced invalid DSL — please try again.')

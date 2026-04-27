@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   parse, parseV2, serialize, serializeV2, validate, validateV2, diff, diffV2, applyDiff, applyDiffV2,
   ParseError, STEP_ELEMENTS, migrateV1ToV2, normalizeInlineLinks,
+  parseAuthoring, validateAuthoring, lowerAuthoring, compileAuthoring,
   type WidgetBinding, type OutputBinding, type AuraEdge, type AuraDocumentV2, type PortRegistry, type V1Workflow, type InlineLink,
 } from '../src/index'
 
@@ -1247,5 +1248,208 @@ describe('normalizeInlineLinks', () => {
     ], [existingEdge])
     const { doc: result } = normalizeInlineLinks(doc)
     expect(result.edges).toHaveLength(1) // not duplicated
+  })
+})
+
+describe('Aura Authoring', () => {
+  it('parses the high-level authoring statements used by the CRUD example', () => {
+    const src = [
+      'app order_admin',
+      'entity order connector=orders primary_key=OrderID',
+      'page main title="Orders"',
+      'stack shell @ main direction=column gap=16',
+      'widget form order_form @ shell title="Order Form"',
+      'field order_form OrderID',
+      'widget table orders @ shell title="Orders"',
+      'column orders OrderID',
+      'action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders',
+      'bind orders.selected_row -> order_form.values',
+      'run order_form.submitted -> save_order',
+      'effect save_order.success -> orders.refresh',
+    ].join('\n')
+
+    const doc = parseAuthoring(src)
+    expect(doc.statements).toHaveLength(12)
+    expect(validateAuthoring(doc)).toHaveLength(0)
+  })
+
+  it('lowers CRUD authoring into runtime-safe form, table, step, and edges', () => {
+    const src = [
+      'app order_admin',
+      'entity order connector=orders primary_key=OrderID',
+      'page main title="Orders"',
+      'stack shell @ main direction=column gap=16',
+      'widget form order_form @ shell title="Order Form"',
+      'field order_form OrderID',
+      'field order_form CustomerName',
+      'field order_form Amount',
+      'widget table orders @ shell title="Orders"',
+      'column orders OrderID',
+      'column orders CustomerName',
+      'column orders Amount',
+      'widget button delete_order @ shell label="Delete" variant=danger',
+      'action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders',
+      'action delete_order_action @ main kind=delete_selected entity=order source=orders',
+      'bind orders.selected_row -> order_form.values',
+      'bind orders.selected_row.OrderID -> delete_order_action.record_id',
+      'run order_form.submitted -> save_order',
+      'run delete_order.clicked -> delete_order_action',
+      'effect save_order.success -> orders.refresh',
+      'effect save_order.success -> order_form.reset',
+    ].join('\n')
+
+    const lowered = compileAuthoring(src)
+    expect(validateV2(lowered)).toHaveLength(0)
+
+    const form = lowered.nodes.find((node) => node.id === 'order_form')
+    const table = lowered.nodes.find((node) => node.id === 'orders')
+    const saveAction = lowered.nodes.find((node) => node.id === 'save_order')
+    const deleteAction = lowered.nodes.find((node) => node.id === 'delete_order_action')
+
+    expect(form).toMatchObject({ element: 'form', parentId: 'main', text: 'Order Form' })
+    expect(form?.with?.fields).toBe('OrderID,CustomerName,Amount')
+    expect(table).toMatchObject({ element: 'table', parentId: 'main', text: 'Orders' })
+    expect(table?.with?.columns).toBe('OrderID,CustomerName,Amount')
+    expect(saveAction?.element).toBe('step:mutation')
+    expect(deleteAction?.element).toBe('step:mutation')
+
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'orders',
+      fromPort: 'selectedRow',
+      toNodeId: 'order_form',
+      toPort: 'setValues',
+      edgeType: 'reactive',
+    }))
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'orders',
+      fromPort: 'selectedRow.OrderID',
+      toNodeId: 'delete_order_action',
+      toPort: 'params.record_id',
+      edgeType: 'binding',
+    }))
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'order_form',
+      fromPort: 'submitted',
+      toNodeId: 'save_order',
+      toPort: 'run',
+      edgeType: 'async',
+    }))
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'save_order',
+      fromPort: 'result',
+      toNodeId: 'orders',
+      toPort: 'refresh',
+      edgeType: 'reactive',
+    }))
+  })
+
+  it('lowers slot-based layout hints into runtime layout metadata and grid coordinates', () => {
+    const src = [
+      'app revenue_dashboard',
+      'page main title="Revenue Dashboard"',
+      'grid dashboard @ main columns=12 gap=16',
+      'slot sidebar @ dashboard span=3',
+      'slot content @ dashboard span=9',
+      'widget filter status_filter @ sidebar label="Status"',
+      'widget chart revenue_chart @ content title="Revenue by Month"',
+    ].join('\n')
+
+    const lowered = lowerAuthoring(parseAuthoring(src))
+    const filter = lowered.nodes.find((node) => node.id === 'status_filter')
+    const chart = lowered.nodes.find((node) => node.id === 'revenue_chart')
+
+    expect(filter?.style).toMatchObject({ layout_area: 'sidebar', gridX: '9', gridW: '3' })
+    expect(chart?.style).toMatchObject({ layout_area: 'main', layout_span: '9', gridX: '0', gridW: '9' })
+  })
+
+  it('lowers filter options into runtime style options', () => {
+    const src = [
+      'app revenue_dashboard',
+      'page main title="Revenue Dashboard"',
+      'widget filter status_filter @ main label="Status"',
+      'option status_filter Open value=open',
+      'option status_filter Closed value=closed',
+    ].join('\n')
+
+    const lowered = compileAuthoring(src)
+    const filter = lowered.nodes.find((node) => node.id === 'status_filter')
+
+    expect(filter?.style?.options).toBe('open,closed')
+  })
+
+  it('maps page.loaded and action success vocabulary into runtime edges', () => {
+    const src = [
+      'app revenue_dashboard',
+      'entity order connector=orders primary_key=OrderID',
+      'page main title="Revenue Dashboard"',
+      'widget chart revenue_chart @ main title="Revenue by Month"',
+      'action load_revenue @ main kind=query entity=order target=revenue_chart',
+      'run main.loaded -> load_revenue',
+      'effect load_revenue.success -> revenue_chart.refresh',
+    ].join('\n')
+
+    const lowered = compileAuthoring(src)
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'main',
+      fromPort: 'loaded',
+      toNodeId: 'load_revenue',
+      toPort: 'run',
+      edgeType: 'async',
+    }))
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'load_revenue',
+      fromPort: 'result',
+      toNodeId: 'revenue_chart',
+      toPort: 'refresh',
+      edgeType: 'reactive',
+    }))
+  })
+
+  it('round-trips lowered authoring output through serializeV2 and parseV2', () => {
+    const src = [
+      'app order_admin',
+      'page main title="Orders"',
+      'widget form order_form @ main title="Order Form"',
+      'field order_form OrderID',
+      'action save_order @ main kind=managed_crud form=order_form',
+      'run order_form.submitted -> save_order',
+    ].join('\n')
+
+    const lowered = compileAuthoring(src)
+    const reparsed = parseV2(serializeV2(lowered))
+    expect(reparsed).toEqual(lowered)
+  })
+
+  it('rejects invalid widget source and target vocabulary before lowering', () => {
+    const src = [
+      'app order_admin',
+      'page main title="Orders"',
+      'widget form order_form @ main title="Order Form"',
+      'field order_form OrderID',
+      'widget table orders @ main title="Orders"',
+      'column orders OrderID',
+      'action save_order @ main kind=managed_crud form=order_form',
+      'bind orders.nope -> order_form.values',
+      'effect save_order.success -> order_form.unknown_target',
+    ].join('\n')
+
+    const errors = validateAuthoring(parseAuthoring(src))
+    expect(errors.some((error) => error.message.includes("orders.nope"))).toBe(true)
+    expect(errors.some((error) => error.message.includes("order_form.unknown_target"))).toBe(true)
+  })
+
+  it('rejects invalid page events and invalid action events', () => {
+    const src = [
+      'app revenue_dashboard',
+      'page main title="Revenue Dashboard"',
+      'widget chart revenue_chart @ main title="Revenue"',
+      'action load_revenue @ main kind=query',
+      'run main.ready -> load_revenue',
+      'effect load_revenue.clicked -> revenue_chart.refresh',
+    ].join('\n')
+
+    const errors = validateAuthoring(parseAuthoring(src))
+    expect(errors.some((error) => error.message.includes("main.ready"))).toBe(true)
+    expect(errors.some((error) => error.message.includes("load_revenue.clicked"))).toBe(true)
   })
 })

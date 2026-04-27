@@ -1,10 +1,11 @@
 'use client'
 
 import { use, useEffect, useState } from 'react'
-import { parseV2 } from '@lima/aura-dsl'
+import { type AuraDocument, type AuraEdge } from '@lima/aura-dsl'
 import { useAuth } from '../../../../lib/auth'
 import { previewDraftApp, type App, ApiError } from '../../../../lib/api'
 import { RuntimeRenderer } from '../../../app/[appId]/RuntimeRenderer'
+import { normalizeAssistantDSL } from '../assistantDSL'
 
 export default function DraftPreviewPage({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params)
@@ -71,13 +72,13 @@ export default function DraftPreviewPage({ params }: { params: Promise<{ appId: 
     )
   }
 
-  let doc: import('@lima/aura-dsl').AuraDocument = []
-  let edges: import('@lima/aura-dsl').AuraEdge[] = []
+  let doc: AuraDocument = []
+  let edges: AuraEdge[] = []
   try {
     if (app.dsl_source) {
-      const parsed = parseV2(app.dsl_source)
-      doc = parsed.nodes
-      edges = (app.dsl_edges && app.dsl_edges.length > 0) ? app.dsl_edges : parsed.edges
+      const normalized = normalizeAssistantDSL(app.dsl_source, app.dsl_edges)
+      doc = normalized.document.nodes
+      edges = normalized.edges
     }
   } catch {
     doc = []

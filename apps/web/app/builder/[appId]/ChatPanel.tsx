@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { parseV2, type AuraEdge } from '@lima/aura-dsl'
+import { type AuraEdge } from '@lima/aura-dsl'
 import {
   type ConversationThread,
   type ThreadMessage,
@@ -10,6 +10,7 @@ import {
   listThreads,
   postMessage,
 } from '../../../lib/api'
+import { normalizeAssistantDSL } from './assistantDSL'
 
 const POLL_INTERVAL_MS = 2500
 
@@ -40,13 +41,12 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
     if (!msg.dsl_patch?.new_source) return false
 
     try {
-      parseV2(msg.dsl_patch.new_source) // validate before marking as applied
-      onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
+      const normalized = normalizeAssistantDSL(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
+      onDSLUpdate(normalized.source, normalized.edges)
       setError('')
       return true
     } catch (err) {
       console.error('[ChatPanel] DSL patch parse error', err)
-      onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
       setError(err instanceof Error ? `AI generation produced invalid DSL: ${err.message}` : 'AI generation produced invalid DSL — patch ignored')
       return false
     }

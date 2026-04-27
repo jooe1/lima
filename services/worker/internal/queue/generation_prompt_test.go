@@ -52,6 +52,12 @@ func TestBuildGraphSystemPrompt_UsesCanonicalAuraSyntax(t *testing.T) {
 	if !strings.Contains(prompt, "Do NOT emit a \"page\" element") {
 		t.Fatalf("buildGraphSystemPrompt() should explicitly forbid a page wrapper node: %q", prompt)
 	}
+	if !strings.Contains(prompt, "layout-only flat authoring document") {
+		t.Fatalf("buildGraphSystemPrompt() should document the layout-only flat-authoring exception: %q", prompt)
+	}
+	if !strings.Contains(prompt, "managed CRUD plan context explicitly authorizes flat authoring Aura") {
+		t.Fatalf("buildGraphSystemPrompt() should document the managed CRUD flat-authoring override: %q", prompt)
+	}
 	if strings.Contains(prompt, "{{flow:") {
 		t.Fatalf("buildGraphSystemPrompt() should not mention legacy flow reference syntax: %q", prompt)
 	}
@@ -73,6 +79,9 @@ func TestBuildGraphCopilotPrompt_RejectsLegacySyntax(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "not legacy flow action references") {
 		t.Fatalf("buildGraphCopilotPrompt() should forbid legacy flow action references: %q", prompt)
+	}
+	if !strings.Contains(prompt, "layout-only screens or widget-to-widget wiring") {
+		t.Fatalf("buildGraphCopilotPrompt() should allow the layout-only flat authoring subset: %q", prompt)
 	}
 }
 
@@ -110,6 +119,15 @@ func TestBuildPlanContextBlock_ManagedCRUDUsesCompilerInstruction(t *testing.T) 
 
 	ctx := buildPlanContextBlock(&appPlan{Intent: "crud", ConnectorType: "managed", WorkflowRef: "saveOrder"})
 
+	if !strings.Contains(ctx, "flat managed CRUD authoring subset") {
+		t.Fatalf("buildPlanContextBlock() should authorize flat managed CRUD authoring: %q", ctx)
+	}
+	if !strings.Contains(ctx, "page main title=\"Orders\"") {
+		t.Fatalf("buildPlanContextBlock() should include a concrete flat-authoring page example: %q", ctx)
+	}
+	if !strings.Contains(ctx, "action save_order @ main kind=managed_crud") {
+		t.Fatalf("buildPlanContextBlock() should include a concrete flat-authoring action example: %q", ctx)
+	}
 	if !strings.Contains(ctx, "The worker will synthesize the managed table binding, save behavior, and delete-button wiring.") {
 		t.Fatalf("buildPlanContextBlock() should explain managed CRUD compiler ownership: %q", ctx)
 	}
@@ -118,5 +136,15 @@ func TestBuildPlanContextBlock_ManagedCRUDUsesCompilerInstruction(t *testing.T) 
 	}
 	if strings.Contains(ctx, "model it with explicit step:*") {
 		t.Fatalf("buildPlanContextBlock() should not ask the model to author managed save steps: %q", ctx)
+	}
+}
+
+func TestBuildGraphCopilotPrompt_ManagedCRUDAllowsFlatAuthoring(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildGraphCopilotPrompt("", "show orders", nil, nil, nil, &appPlan{Intent: "crud", ConnectorType: "managed"})
+
+	if !strings.Contains(prompt, "flat authoring subset with page/widget/field/column/action lines") {
+		t.Fatalf("buildGraphCopilotPrompt() should allow the flat managed CRUD authoring subset: %q", prompt)
 	}
 }

@@ -370,7 +370,13 @@ func validateDSL(src string) error {
 	// It passes if the set is empty (dynamic-only element), if the element is
 	// unknown (ok=false), or if "*" is present as a wildcard.
 	portOK := func(set map[string]bool, portName string) bool {
-		return len(set) == 0 || set[portName] || set["*"]
+		if len(set) == 0 || set[portName] || set["*"] {
+			return true
+		}
+		if dot := strings.Index(portName, "."); dot > 0 {
+			return set[portName[:dot]] || set["*"]
+		}
+		return false
 	}
 
 	for _, s := range structured {
