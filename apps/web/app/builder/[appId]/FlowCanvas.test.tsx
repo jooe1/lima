@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import React from 'react'
 import { FlowCanvas, migrateLegacyBindingTokens, validateBindings } from './FlowCanvas'
+import { computeFlowLayout } from './flow-layout'
 import type { AuraDocumentV2 } from '@lima/aura-dsl'
 
 // Capture the onConnect prop passed to <ReactFlow> so tests can invoke it directly.
@@ -552,5 +553,89 @@ describe('FlowCanvas mutation summary', () => {
 
     expect(screen.getByText('DELETE FROM sessions')).toBeTruthy()
     expect(screen.queryByText('INSERT INTO — not configured')).toBeNull()
+  })
+})
+
+describe('computeFlowLayout', () => {
+  it('button → step:mutation (async edge): button is layer 0 (x≈50), step is layer 1 (x≈350)', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        { id: 'btn1', element: 'button', parentId: 'root' },
+        { id: 'mut1', element: 'step:mutation', parentId: 'root', with: { sql: 'INSERT INTO t VALUES (1)' } },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'btn1', fromPort: 'click', toNodeId: 'mut1', toPort: 'run', edgeType: 'async' },
+      ],
+    }
+
+    const positions = computeFlowLayout(doc)
+
+    expect(positions.get('btn1')?.x).toBe(50)
+    expect(positions.get('mut1')?.x).toBe(350)
+  })
+
+  it('doc with no async edges: all nodes at x=50 with 160px y spacing', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        { id: 'w1', element: 'text', parentId: 'root' },
+        { id: 'w2', element: 'table', parentId: 'root' },
+        { id: 'w3', element: 'form', parentId: 'root', with: { fields: 'name' } },
+      ],
+      edges: [],
+    }
+
+    const positions = computeFlowLayout(doc)
+
+    expect(positions.get('w1')?.x).toBe(50)
+    expect(positions.get('w2')?.x).toBe(50)
+    expect(positions.get('w3')?.x).toBe(50)
+
+    const ys = [positions.get('w1')?.y, positions.get('w2')?.y, positions.get('w3')?.y]
+    const sorted = [...ys].sort((a, b) => (a ?? 0) - (b ?? 0))
+    expect(sorted[1]! - sorted[0]!).toBe(160)
+    expect(sorted[2]! - sorted[1]!).toBe(160)
+  })
+
+  it('manual flowX/flowY on a node are preserved unchanged', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        {
+          id: 'btn1',
+          element: 'button',
+          parentId: 'root',
+          style: { flowX: '999', flowY: '888' },
+        },
+        { id: 'mut1', element: 'step:mutation', parentId: 'root', with: { sql: 'INSERT INTO t VALUES (1)' } },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'btn1', fromPort: 'click', toNodeId: 'mut1', toPort: 'run', edgeType: 'async' },
+      ],
+    }
+
+    const positions = computeFlowLayout(doc)
+
+    expect(positions.get('btn1')?.x).toBe(999)
+    expect(positions.get('btn1')?.y).toBe(888)
+  })
+
+  it('returns a Map with an entry for every non-step node plus every step node', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [
+        { id: 'btn1', element: 'button', parentId: 'root' },
+        { id: 'mut1', element: 'step:mutation', parentId: 'root', with: { sql: 'INSERT INTO t VALUES (1)' } },
+        { id: 'tbl1', element: 'table', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'btn1', fromPort: 'click', toNodeId: 'mut1', toPort: 'run', edgeType: 'async' },
+        { id: 'e2', fromNodeId: 'mut1', fromPort: 'result', toNodeId: 'tbl1', toPort: 'data', edgeType: 'reactive' },
+      ],
+    }
+
+    const positions = computeFlowLayout(doc)
+
+    expect(positions.has('btn1')).toBe(true)
+    expect(positions.has('mut1')).toBe(true)
+    expect(positions.has('tbl1')).toBe(true)
+    expect(positions.size).toBe(3)
   })
 })

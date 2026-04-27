@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,6 +14,18 @@ import (
 // It is defined here to avoid a cross-module import dependency.
 type nodeMeta struct {
 	ManuallyEdited bool `json:"manuallyEdited"`
+}
+
+var quotedLiteralClauseParentSuffixPattern = regexp.MustCompile(`^(text|value|if|transform|formFields)\s+("([^"\\]|\\.)*")\s+@\s+\S+\s*$`)
+
+func isForbiddenPlaceholderToken(token string) bool {
+	if strings.HasPrefix(token, "[") {
+		return true
+	}
+	if token == "<-" {
+		return false
+	}
+	return strings.HasPrefix(token, "<") && strings.Contains(token, ">")
 }
 
 // parseDSLStatements splits an Aura DSL source string into an ordered map of
@@ -45,6 +58,13 @@ func parseDSLStatements(src string) (stmts map[string]string, order []string, er
 		}
 		if fields[2] != "@" {
 			return fmt.Errorf("malformed DSL statement (expected '@' at position 2): %.80q", text)
+		}
+		// Reject prompt-placeholder / bracket metadata syntax that the TypeScript
+		// parser will reject, but allow the valid Aura input arrow token "<-".
+		for _, f := range fields {
+			if isForbiddenPlaceholderToken(f) {
+				return fmt.Errorf("malformed DSL statement (bracket/XML attribute syntax not allowed): %.80q", text)
+			}
 		}
 		id := fields[1]
 		if _, dup := stmts[id]; dup {
@@ -104,15 +124,352 @@ func parseDSLStatements(src string) (stmts map[string]string, order []string, er
 	return stmts, order, nil
 }
 
-// validateDSL checks that src is syntactically well-formed Aura DSL.
-// Returns the first structural error found, or nil if the document is valid.
+// repairGeneratedDSLCommonSyntax applies narrowly-scoped repairs for common
+// model mistakes that are mechanically recoverable without guessing intent.
+//
+// Current repairs:
+//  1. Missing top-level parent on a node header:
+//     container page_shell      -> container page_shell @ root
+//  2. Compact parent token:
+//     form order_form @root     -> form order_form @ root
+//  3. Parent split across its own line:
+//     table orders_table
+//     @ page_shell            -> table orders_table @ page_shell
+func repairGeneratedDSLCommonSyntax(src string) (string, []string) {
+	if strings.TrimSpace(src) == "" {
+		return src, nil
+	}
+
+	parts := splitDSLStatementsLoose(src)
+	if len(parts) == 0 {
+		return src, nil
+	}
+
+	repaired := make([]string, 0, len(parts))
+	var notes []string
+	for _, stmt := range parts {
+		fixed, note := repairDSLStatementHeader(stmt)
+		repaired = append(repaired, fixed)
+		if note != "" {
+			notes = append(notes, note)
+		}
+	}
+
+	var out strings.Builder
+	for i, stmt := range repaired {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString(strings.TrimSpace(stmt))
+		out.WriteString("\n;")
+	}
+	return out.String(), notes
+}
+
+func splitDSLStatementsLoose(src string) []string {
+	var parts []string
+	var cur strings.Builder
+	braceDepth := 0
+	inString := false
+	escape := false
+
+	flush := func() {
+		text := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+
+	for _, ch := range src {
+		if escape {
+			cur.WriteRune(ch)
+			escape = false
+			continue
+		}
+		if inString && ch == '\\' {
+			cur.WriteRune(ch)
+			escape = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			cur.WriteRune(ch)
+			continue
+		}
+		if inString {
+			cur.WriteRune(ch)
+			continue
+		}
+		switch ch {
+		case '{':
+			braceDepth++
+			cur.WriteRune(ch)
+		case '}':
+			braceDepth--
+			cur.WriteRune(ch)
+		case ';':
+			if braceDepth > 0 {
+				cur.WriteRune(ch)
+			} else {
+				flush()
+			}
+		default:
+			cur.WriteRune(ch)
+		}
+	}
+	flush()
+	return parts
+}
+
+func repairDSLStatementHeader(stmt string) (string, string) {
+	lines := strings.Split(stmt, "\n")
+	headerIndex := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		headerIndex = i
+		break
+	}
+	if headerIndex == -1 {
+		return stmt, ""
+	}
+
+	headerLine := lines[headerIndex]
+	trimmedHeader := strings.TrimSpace(headerLine)
+	fields := strings.Fields(trimmedHeader)
+	if len(fields) == 0 || !KnownElement(fields[0]) {
+		return stmt, ""
+	}
+
+	element := fields[0]
+	indentWidth := len(headerLine) - len(strings.TrimLeft(headerLine, " \t"))
+	indent := headerLine[:indentWidth]
+
+	if len(fields) >= 3 && strings.HasPrefix(fields[2], "@") && fields[2] != "@" {
+		parentID := strings.TrimPrefix(fields[2], "@")
+		if parentID != "" {
+			rebuilt := append([]string{fields[0], fields[1], "@", parentID}, fields[3:]...)
+			lines[headerIndex] = indent + strings.Join(rebuilt, " ")
+			return strings.Join(lines, "\n"), fmt.Sprintf("split compact parent token on node %q to '@ %s'", fields[1], parentID)
+		}
+	}
+
+	if len(fields) == 2 {
+		if parentID, parentLineIndex, ok := extractSplitParentLine(lines, headerIndex+1); ok {
+			lines[headerIndex] = indent + fields[0] + " " + fields[1] + " @ " + parentID
+			lines[parentLineIndex] = ""
+			return strings.Join(lines, "\n"), fmt.Sprintf("merged split parent line on node %q to '@ %s'", fields[1], parentID)
+		}
+		lines[headerIndex] = indent + trimmedHeader + " @ root"
+		return strings.Join(lines, "\n"), fmt.Sprintf("added missing '@ root' parent to node %q", fields[1])
+	}
+
+	for i := headerIndex + 1; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if fixed, note, ok := repairDSLStatementClause(lines, i, element, line); ok {
+			return fixed, note
+		}
+	}
+
+	return stmt, ""
+}
+
+func extractSplitParentLine(lines []string, startIndex int) (string, int, bool) {
+	for i := startIndex; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[0] == "@" && len(fields) >= 2 {
+			return fields[1], i, true
+		}
+		if strings.HasPrefix(fields[0], "@") && len(fields[0]) > 1 {
+			return strings.TrimPrefix(fields[0], "@"), i, true
+		}
+		return "", 0, false
+	}
+	return "", 0, false
+}
+
+func repairDSLStatementClause(lines []string, lineIndex int, element, line string) (string, string, bool) {
+	trimmed := strings.TrimSpace(line)
+	indentWidth := len(line) - len(strings.TrimLeft(line, " \t"))
+	indent := line[:indentWidth]
+	nodeID := strings.Fields(strings.TrimSpace(lines[0]))[1]
+
+	if matches := quotedLiteralClauseParentSuffixPattern.FindStringSubmatch(trimmed); matches != nil {
+		lines[lineIndex] = indent + matches[1] + " " + matches[2]
+		return strings.Join(lines, "\n"), fmt.Sprintf("removed stray parent suffix from %s clause on node %q", matches[1], nodeID), true
+	}
+
+	if element == "form" && strings.HasPrefix(trimmed, "fields ") {
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "fields "))
+		if value == "" {
+			return "", "", false
+		}
+		lines[lineIndex] = indent + `with fields="` + value + `"`
+		return strings.Join(lines, "\n"), fmt.Sprintf("rewrote invalid form clause 'fields ...' to 'with fields=...' on node %q", nodeID), true
+	}
+
+	return "", "", false
+}
+
+// validateDSL checks that src is syntactically and semantically well-formed
+// Aura DSL. It verifies:
+//  1. Syntax: all statements are well-formed (via parseDSLStatements).
+//  2. Semantics: every inline link references a node that exists in the
+//     document, and the source/target ports are valid for known element types.
+//
+// Unknown element types are treated as pass-through (not rejected) so that
+// newly added element types do not break existing validators.
 // An empty document is considered valid.
 func validateDSL(src string) error {
 	if strings.TrimSpace(src) == "" {
 		return nil
 	}
-	_, _, err := parseDSLStatements(src)
-	return err
+	stmts, order, err := parseDSLStatements(src)
+	if err != nil {
+		return err
+	}
+	for _, id := range order {
+		if err := validateDSLStatementClauses(id, stmts[id]); err != nil {
+			return err
+		}
+	}
+
+	// Build set of known node IDs from the syntax pass.
+	nodeIDs := map[string]bool{}
+	for _, id := range order {
+		nodeIDs[id] = true
+	}
+
+	// Semantic pass: extract structured statements for inline-link validation.
+	structured, structErr := parseDSLStatementsStructured(src)
+	if structErr != nil {
+		// Non-fatal: partial structured info, skip semantic checks.
+		structured = nil
+	}
+
+	// Build element map: node id → element type.
+	elementOf := map[string]string{}
+	for _, s := range structured {
+		elementOf[s.ID] = s.Element
+	}
+
+	// portOK returns true when portName is valid for the given port set.
+	// It passes if the set is empty (dynamic-only element), if the element is
+	// unknown (ok=false), or if "*" is present as a wildcard.
+	portOK := func(set map[string]bool, portName string) bool {
+		return len(set) == 0 || set[portName] || set["*"]
+	}
+
+	for _, s := range structured {
+		srcInputs, srcOutputs, srcKnown := PortsForElement(s.Element)
+		for _, link := range s.InlineLinks {
+			// Check that the target node exists in the document.
+			if !nodeIDs[link.TargetNodeID] {
+				return fmt.Errorf("node %q references unknown target node %q", s.ID, link.TargetNodeID)
+			}
+			tgtInputs, tgtOutputs, tgtKnown := PortsForElement(elementOf[link.TargetNodeID])
+
+			switch link.Direction {
+			case "on":
+				// on <myOutputPort> -> <target>.<targetInputPort>
+				if srcKnown && !portOK(srcOutputs, link.MyPort) {
+					return fmt.Errorf("node %q (element %q) has no output port %q", s.ID, s.Element, link.MyPort)
+				}
+				if tgtKnown && !portOK(tgtInputs, link.TargetPort) {
+					return fmt.Errorf("node %q (element %q) has no input port %q", link.TargetNodeID, elementOf[link.TargetNodeID], link.TargetPort)
+				}
+			case "input":
+				// input <myInputPort> <- <source>.<sourceOutputPort>
+				if srcKnown && !portOK(srcInputs, link.MyPort) {
+					return fmt.Errorf("node %q (element %q) has no input port %q", s.ID, s.Element, link.MyPort)
+				}
+				if tgtKnown && !portOK(tgtOutputs, link.TargetPort) {
+					return fmt.Errorf("node %q (element %q) has no output port %q", link.TargetNodeID, elementOf[link.TargetNodeID], link.TargetPort)
+				}
+			case "output":
+				// output <myOutputPort> -> <target>.<targetInputPort>
+				if srcKnown && !portOK(srcOutputs, link.MyPort) {
+					return fmt.Errorf("node %q (element %q) has no output port %q", s.ID, s.Element, link.MyPort)
+				}
+				if tgtKnown && !portOK(tgtInputs, link.TargetPort) {
+					return fmt.Errorf("node %q (element %q) has no input port %q", link.TargetNodeID, elementOf[link.TargetNodeID], link.TargetPort)
+				}
+			}
+		}
+	}
+
+	_ = stmts // used for syntax check above
+	return nil
+}
+
+func validateDSLStatementClauses(nodeID, stmt string) error {
+	lines := strings.Split(stmt, "\n")
+	headerSeen := false
+	styleDepth := 0
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || trimmed == ";" {
+			continue
+		}
+		if !headerSeen {
+			headerSeen = true
+			continue
+		}
+		if styleDepth > 0 {
+			styleDepth += countRune(trimmed, '{') - countRune(trimmed, '}')
+			continue
+		}
+
+		fields := strings.Fields(trimmed)
+		if len(fields) == 0 {
+			continue
+		}
+		clause := fields[0]
+		if !isKnownDSLClauseKeyword(clause) {
+			return fmt.Errorf("malformed DSL statement (unknown clause '%s' in node '%s'): %.80q", clause, nodeID, trimmed)
+		}
+		if clause == "style" {
+			styleDepth = countRune(trimmed, '{') - countRune(trimmed, '}')
+		}
+	}
+
+	if styleDepth > 0 {
+		return fmt.Errorf("malformed DSL statement (unterminated style block in node '%s')", nodeID)
+	}
+	return nil
+}
+
+func isKnownDSLClauseKeyword(token string) bool {
+	switch token {
+	case "text", "value", "forEach", "key", "if", "with", "transform", "action", "formRef", "formFields", "widget_bindings", "output_bindings", "on", "input", "output", "layout", "style":
+		return true
+	default:
+		return false
+	}
+}
+
+func countRune(s string, target rune) int {
+	count := 0
+	for _, ch := range s {
+		if ch == target {
+			count++
+		}
+	}
+	return count
 }
 
 // applyProtectedDiff applies the LLM-generated candidate revision on top of

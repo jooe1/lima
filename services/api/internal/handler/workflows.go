@@ -450,7 +450,6 @@ func TriggerWorkflow(cfg *config.Config, s triggerWorkflowStore, enq *queue.Enqu
 			}
 		}
 		respond(w, statusCode, run)
-		return
 	}
 }
 
@@ -707,12 +706,13 @@ type triggerWorkflowStore interface {
 
 // triggerEndUserWorkflowRun implements the end_user execution path for
 // TriggerWorkflow. It:
-//  1. Loads the workflow steps and checks that the caller holds a "mutate"
-//     resource grant on every connector referenced by a mutation step.
-//  2. Creates a WorkflowRun and immediately transitions it to awaiting_approval.
-//  3. Creates an Approval record with the encrypted input payload.
-//  4. Links the approval to the run.
-//  5. Returns the updated run — the worker is NOT enqueued.
+//  1. Loads the workflow steps.
+//  2. For workflows with NO mutation steps: creates a pending run and returns
+//     immediately — no grant check, no approval gate (read-only workflows are safe).
+//  3. For workflows with mutation steps: checks the caller holds a "mutate"
+//     resource grant on every mutation-step connector, then creates the run,
+//     transitions it to awaiting_approval, and creates an Approval record.
+//  4. Returns the updated run — the worker is NOT enqueued.
 //
 // Returns *errMutateGrantRequired (403) or another error (500).
 func triggerEndUserWorkflowRun(
@@ -726,6 +726,25 @@ func triggerEndUserWorkflowRun(
 	wf, err := s.GetWorkflowWithSteps(ctx, workspaceID, workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("load workflow: %w", err)
+	}
+
+	// Determine whether this workflow contains any mutation steps.
+	hasMutationStep := false
+	for _, step := range wf.Steps {
+		if step.StepType == model.StepTypeMutation {
+			hasMutationStep = true
+			break
+		}
+	}
+
+	// Read-only workflows (no mutation steps) run immediately as pending — no
+	// grant check and no approval gate needed.
+	if !hasMutationStep {
+		run, err := s.CreateWorkflowRun(ctx, workspaceID, workflowID, &userID, inputData)
+		if err != nil {
+			return nil, fmt.Errorf("create workflow run: %w", err)
+		}
+		return run, nil
 	}
 
 	// Walk mutation steps and check that the caller holds at least a "mutate"
@@ -754,7 +773,7 @@ func triggerEndUserWorkflowRun(
 		return nil, fmt.Errorf("create workflow run: %w", err)
 	}
 
-	// End users are always approval-gated regardless of grant level.
+	// End users with mutation-step workflows are always approval-gated.
 	if err := s.UpdateWorkflowRunStatus(ctx, run.ID, model.RunStatusAwaitingApproval); err != nil {
 		_ = s.DeleteWorkflowRun(ctx, workspaceID, run.ID)
 		return nil, fmt.Errorf("set run awaiting approval: %w", err)

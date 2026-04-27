@@ -1,0 +1,506 @@
+{
+  "widgets": [
+    {
+      "type": "table",
+      "displayName": "Table",
+      "ports": [
+        {
+          "name": "selectedRow",
+          "direction": "output",
+          "dataType": "object",
+          "description": "Currently selected row object",
+          "expandable": true,
+          "childKeySource": "columns"
+        },
+        {
+          "name": "rows",
+          "direction": "output",
+          "dataType": "array",
+          "description": "All rows currently displayed in the table"
+        },
+        {
+          "name": "selectedRowIndex",
+          "direction": "output",
+          "dataType": "number",
+          "description": "Zero-based index of the selected row"
+        },
+        {
+          "name": "refresh",
+          "direction": "input",
+          "dataType": "trigger",
+          "description": "Trigger a data refresh"
+        },
+        {
+          "name": "setRows",
+          "direction": "input",
+          "dataType": "array",
+          "description": "Override the displayed rows"
+        },
+        {
+          "name": "setFilter",
+          "direction": "input",
+          "dataType": "object",
+          "description": "Apply a filter object to the table",
+          "expandable": true,
+          "childKeySource": "columns"
+        }
+      ]
+    },
+    {
+      "type": "form",
+      "displayName": "Form",
+      "ports": [
+        {
+          "name": "values",
+          "direction": "output",
+          "dataType": "object",
+          "description": "Current form field values as an object"
+        },
+        {
+          "name": "submitted",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Fires when the user submits the form"
+        },
+        {
+          "name": "*",
+          "direction": "output",
+          "dataType": "string",
+          "description": "One port per form field, keyed by field name",
+          "dynamic": true
+        },
+        {
+          "name": "reset",
+          "direction": "input",
+          "dataType": "trigger",
+          "description": "Reset the form to initial values"
+        },
+        {
+          "name": "setValues",
+          "direction": "input",
+          "dataType": "object",
+          "description": "Populate form fields programmatically",
+          "expandable": true,
+          "childKeySource": "fields"
+        },
+        {
+          "name": "setErrors",
+          "direction": "input",
+          "dataType": "object",
+          "description": "Set validation error messages on fields",
+          "expandable": true,
+          "childKeySource": "fields"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "displayName": "Text",
+      "ports": [
+        {
+          "name": "content",
+          "direction": "output",
+          "dataType": "string",
+          "description": "Current rendered text content as a string"
+        },
+        {
+          "name": "setContent",
+          "direction": "input",
+          "dataType": "string",
+          "description": "Override the displayed text content"
+        }
+      ]
+    },
+    {
+      "type": "button",
+      "displayName": "Button",
+      "ports": [
+        {
+          "name": "clicked",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered when the button is clicked"
+        },
+        {
+          "name": "clickedAt",
+          "direction": "output",
+          "dataType": "date",
+          "description": "Timestamp of the last click"
+        },
+        {
+          "name": "setDisabled",
+          "direction": "input",
+          "dataType": "boolean",
+          "description": "Enable or disable the button"
+        },
+        {
+          "name": "setLabel",
+          "direction": "input",
+          "dataType": "string",
+          "description": "Override the button label text"
+        }
+      ]
+    },
+    {
+      "type": "chart",
+      "displayName": "Chart",
+      "ports": [
+        {
+          "name": "selectedPoint",
+          "direction": "output",
+          "dataType": "object",
+          "description": "Currently selected chart data point",
+          "expandable": true,
+          "childKeySource": "chartPointFields",
+          "childKeyDefault": "label,value"
+        },
+        {
+          "name": "setData",
+          "direction": "input",
+          "dataType": "array",
+          "description": "Override the chart data array"
+        },
+        {
+          "name": "refresh",
+          "direction": "input",
+          "dataType": "trigger",
+          "description": "Trigger a data refresh"
+        }
+      ]
+    },
+    {
+      "type": "kpi",
+      "displayName": "KPI Tile",
+      "ports": [
+        {
+          "name": "value",
+          "direction": "output",
+          "dataType": "number",
+          "description": "Current KPI numeric value"
+        },
+        {
+          "name": "setValue",
+          "direction": "input",
+          "dataType": "number",
+          "description": "Override the KPI value"
+        },
+        {
+          "name": "setTrend",
+          "direction": "input",
+          "dataType": "string",
+          "description": "Override the trend indicator value"
+        }
+      ]
+    },
+    {
+      "type": "filter",
+      "displayName": "Filter",
+      "ports": [
+        {
+          "name": "value",
+          "direction": "output",
+          "dataType": "string",
+          "description": "Current filter input value"
+        },
+        {
+          "name": "selectedValue",
+          "direction": "output",
+          "dataType": "string",
+          "description": "Currently selected option value"
+        },
+        {
+          "name": "setOptions",
+          "direction": "input",
+          "dataType": "array",
+          "description": "Populate the dropdown options list"
+        },
+        {
+          "name": "setValue",
+          "direction": "input",
+          "dataType": "string",
+          "description": "Set the current filter value programmatically"
+        }
+      ]
+    },
+    {
+      "type": "container",
+      "displayName": "Container",
+      "ports": [
+        {
+          "name": "children",
+          "direction": "input",
+          "dataType": "array",
+          "description": "Child widget slot (layout only)"
+        }
+      ]
+    },
+    {
+      "type": "modal",
+      "displayName": "Modal",
+      "ports": [
+        {
+          "name": "closed",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered when the modal is closed"
+        },
+        {
+          "name": "open",
+          "direction": "input",
+          "dataType": "trigger",
+          "description": "Trigger to open the modal"
+        },
+        {
+          "name": "close",
+          "direction": "input",
+          "dataType": "trigger",
+          "description": "Trigger to close the modal"
+        }
+      ]
+    },
+    {
+      "type": "tabs",
+      "displayName": "Tabs",
+      "ports": [
+        {
+          "name": "activeTab",
+          "direction": "output",
+          "dataType": "string",
+          "description": "Label of the currently active tab"
+        },
+        {
+          "name": "activeTabIndex",
+          "direction": "output",
+          "dataType": "number",
+          "description": "Zero-based index of the active tab"
+        },
+        {
+          "name": "setActiveTab",
+          "direction": "input",
+          "dataType": "string",
+          "description": "Programmatically set the active tab by label"
+        }
+      ]
+    },
+    {
+      "type": "markdown",
+      "displayName": "Markdown",
+      "ports": [
+        {
+          "name": "setContent",
+          "direction": "input",
+          "dataType": "string",
+          "description": "Override the markdown content"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "type": "step:query",
+      "displayName": "Query",
+      "ports": [
+        {
+          "name": "params",
+          "direction": "input",
+          "dataType": "object",
+          "description": "SQL parameters (one dynamic port per parameter)",
+          "dynamic": true
+        },
+        {
+          "name": "result",
+          "direction": "output",
+          "dataType": "object",
+          "description": "Query result object { rows, rowCount }"
+        },
+        {
+          "name": "rows",
+          "direction": "output",
+          "dataType": "array",
+          "description": "Array of result rows"
+        },
+        {
+          "name": "firstRow",
+          "direction": "output",
+          "dataType": "object",
+          "description": "First result row",
+          "expandable": true,
+          "childKeySource": "resultColumns"
+        },
+        {
+          "name": "rowCount",
+          "direction": "output",
+          "dataType": "number",
+          "description": "Number of rows returned"
+        }
+      ]
+    },
+    {
+      "type": "step:mutation",
+      "displayName": "Mutation",
+      "ports": [
+        {
+          "name": "run",
+          "direction": "input",
+          "dataType": "trigger",
+          "description": "Trigger execution of this mutation step"
+        },
+        {
+          "name": "params",
+          "direction": "input",
+          "dataType": "object",
+          "description": "SQL parameters (one dynamic port per parameter)",
+          "dynamic": true
+        },
+        {
+          "name": "result",
+          "direction": "output",
+          "dataType": "object",
+          "description": "Full mutation result object"
+        },
+        {
+          "name": "affectedRows",
+          "direction": "output",
+          "dataType": "number",
+          "description": "Number of rows affected"
+        }
+      ]
+    },
+    {
+      "type": "step:condition",
+      "displayName": "Condition",
+      "ports": [
+        {
+          "name": "value",
+          "direction": "input",
+          "dataType": "object",
+          "description": "Value to test"
+        },
+        {
+          "name": "compareTo",
+          "direction": "input",
+          "dataType": "object",
+          "description": "Value to compare against"
+        },
+        {
+          "name": "trueBranch",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered when condition is true"
+        },
+        {
+          "name": "falseBranch",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered when condition is false"
+        }
+      ]
+    },
+    {
+      "type": "step:approval_gate",
+      "displayName": "Approval Gate",
+      "ports": [
+        {
+          "name": "approved",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered when the gate is approved"
+        },
+        {
+          "name": "rejected",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered when the gate is rejected"
+        }
+      ]
+    },
+    {
+      "type": "step:notification",
+      "displayName": "Notification",
+      "ports": [
+        {
+          "name": "message",
+          "direction": "input",
+          "dataType": "string",
+          "description": "Notification message body"
+        },
+        {
+          "name": "channel",
+          "direction": "input",
+          "dataType": "string",
+          "description": "Target channel or recipient"
+        },
+        {
+          "name": "sent",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered after the notification is sent"
+        },
+        {
+          "name": "failed",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered when notification delivery fails or the channel is unreachable"
+        }
+      ]
+    },
+    {
+      "type": "step:transform",
+      "displayName": "Transform",
+      "ports": [
+        {
+          "name": "input",
+          "direction": "input",
+          "dataType": "object",
+          "description": "Data to transform"
+        },
+        {
+          "name": "output",
+          "direction": "output",
+          "dataType": "object",
+          "description": "Transformed result",
+          "expandable": true,
+          "childKeySource": "outputFields"
+        }
+      ]
+    },
+    {
+      "type": "step:http",
+      "displayName": "HTTP Request",
+      "ports": [
+        {
+          "name": "body",
+          "direction": "input",
+          "dataType": "object",
+          "description": "Request body (JSON)"
+        },
+        {
+          "name": "responseBody",
+          "direction": "output",
+          "dataType": "object",
+          "description": "Parsed JSON response body",
+          "expandable": true,
+          "childKeySource": "responseFields"
+        },
+        {
+          "name": "status",
+          "direction": "output",
+          "dataType": "number",
+          "description": "HTTP response status code"
+        },
+        {
+          "name": "ok",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered on 2xx response"
+        },
+        {
+          "name": "error",
+          "direction": "output",
+          "dataType": "trigger",
+          "description": "Triggered on non-2xx or network error"
+        }
+      ]
+    }
+  ]
+}

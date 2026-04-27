@@ -1,6 +1,8 @@
 package queue
 
 import (
+	_ "embed"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -37,184 +39,98 @@ type stepEntry struct {
 	ports       []portEntry
 }
 
+//go:embed port-manifest.json
+var portManifestJSON []byte
+
 // widgetCatalog mirrors packages/widget-catalog/src/index.ts WIDGET_REGISTRY.
-// Keep this in sync with the TypeScript source; the test in widgetcatalog_test.go
-// will fail if a widget type is added to the TS source but not here.
-var widgetCatalog = []widgetEntry{
-	{
-		typeName:    "table",
-		displayName: "Table",
-		ports: []portEntry{
-			{name: "selectedRow", dir: portDirOutput, dataType: "object", description: "Currently selected row object", expandable: true},
-			{name: "rows", dir: portDirOutput, dataType: "array", description: "All rows currently displayed in the table"},
-			{name: "selectedRowIndex", dir: portDirOutput, dataType: "number", description: "Zero-based index of the selected row"},
-			{name: "refresh", dir: portDirInput, dataType: "trigger", description: "Trigger a data refresh"},
-			{name: "setRows", dir: portDirInput, dataType: "array", description: "Override the displayed rows"},
-			{name: "setFilter", dir: portDirInput, dataType: "object", description: "Apply a filter object to the table", expandable: true},
-		},
-	},
-	{
-		typeName:    "form",
-		displayName: "Form",
-		ports: []portEntry{
-			{name: "values", dir: portDirOutput, dataType: "object", description: "Current form field values as an object"},
-			{name: "submitted", dir: portDirOutput, dataType: "trigger", description: "Fires the form values object when the user clicks Submit"},
-			{name: "*", dir: portDirOutput, dataType: "string", description: "One output port per form field, keyed by field name", dynamic: true},
-			{name: "reset", dir: portDirInput, dataType: "trigger", description: "Reset the form to initial values"},
-			{name: "setValues", dir: portDirInput, dataType: "object", description: "Populate form fields programmatically", expandable: true},
-			{name: "setErrors", dir: portDirInput, dataType: "object", description: "Set validation error messages on fields", expandable: true},
-		},
-	},
-	{
-		typeName:    "text",
-		displayName: "Text",
-		ports: []portEntry{
-			{name: "content", dir: portDirOutput, dataType: "string", description: "Current rendered text content"},
-			{name: "setContent", dir: portDirInput, dataType: "string", description: "Override the displayed text content"},
-		},
-	},
-	{
-		typeName:    "button",
-		displayName: "Button",
-		ports: []portEntry{
-			{name: "clicked", dir: portDirOutput, dataType: "trigger", description: "Triggered when the button is clicked"},
-			{name: "clickedAt", dir: portDirOutput, dataType: "date", description: "Timestamp of the last click"},
-			{name: "setDisabled", dir: portDirInput, dataType: "boolean", description: "Enable or disable the button"},
-			{name: "setLabel", dir: portDirInput, dataType: "string", description: "Override the button label text"},
-		},
-	},
-	{
-		typeName:    "chart",
-		displayName: "Chart",
-		ports: []portEntry{
-			{name: "selectedPoint", dir: portDirOutput, dataType: "object", description: "Currently selected chart data point", expandable: true},
-			{name: "setData", dir: portDirInput, dataType: "array", description: "Override the chart data array"},
-			{name: "refresh", dir: portDirInput, dataType: "trigger", description: "Trigger a data refresh"},
-		},
-	},
-	{
-		typeName:    "kpi",
-		displayName: "KPI Tile",
-		ports: []portEntry{
-			{name: "value", dir: portDirOutput, dataType: "number", description: "Current KPI numeric value"},
-			{name: "setValue", dir: portDirInput, dataType: "number", description: "Override the KPI value"},
-			{name: "setTrend", dir: portDirInput, dataType: "string", description: "Override the trend indicator value"},
-		},
-	},
-	{
-		typeName:    "filter",
-		displayName: "Filter",
-		ports: []portEntry{
-			{name: "value", dir: portDirOutput, dataType: "string", description: "Current filter input value"},
-			{name: "selectedValue", dir: portDirOutput, dataType: "string", description: "Currently selected option value"},
-			{name: "setOptions", dir: portDirInput, dataType: "array", description: "Populate the dropdown options list"},
-			{name: "setValue", dir: portDirInput, dataType: "string", description: "Set the current filter value programmatically"},
-		},
-	},
-	{
-		typeName:    "container",
-		displayName: "Container",
-		ports: []portEntry{
-			{name: "children", dir: portDirInput, dataType: "array", description: "Child widget slot (layout only)"},
-		},
-	},
-	{
-		typeName:    "modal",
-		displayName: "Modal",
-		ports: []portEntry{
-			{name: "closed", dir: portDirOutput, dataType: "trigger", description: "Triggered when the modal is closed"},
-			{name: "open", dir: portDirInput, dataType: "trigger", description: "Trigger to open the modal"},
-			{name: "close", dir: portDirInput, dataType: "trigger", description: "Trigger to close the modal"},
-		},
-	},
-	{
-		typeName:    "tabs",
-		displayName: "Tabs",
-		ports: []portEntry{
-			{name: "activeTab", dir: portDirOutput, dataType: "string", description: "Label of the currently active tab"},
-			{name: "activeTabIndex", dir: portDirOutput, dataType: "number", description: "Zero-based index of the active tab"},
-			{name: "setActiveTab", dir: portDirInput, dataType: "string", description: "Programmatically set the active tab by label"},
-		},
-	},
-	{
-		typeName:    "markdown",
-		displayName: "Markdown",
-		ports: []portEntry{
-			{name: "setContent", dir: portDirInput, dataType: "string", description: "Override the markdown content"},
-		},
-	},
-}
+// Populated at startup from the embedded port-manifest.json via init().
+var widgetCatalog []widgetEntry
 
 // stepCatalog mirrors packages/widget-catalog/src/index.ts STEP_NODE_REGISTRY.
-var stepCatalog = []stepEntry{
-	{
-		typeName:    "step:query",
-		displayName: "Query",
-		ports: []portEntry{
-			{name: "params", dir: portDirInput, dataType: "object", description: "SQL parameters (one dynamic port per parameter)", dynamic: true},
-			{name: "result", dir: portDirOutput, dataType: "object", description: "Query result object { rows, rowCount }"},
-			{name: "rows", dir: portDirOutput, dataType: "array", description: "Array of result rows"},
-			{name: "firstRow", dir: portDirOutput, dataType: "object", description: "First result row", expandable: true},
-			{name: "rowCount", dir: portDirOutput, dataType: "number", description: "Number of rows returned"},
-		},
-	},
-	{
-		typeName:    "step:mutation",
-		displayName: "Mutation",
-		ports: []portEntry{
-			{name: "run", dir: portDirInput, dataType: "trigger", description: "Trigger execution of this mutation step"},
-			{name: "params", dir: portDirInput, dataType: "object", description: "SQL parameters (one dynamic port per parameter)", dynamic: true},
-			{name: "result", dir: portDirOutput, dataType: "object", description: "Full mutation result object"},
-			{name: "affectedRows", dir: portDirOutput, dataType: "number", description: "Number of rows affected"},
-		},
-	},
-	{
-		typeName:    "step:condition",
-		displayName: "Condition",
-		ports: []portEntry{
-			{name: "value", dir: portDirInput, dataType: "object", description: "Value to test"},
-			{name: "compareTo", dir: portDirInput, dataType: "object", description: "Value to compare against"},
-			{name: "trueBranch", dir: portDirOutput, dataType: "trigger", description: "Triggered when condition is true"},
-			{name: "falseBranch", dir: portDirOutput, dataType: "trigger", description: "Triggered when condition is false"},
-		},
-	},
-	{
-		typeName:    "step:approval_gate",
-		displayName: "Approval Gate",
-		ports: []portEntry{
-			{name: "approved", dir: portDirOutput, dataType: "trigger", description: "Triggered when the gate is approved"},
-			{name: "rejected", dir: portDirOutput, dataType: "trigger", description: "Triggered when the gate is rejected"},
-		},
-	},
-	{
-		typeName:    "step:notification",
-		displayName: "Notification",
-		ports: []portEntry{
-			{name: "message", dir: portDirInput, dataType: "string", description: "Notification message body"},
-			{name: "channel", dir: portDirInput, dataType: "string", description: "Target channel or recipient"},
-			{name: "sent", dir: portDirOutput, dataType: "trigger", description: "Triggered after the notification is sent"},
-			{name: "failed", dir: portDirOutput, dataType: "trigger", description: "Triggered when delivery fails"},
-		},
-	},
-	{
-		typeName:    "step:transform",
-		displayName: "Transform",
-		ports: []portEntry{
-			{name: "input", dir: portDirInput, dataType: "object", description: "Data to transform"},
-			{name: "output", dir: portDirOutput, dataType: "object", description: "Transformed result", expandable: true},
-		},
-	},
-	{
-		typeName:    "step:http",
-		displayName: "HTTP Request",
-		ports: []portEntry{
-			{name: "body", dir: portDirInput, dataType: "object", description: "Request body (JSON)"},
-			{name: "responseBody", dir: portDirOutput, dataType: "object", description: "Parsed JSON response body", expandable: true},
-			{name: "status", dir: portDirOutput, dataType: "number", description: "HTTP response status code"},
-			{name: "ok", dir: portDirOutput, dataType: "trigger", description: "Triggered on 2xx response"},
-			{name: "error", dir: portDirOutput, dataType: "trigger", description: "Triggered on non-2xx or network error"},
-		},
-	},
+// Populated at startup from the embedded port-manifest.json via init().
+var stepCatalog []stepEntry
+
+// jsonPortDef, jsonWidgetDef, jsonStepDef, jsonManifest are private helpers used
+// by init() to unmarshal port-manifest.json.
+type jsonPortDef struct {
+	Name       string `json:"name"`
+	Direction  string `json:"direction"`
+	DataType   string `json:"dataType"`
+	Desc       string `json:"description"`
+	Dynamic    bool   `json:"dynamic"`
+	Expandable bool   `json:"expandable"`
+}
+
+type jsonWidgetDef struct {
+	Type        string        `json:"type"`
+	DisplayName string        `json:"displayName"`
+	Ports       []jsonPortDef `json:"ports"`
+}
+
+type jsonStepDef struct {
+	Type        string        `json:"type"`
+	DisplayName string        `json:"displayName"`
+	Ports       []jsonPortDef `json:"ports"`
+}
+
+type jsonManifest struct {
+	Widgets []jsonWidgetDef `json:"widgets"`
+	Steps   []jsonStepDef   `json:"steps"`
+}
+
+func init() {
+	var m jsonManifest
+	if err := json.Unmarshal(portManifestJSON, &m); err != nil {
+		panic("widgetcatalog: failed to parse port-manifest.json: " + err.Error())
+	}
+
+	widgetCatalog = make([]widgetEntry, 0, len(m.Widgets))
+	for _, w := range m.Widgets {
+		ports := make([]portEntry, 0, len(w.Ports))
+		for _, p := range w.Ports {
+			dir := portDirOutput
+			if p.Direction == "input" {
+				dir = portDirInput
+			}
+			ports = append(ports, portEntry{
+				name:        p.Name,
+				dir:         dir,
+				dataType:    p.DataType,
+				description: p.Desc,
+				dynamic:     p.Dynamic,
+				expandable:  p.Expandable,
+			})
+		}
+		widgetCatalog = append(widgetCatalog, widgetEntry{
+			typeName:    w.Type,
+			displayName: w.DisplayName,
+			ports:       ports,
+		})
+	}
+
+	stepCatalog = make([]stepEntry, 0, len(m.Steps))
+	for _, s := range m.Steps {
+		ports := make([]portEntry, 0, len(s.Ports))
+		for _, p := range s.Ports {
+			dir := portDirOutput
+			if p.Direction == "input" {
+				dir = portDirInput
+			}
+			ports = append(ports, portEntry{
+				name:        p.Name,
+				dir:         dir,
+				dataType:    p.DataType,
+				description: p.Desc,
+				dynamic:     p.Dynamic,
+				expandable:  p.Expandable,
+			})
+		}
+		stepCatalog = append(stepCatalog, stepEntry{
+			typeName:    s.Type,
+			displayName: s.DisplayName,
+			ports:       ports,
+		})
+	}
 }
 
 // BuildPortManifest returns a multi-line string describing every widget and
@@ -289,4 +205,66 @@ func splitPorts(ports []portEntry) (inputs, outputs []portEntry) {
 		}
 	}
 	return
+}
+
+// PortsForElement returns the set of port names for the given element type.
+// element is like "form", "table", "button", "step:query", etc.
+// Returns (inputPorts, outputPorts, ok). ok=false if element type is unknown.
+//
+// Dynamic ports contribute a "*" wildcard entry to their direction's set,
+// meaning any port name in that direction is considered valid. Unknown element
+// types (ok=false) are treated as pass-through by callers.
+func PortsForElement(element string) (inputs map[string]bool, outputs map[string]bool, ok bool) {
+	inputs = map[string]bool{}
+	outputs = map[string]bool{}
+
+	addPorts := func(ports []portEntry) {
+		for _, p := range ports {
+			if p.dynamic {
+				// Dynamic port acts as a wildcard: any port name is valid in this direction.
+				if p.dir == portDirInput {
+					inputs["*"] = true
+				} else {
+					outputs["*"] = true
+				}
+			} else {
+				if p.dir == portDirInput {
+					inputs[p.name] = true
+				} else {
+					outputs[p.name] = true
+				}
+			}
+		}
+	}
+
+	for _, w := range widgetCatalog {
+		if w.typeName == element {
+			addPorts(w.ports)
+			return inputs, outputs, true
+		}
+	}
+
+	for _, s := range stepCatalog {
+		if s.typeName == element {
+			addPorts(s.ports)
+			return inputs, outputs, true
+		}
+	}
+
+	return inputs, outputs, false
+}
+
+// KnownElement returns true if element is a known widget or step type.
+func KnownElement(element string) bool {
+	for _, w := range widgetCatalog {
+		if w.typeName == element {
+			return true
+		}
+	}
+	for _, s := range stepCatalog {
+		if s.typeName == element {
+			return true
+		}
+	}
+	return false
 }

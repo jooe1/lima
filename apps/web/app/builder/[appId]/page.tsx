@@ -718,8 +718,9 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
                   setLoadError('')
                   const parsed = parseV2(src)
                   history.set({ ...parsed, edges: newEdges ?? parsed.edges })
-                } catch {
-                  /* ignore invalid DSL */
+                } catch (err) {
+                  console.error('[Builder] AI-generated DSL failed to parse:', err)
+                  setLoadError('AI generation produced invalid DSL — please try again.')
                 }
               }}
             />

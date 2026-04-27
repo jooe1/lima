@@ -178,6 +178,7 @@ export const WIDGET_REGISTRY: Record<WidgetType, WidgetMeta> = {
     },
     ports: [
       { name: 'values', direction: 'output', dataType: 'object', description: 'Current form field values as an object' },
+      { name: 'submitted', direction: 'output', dataType: 'trigger', description: 'Fires when the user submits the form' },
       { name: '*', direction: 'output', dataType: 'string', description: 'One port per form field, keyed by field name', dynamic: true },
       { name: 'reset', direction: 'input', dataType: 'trigger', description: 'Reset the form to initial values' },
       { name: 'setValues', direction: 'input', dataType: 'object', description: 'Populate form fields programmatically', expandable: true, childKeySource: 'fields' },

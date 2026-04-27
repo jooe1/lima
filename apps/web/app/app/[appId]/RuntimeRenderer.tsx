@@ -9,6 +9,7 @@ import { getMissingRequiredProps, hasConnectorBinding, isProductionReadyWidget, 
 import { buildChartSeries } from '../../../lib/charting'
 import { applyTableDataBinding, getConnectorQuerySQL, getVisibleTableColumns } from '../../../lib/tableBinding'
 import { DashboardFilterProvider, useDashboardFilters } from '../../../lib/dashboardFilters'
+import { compileLayout } from './layout-compiler'
 
 const CELL = 40
 // COLS removed — canvas width is computed dynamically from content
@@ -314,23 +315,25 @@ function getGrid(node: AuraNode) {
 }
 
 export function RuntimeRenderer({ doc, edges, workspaceId, appId }: Props) {
+  const compiledNodes = React.useMemo(() => compileLayout(doc), [doc])
+
   const canvasWidth = React.useMemo(() => {
     let maxRight = 10
-    for (const n of doc) {
+    for (const n of compiledNodes) {
       const g = getGrid(n)
       maxRight = Math.max(maxRight, g.x + g.w)
     }
     return maxRight * CELL + 120
-  }, [doc])
+  }, [compiledNodes])
 
   const canvasHeight = React.useMemo(() => {
     let maxBottom = 10
-    for (const n of doc) {
+    for (const n of compiledNodes) {
       const g = getGrid(n)
       maxBottom = Math.max(maxBottom, g.y + g.h)
     }
     return maxBottom * CELL + 120
-  }, [doc])
+  }, [compiledNodes])
 
   if (doc.length === 0) {
     return <RuntimeStateMessage tone="muted" message="This tool has no content yet." />
@@ -354,7 +357,7 @@ export function RuntimeRenderer({ doc, edges, workspaceId, appId }: Props) {
             margin: '0 auto',
           }}
         >
-          {doc.filter(node => !node.element.startsWith('step:') && !node.element.startsWith('flow:')).map(node => {
+          {compiledNodes.filter(node => !node.element.startsWith('step:') && !node.element.startsWith('flow:')).map(node => {
             const g = getGrid(node)
             return (
               <div
@@ -658,13 +661,13 @@ function RuntimeTable({ node, workspaceId }: WidgetProps) {
   }, [workspaceId, connectorId, connectorType, querySql, refreshSeq, localRefreshSeq])
 
   const effectiveTableData: DashboardQueryResponse | null = overrideRows
-    ? { rows: overrideRows, columns: overrideRows.length > 0 ? Object.keys(overrideRows[0]) : [] }
+    ? { rows: overrideRows, columns: overrideRows.length > 0 ? Object.keys(overrideRows[0]) : [], row_count: overrideRows.length }
     : data
 
   const boundData = applyTableDataBinding(effectiveTableData, {
     filters: [
       ...filterLinks.map(link => ({ column: link.column, value: dashboardFilters[link.widgetId] ?? '' })),
-      ...(effectiveFilter ? Object.entries(effectiveFilter).map(([column, value]) => ({ column, value })) : []),
+      ...(effectiveFilter ? Object.entries(effectiveFilter).map(([column, value]) => ({ column, value: value as string | undefined })) : []),
     ],
     filterColumn: node.with?.filterColumn,
     filterValue: node.with?.filterValue,
@@ -1004,7 +1007,7 @@ function RuntimeChart({ node, workspaceId }: WidgetProps) {
   }, [workspaceId, connectorId, connectorType, querySql, refreshSeq, chartLocalRefreshSeq])
 
   const effectiveChartData: DashboardQueryResponse | null = overrideChartData
-    ? { rows: overrideChartData, columns: overrideChartData.length > 0 ? Object.keys(overrideChartData[0]) : [] }
+    ? { rows: overrideChartData, columns: overrideChartData.length > 0 ? Object.keys(overrideChartData[0]) : [], row_count: overrideChartData.length }
     : data
 
   const series = React.useMemo(

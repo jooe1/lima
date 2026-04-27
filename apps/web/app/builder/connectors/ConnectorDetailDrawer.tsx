@@ -172,7 +172,7 @@ function ActionCatalogInline({
   const [showTestFormId, setShowTestFormId] = useState<string | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
   const [testInputs, setTestInputs] = useState<Record<string, Record<string, string>>>({})
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; status: number; error?: string; response_preview?: string }>>({})
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; status: number; error?: string; response_preview?: string; url?: string }>>({})
 
   async function handleDelete(id: string) {
     setDeletingId(id)

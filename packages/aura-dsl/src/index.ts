@@ -43,6 +43,21 @@ export interface OutputBinding {
   page_id: string
 }
 
+/**
+ * InlineLink represents an inline connection clause authored on a node.
+ * Compiled away to AuraEdge entries by normalizeInlineLinks.
+ *
+ * - `on <myPort> -> <targetId>.<targetPort>` → async edge
+ * - `output <myPort> -> <targetId>.<targetPort>` → async (step target) or reactive (widget target)
+ * - `input <myPort> <- <sourceId>.<sourcePort>` → reactive edge (source → this)
+ */
+export interface InlineLink {
+  direction: 'on' | 'input' | 'output'
+  myPort: string
+  targetNodeId: string
+  targetPort: string
+}
+
 export interface AuraNode {
   element: string
   id: string
@@ -64,6 +79,8 @@ export interface AuraNode {
   style?: StyleMap
   /** True if this node was manually edited and should survive AI rewrites */
   manuallyEdited?: boolean
+  /** Inline connection declarations authored by the AI. Compiled away by normalizeInlineLinks. */
+  inlineLinks?: InlineLink[]
 }
 
 export type AuraDocument = AuraNode[]
@@ -87,6 +104,97 @@ export interface AuraEdge {
 export interface AuraDocumentV2 {
   nodes: AuraNode[]
   edges: AuraEdge[]
+}
+
+// ---- normalizeInlineLinks --------------------------------------------------
+
+/**
+ * normalizeInlineLinks compiles inlineLinks on each node into AuraEdge entries,
+ * merges them with any existing doc.edges (deduplicating by ID), and returns a
+ * new document with inlineLinks cleared from all nodes.
+ *
+ * Edge ID scheme: `e_{fromNodeId}_{fromPort}_{toNodeId}_{toPort}`
+ * Edge type rules:
+ *   - `on <port> -> <targetId>.<targetPort>`  → always async
+ *   - `output <port> -> step:*`               → async
+ *   - `output <port> -> widget`               → reactive
+ *   - `input <port> <- <sourceId>.<sourcePort>` → reactive (edge is source→this)
+ *
+ * If a generated edge ID already exists in doc.edges it is NOT duplicated.
+ * Nodes whose inlineLinks cannot be resolved (unknown targetNodeId) produce a
+ * normalization warning but do not throw — the caller should run validateV2
+ * afterward to surface dangling references as proper validation errors.
+ */
+export function normalizeInlineLinks(doc: AuraDocumentV2): {
+  doc: AuraDocumentV2
+  warnings: string[]
+} {
+  const warnings: string[] = []
+  const nodeElementMap = new Map(doc.nodes.map((n) => [n.id, n.element]))
+  const existingEdgeIds = new Set(doc.edges.map((e) => e.id))
+  const newEdges: AuraEdge[] = []
+
+  const cleanedNodes = doc.nodes.map((node) => {
+    if (!node.inlineLinks || node.inlineLinks.length === 0) return node
+
+    for (const link of node.inlineLinks) {
+      let fromNodeId: string
+      let fromPort: string
+      let toNodeId: string
+      let toPort: string
+      let edgeType: EdgeType
+
+      if (link.direction === 'input') {
+        // input myPort <- sourceId.sourcePort
+        // Edge runs from source → this node
+        fromNodeId = link.targetNodeId
+        fromPort = link.targetPort
+        toNodeId = node.id
+        toPort = link.myPort
+        edgeType = 'reactive'
+        if (!nodeElementMap.has(link.targetNodeId)) {
+          warnings.push(`normalizeInlineLinks: node '${node.id}' input links from unknown node '${link.targetNodeId}'`)
+        }
+      } else {
+        // on or output: from this node → target
+        fromNodeId = node.id
+        fromPort = link.myPort
+        toNodeId = link.targetNodeId
+        toPort = link.targetPort
+
+        if (link.direction === 'on') {
+          edgeType = 'async'
+          if (!nodeElementMap.has(link.targetNodeId)) {
+            warnings.push(`normalizeInlineLinks: node '${node.id}' links to unknown node '${link.targetNodeId}'`)
+          }
+        } else {
+          // output: async if target is step:*, else reactive
+          const targetElement = nodeElementMap.get(link.targetNodeId)
+          if (targetElement === undefined) {
+            warnings.push(`normalizeInlineLinks: node '${node.id}' links to unknown node '${link.targetNodeId}'`)
+            edgeType = 'async' // conservative default for unknown targets
+          } else {
+            edgeType = targetElement.startsWith('step:') ? 'async' : 'reactive'
+          }
+        }
+      }
+
+      const edgeId = `e_${fromNodeId}_${fromPort}_${toNodeId}_${toPort}`
+      if (!existingEdgeIds.has(edgeId) && !newEdges.some((e) => e.id === edgeId)) {
+        newEdges.push({ id: edgeId, fromNodeId, fromPort, toNodeId, toPort, edgeType })
+        existingEdgeIds.add(edgeId)
+      }
+    }
+
+    // Return node with inlineLinks cleared
+    const { inlineLinks: _removed, ...cleanNode } = node
+    return cleanNode as AuraNode
+  })
+
+  return {
+    doc: { nodes: cleanedNodes, edges: [...doc.edges, ...newEdges] },
+    warnings,
+  }
 }
 
 // ---- Parser ----------------------------------------------------------------
@@ -144,17 +252,33 @@ export function parse(source: string): AuraDocument {
  */
 
 /**
- * Repairs DSL edge statements where port names contain spaces (e.g. `form1.first name`).
- * Spaces within a port name segment are replaced with `_` so the parser can tokenize correctly.
- * Only the edge section (after `---edges---`) is modified.
+ * Repairs the legacy worker bug that persisted quoted literal clauses with a
+ * stray parent suffix, for example `text "Orders" @ root`.
+ */
+function repairLegacyLiteralClauseParentSuffixes(source: string): string {
+  return source.replace(
+    /^(\s*(?:text|value|if|transform|formFields)\s+"(?:[^"\\]|\\.)*")\s+@\s+\S+\s*$/gm,
+    '$1'
+  )
+}
+
+/**
+ * Repairs narrowly scoped legacy DSL issues before parsing.
+ *
+ * Current repairs:
+ * - Strip stray `@ parentId` suffixes from quoted literal clauses such as
+ *   `text "Orders" @ root` that were produced by an older worker-side repair bug.
+ * - Repair edge endpoints whose port names contain spaces (e.g. `form1.first name`).
  */
 export function repairDSL(source: string): string {
-  const SENTINEL = '---edges---'
-  const sentinelIdx = source.indexOf(SENTINEL)
-  if (sentinelIdx === -1) return source
+  const repairedNodeSource = repairLegacyLiteralClauseParentSuffixes(source)
 
-  const nodeSource = source.slice(0, sentinelIdx + SENTINEL.length)
-  const edgeSource = source.slice(sentinelIdx + SENTINEL.length)
+  const SENTINEL = '---edges---'
+  const sentinelIdx = repairedNodeSource.indexOf(SENTINEL)
+  if (sentinelIdx === -1) return repairedNodeSource
+
+  const nodeSource = repairedNodeSource.slice(0, sentinelIdx + SENTINEL.length)
+  const edgeSource = repairedNodeSource.slice(sentinelIdx + SENTINEL.length)
 
   // Fix patterns like `from nodeId.port1 part2 to` and `to nodeId.port1 part2 <edgeType>`
   // by joining the broken port name segments with `_`.
@@ -164,7 +288,7 @@ export function repairDSL(source: string): string {
   const repairedEdgeSource = edgeSource.replace(
     /((?:from|to)\s+\S+\.\S*)\s+([^\s;]+)/g,
     (match, beforeSpace, afterSpace) => {
-      if (KEYWORDS.has(afterSpace)) return match
+      if (KEYWORDS.has(afterSpace) || beforeSpace.includes('"') || afterSpace.includes('"')) return match
       return `${beforeSpace}_${afterSpace}`
     }
   )
@@ -173,6 +297,8 @@ export function repairDSL(source: string): string {
 }
 
 export function parseV2(source: string): AuraDocumentV2 {
+  source = repairLegacyLiteralClauseParentSuffixes(source)
+
   const SENTINEL = '---edges---'
   const sentinelIdx = source.indexOf(SENTINEL)
 
@@ -267,10 +393,9 @@ export function parseV2(source: string): AuraDocumentV2 {
     }
   }
 
-  return { nodes, edges }
+  const { doc: normalizedDoc } = normalizeInlineLinks({ nodes, edges })
+  return normalizedDoc
 }
-
-/** Parses a single node statement from the shared token stream. */
 function parseNode(
   tokens: string[],
   peek: () => string,
@@ -325,9 +450,61 @@ function parseNode(
       case 'output_bindings':
         node.output_bindings = JSON.parse(consumeString(tokens, getPos() - 1, () => consume()))
         break
-      case 'style':
-        node.style = parseStyleBlock(tokens, () => peek(), () => consume(), expect)
+      case 'on': {
+        // on <myPort> -> <targetId>.<targetPort>
+        const myPort = consume()
+        const arrow = consume()
+        if (arrow !== '->') throw new ParseError(`on clause: expected '->', got '${arrow}' in node '${id}'`)
+        const target = consume()
+        const dotIdx = target.indexOf('.')
+        if (dotIdx === -1) throw new ParseError(`on clause: expected 'nodeId.portName', got '${target}' in node '${id}'`)
+        if (!node.inlineLinks) node.inlineLinks = []
+        node.inlineLinks.push({ direction: 'on', myPort, targetNodeId: target.slice(0, dotIdx), targetPort: target.slice(dotIdx + 1) })
         break
+      }
+      case 'input': {
+        // input <myPort> <- <sourceId>.<sourcePort>
+        const myPort = consume()
+        const arrow = consume()
+        if (arrow !== '<-') throw new ParseError(`input clause: expected '<-', got '${arrow}' in node '${id}'`)
+        const source = consume()
+        const dotIdx = source.indexOf('.')
+        if (dotIdx === -1) throw new ParseError(`input clause: expected 'nodeId.portName', got '${source}' in node '${id}'`)
+        if (!node.inlineLinks) node.inlineLinks = []
+        node.inlineLinks.push({ direction: 'input', myPort, targetNodeId: source.slice(0, dotIdx), targetPort: source.slice(dotIdx + 1) })
+        break
+      }
+      case 'output': {
+        // output <myPort> -> <targetId>.<targetPort>
+        const myPort = consume()
+        const arrow = consume()
+        if (arrow !== '->') throw new ParseError(`output clause: expected '->', got '${arrow}' in node '${id}'`)
+        const target = consume()
+        const dotIdx = target.indexOf('.')
+        if (dotIdx === -1) throw new ParseError(`output clause: expected 'nodeId.portName', got '${target}' in node '${id}'`)
+        if (!node.inlineLinks) node.inlineLinks = []
+        node.inlineLinks.push({ direction: 'output', myPort, targetNodeId: target.slice(0, dotIdx), targetPort: target.slice(dotIdx + 1) })
+        break
+      }
+      case 'layout': {
+        // layout <key>="<value>" ... — stored in style with layout_ prefix
+        if (!node.style) node.style = {}
+        while (peek() !== ';' && peek() !== undefined && !isClause(peek())) {
+          if (peek() === ',') { consume(); continue }
+          const pair = consume()
+          const eq = pair.indexOf('=')
+          if (eq === -1) break
+          const k = pair.slice(0, eq)
+          const v = decodeStringToken(pair.slice(eq + 1))
+          node.style[`layout_${k}`] = v
+        }
+        break
+      }
+      case 'style': {
+        const parsed = parseStyleBlock(tokens, () => peek(), () => consume(), expect)
+        node.style = { ...node.style, ...parsed }
+        break
+      }
       default:
         throw new ParseError(`unknown clause '${clause}' in node '${id}'`)
     }
@@ -386,12 +563,33 @@ function serializeNode(n: AuraNode): string {
   if (n.output_bindings && n.output_bindings.length > 0) {
     lines.push(`  output_bindings ${JSON.stringify(JSON.stringify(n.output_bindings))}`)
   }
-  if (n.style && Object.keys(n.style).length > 0) {
-    lines.push(`  style {`)
-    for (const [k, v] of Object.entries(n.style)) {
-      lines.push(`    ${k}: ${JSON.stringify(v)};`)
+  // Inline link clauses (on / output / input)
+  if (n.inlineLinks && n.inlineLinks.length > 0) {
+    for (const link of n.inlineLinks) {
+      if (link.direction === 'on') {
+        lines.push(`  on ${link.myPort} -> ${link.targetNodeId}.${link.targetPort}`)
+      } else if (link.direction === 'output') {
+        lines.push(`  output ${link.myPort} -> ${link.targetNodeId}.${link.targetPort}`)
+      } else if (link.direction === 'input') {
+        lines.push(`  input ${link.myPort} <- ${link.targetNodeId}.${link.targetPort}`)
+      }
     }
-    lines.push(`  }`)
+  }
+  // Layout clause — layout_* keys in style map emitted as a `layout` clause
+  if (n.style) {
+    const layoutEntries = Object.entries(n.style).filter(([k]) => k.startsWith('layout_'))
+    if (layoutEntries.length > 0) {
+      const parts = layoutEntries.map(([k, v]) => `${k.slice(7)}=${JSON.stringify(v)}`).join(' ')
+      lines.push(`  layout ${parts}`)
+    }
+    const regularEntries = Object.entries(n.style).filter(([k]) => !k.startsWith('layout_'))
+    if (regularEntries.length > 0) {
+      lines.push(`  style {`)
+      for (const [k, v] of regularEntries) {
+        lines.push(`    ${k}: ${JSON.stringify(v)};`)
+      }
+      lines.push(`  }`)
+    }
   }
 
   lines.push(';')
@@ -542,7 +740,8 @@ const ALLOWED_ELEMENTS = new Set([
 ])
 
 export const STEP_ELEMENTS = new Set([
-  'step:query', 'step:mutation', 'step:condition', 'step:approval_gate', 'step:notification',
+  'step:query', 'step:mutation', 'step:condition', 'step:approval_gate',
+  'step:notification', 'step:transform', 'step:http',
 ])
 
 /**
@@ -809,7 +1008,7 @@ function parseStyleBlock(
   return map
 }
 
-const CLAUSES = new Set(['text', 'value', 'forEach', 'key', 'if', 'with', 'transform', 'action', 'formRef', 'formFields', 'widget_bindings', 'output_bindings', 'style'])
+const CLAUSES = new Set(['text', 'value', 'forEach', 'key', 'if', 'with', 'transform', 'action', 'formRef', 'formFields', 'widget_bindings', 'output_bindings', 'on', 'input', 'output', 'layout', 'style'])
 function isClause(t: string): boolean {
   return CLAUSES.has(t)
 }

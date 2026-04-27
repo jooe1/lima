@@ -1,5 +1,7 @@
 'use client'
 
+import type { JSX } from 'react'
+
 export function RouteGateShell(props: { title: string; message: string }): JSX.Element {
   return (
     <div style={{

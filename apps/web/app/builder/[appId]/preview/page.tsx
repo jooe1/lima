@@ -1,7 +1,7 @@
 'use client'
 
 import { use, useEffect, useState } from 'react'
-import { parse } from '@lima/aura-dsl'
+import { parseV2 } from '@lima/aura-dsl'
 import { useAuth } from '../../../../lib/auth'
 import { previewDraftApp, type App, ApiError } from '../../../../lib/api'
 import { RuntimeRenderer } from '../../../app/[appId]/RuntimeRenderer'
@@ -72,10 +72,16 @@ export default function DraftPreviewPage({ params }: { params: Promise<{ appId: 
   }
 
   let doc: import('@lima/aura-dsl').AuraDocument = []
+  let edges: import('@lima/aura-dsl').AuraEdge[] = []
   try {
-    doc = app.dsl_source ? parse(app.dsl_source) : []
+    if (app.dsl_source) {
+      const parsed = parseV2(app.dsl_source)
+      doc = parsed.nodes
+      edges = (app.dsl_edges && app.dsl_edges.length > 0) ? app.dsl_edges : parsed.edges
+    }
   } catch {
     doc = []
+    edges = []
   }
 
   return (
@@ -107,7 +113,7 @@ export default function DraftPreviewPage({ params }: { params: Promise<{ appId: 
           ← Back to editor
         </a>
       </header>
-      <RuntimeRenderer doc={doc} workspaceId={workspace!.id} appId={appId} />
+      <RuntimeRenderer doc={doc} edges={edges} workspaceId={workspace!.id} appId={appId} />
     </div>
   )
 }

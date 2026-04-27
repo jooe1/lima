@@ -52,7 +52,7 @@ export function MarkdownWidgetPreview({ node, onUpdate }: MarkdownWidgetPreviewP
         ...node,
         manuallyEdited: true,
         text: draft || undefined,
-        style: { ...(node.style ?? {}), content: draft || undefined },
+        style: { ...(node.style ?? {}), ...(draft ? { content: draft } : {}) },
       })
     }
     setEditing(false)

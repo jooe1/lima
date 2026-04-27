@@ -60,6 +60,7 @@ func TestBuildPortManifestContainsKeyPorts(t *testing.T) {
 	checks := []string{
 		"table",
 		"selectedRow",
+		"submitted",
 		"setValues",
 		"step:mutation",
 		"affectedRows",

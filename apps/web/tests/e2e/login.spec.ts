@@ -12,7 +12,7 @@ test('login page shows magic link form', async ({ page }) => {
 
 test('login page shows email label', async ({ page }) => {
   await page.goto('/login')
-  await expect(page.getByLabelText(/email address/i)).toBeVisible()
+  await expect(page.getByLabel(/email address/i)).toBeVisible()
 })
 
 test('magic link form shows error on bad submit', async ({ page }) => {

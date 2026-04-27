@@ -29,6 +29,7 @@ import '@xyflow/react/dist/style.css'
 import { WIDGET_REGISTRY, STEP_NODE_REGISTRY, expandWidgetPorts, type WidgetType, type StepNodeType } from '@lima/widget-catalog'
 import { type AuraDocumentV2, type AuraNode, type ReactiveStore, type AuraEdge } from '@lima/aura-dsl'
 import { tryParseSQL, defaultGuided, sqlFromGuided } from './stepSqlUtils'
+import { computeFlowLayout } from './flow-layout'
 
 // ---- Types -----------------------------------------------------------------
 
@@ -64,6 +65,8 @@ export function docV2ToFlowNodes(doc: AuraDocumentV2): Node[] {
     doc.nodes.filter(n => n.element === 'button' && n.formRef).map(n => n.id),
   )
 
+  const computedPositions = computeFlowLayout(doc)
+
   return doc.nodes.filter(node => !absorbedButtonIds.has(node.id)).map((node, index) => {
     const hasFlowPos = node.style?.flowX !== undefined && node.style?.flowY !== undefined
 
@@ -87,8 +90,8 @@ export function docV2ToFlowNodes(doc: AuraDocumentV2): Node[] {
     }
 
     if (node.element.startsWith('step:')) {
-      const x = hasFlowPos ? parseFloat(node.style!.flowX!) : 900
-      const y = hasFlowPos ? parseFloat(node.style!.flowY!) : index * 160
+      const x = hasFlowPos ? parseFloat(node.style!.flowX!) : (computedPositions.get(node.id)?.x ?? 900)
+      const y = hasFlowPos ? parseFloat(node.style!.flowY!) : (computedPositions.get(node.id)?.y ?? index * 160)
       return {
         id: node.id,
         type: node.element,
@@ -107,8 +110,8 @@ export function docV2ToFlowNodes(doc: AuraDocumentV2): Node[] {
     // Widget node
     const gx = parseInt(node.style?.gridX ?? '0', 10) || 0
     const gy = parseInt(node.style?.gridY ?? '0', 10) || 0
-    const x = hasFlowPos ? parseFloat(node.style!.flowX!) : gx * 60
-    const y = hasFlowPos ? parseFloat(node.style!.flowY!) : gy * 60
+    const x = hasFlowPos ? parseFloat(node.style!.flowX!) : (computedPositions.get(node.id)?.x ?? gx * 60)
+    const y = hasFlowPos ? parseFloat(node.style!.flowY!) : (computedPositions.get(node.id)?.y ?? gy * 60)
 
     const meta = WIDGET_REGISTRY[node.element as WidgetType]
     const data: WidgetNodeData = {
@@ -694,7 +697,7 @@ function WidgetNodeComponent({ data, selected }: NodeProps) {
 
 const MUTATION_OP_LABEL: Record<string, string> = {
   insert: 'INSERT INTO',
-  update: 'UPDATE',
+  sehrupdate: 'UPDATE',
   delete: 'DELETE FROM',
 }
 

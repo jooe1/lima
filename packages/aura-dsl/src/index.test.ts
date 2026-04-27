@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   parse, parseV2, serialize, serializeV2, validate, validateV2, diff, diffV2, applyDiff, applyDiffV2,
-  ParseError, STEP_ELEMENTS, migrateV1ToV2,
-  type WidgetBinding, type OutputBinding, type AuraEdge, type AuraDocumentV2, type PortRegistry, type V1Workflow,
+  ParseError, STEP_ELEMENTS, migrateV1ToV2, normalizeInlineLinks,
+  type WidgetBinding, type OutputBinding, type AuraEdge, type AuraDocumentV2, type PortRegistry, type V1Workflow, type InlineLink,
 } from '../src/index'
 
 const SIMPLE_DSL = `
@@ -431,6 +431,25 @@ describe('parseV2', () => {
     expect(doc.edges).toHaveLength(0)
   })
 
+  it('repairs a legacy stray parent suffix on a text clause', () => {
+    const src = `
+table orders_table @ content_row
+  text "Orders" @ root
+  with columns="OrderID,Date"
+;
+`
+
+    const doc = parseV2(src)
+    expect(doc.nodes).toHaveLength(1)
+    expect(doc.nodes[0]).toMatchObject({
+      element: 'table',
+      id: 'orders_table',
+      parentId: 'content_row',
+      text: 'Orders',
+      with: { columns: 'OrderID,Date' },
+    })
+  })
+
   it('parses an edge with transform clause', () => {
     const doc = parseV2(EDGES_DSL_TRANSFORM)
     expect(doc.edges[0]).toMatchObject({
@@ -778,13 +797,33 @@ describe('validateV2 step element rules', () => {
     expect(errs.filter((e) => e.message.includes('must connect to at least one step node'))).toHaveLength(0)
   })
 
-  it('STEP_ELEMENTS exports all 5 step node types', () => {
-    expect(STEP_ELEMENTS.size).toBe(5)
+  it('STEP_ELEMENTS exports all 7 step node types', () => {
+    expect(STEP_ELEMENTS.size).toBe(7)
     expect(STEP_ELEMENTS.has('step:query')).toBe(true)
     expect(STEP_ELEMENTS.has('step:mutation')).toBe(true)
     expect(STEP_ELEMENTS.has('step:condition')).toBe(true)
     expect(STEP_ELEMENTS.has('step:approval_gate')).toBe(true)
     expect(STEP_ELEMENTS.has('step:notification')).toBe(true)
+    expect(STEP_ELEMENTS.has('step:transform')).toBe(true)
+    expect(STEP_ELEMENTS.has('step:http')).toBe(true)
+  })
+
+  it('validateV2 does not error on a node with element step:transform', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [{ element: 'step:transform', id: 'xform1', parentId: 'root' }],
+      edges: [],
+    }
+    const errs = validateV2(doc)
+    expect(errs.filter(e => e.message.includes('Unknown step element'))).toHaveLength(0)
+  })
+
+  it('validateV2 does not error on a node with element step:http', () => {
+    const doc: AuraDocumentV2 = {
+      nodes: [{ element: 'step:http', id: 'http1', parentId: 'root' }],
+      edges: [],
+    }
+    const errs = validateV2(doc)
+    expect(errs.filter(e => e.message.includes('Unknown step element'))).toHaveLength(0)
   })
 })
 
@@ -893,5 +932,320 @@ describe('migrateV1ToV2', () => {
     const edgeFromStep = result.edges.find((e) => e.fromNodeId === 'step1')
     expect(edgeToStep).toBeDefined()
     expect(edgeFromStep).toBeDefined()
+  })
+})
+
+// ---- Inline link grammar (Commit 2) ----------------------------------------
+
+describe('inline link grammar — parse', () => {
+  it('parses an on clause on a button node', () => {
+    const src = `button btn1 @ root\n  on clicked -> mut1.run\n;`
+    const doc = parse(src)
+    expect(doc[0].inlineLinks).toHaveLength(1)
+    expect(doc[0].inlineLinks![0]).toEqual<InlineLink>({
+      direction: 'on',
+      myPort: 'clicked',
+      targetNodeId: 'mut1',
+      targetPort: 'run',
+    })
+  })
+
+  it('parses an input clause on a text node', () => {
+    const src = `text txt1 @ root\n  input content <- sq1.firstRow\n;`
+    const doc = parse(src)
+    expect(doc[0].inlineLinks).toHaveLength(1)
+    expect(doc[0].inlineLinks![0]).toEqual<InlineLink>({
+      direction: 'input',
+      myPort: 'content',
+      targetNodeId: 'sq1',
+      targetPort: 'firstRow',
+    })
+  })
+
+  it('parses an output clause on a step node', () => {
+    const src = `step:query sq1 @ root\n  output result -> tbl.setRows\n;`
+    const doc = parse(src)
+    expect(doc[0].inlineLinks).toHaveLength(1)
+    expect(doc[0].inlineLinks![0]).toEqual<InlineLink>({
+      direction: 'output',
+      myPort: 'result',
+      targetNodeId: 'tbl',
+      targetPort: 'setRows',
+    })
+  })
+
+  it('parses multiple inline link clauses on the same node', () => {
+    const src = `step:condition cond1 @ root\n  output trueBranch -> approve.run\n  output falseBranch -> reject.run\n;`
+    const doc = parse(src)
+    expect(doc[0].inlineLinks).toHaveLength(2)
+    expect(doc[0].inlineLinks![0].targetNodeId).toBe('approve')
+    expect(doc[0].inlineLinks![1].targetNodeId).toBe('reject')
+  })
+
+  it('parses input clause with composite port name (dot-separated)', () => {
+    // targetPort contains a dot: firstRow.name — split on FIRST dot only
+    const src = `text txt1 @ root\n  input content <- sq1.firstRow.name\n;`
+    const doc = parse(src)
+    expect(doc[0].inlineLinks![0]).toMatchObject({
+      direction: 'input',
+      myPort: 'content',
+      targetNodeId: 'sq1',
+      targetPort: 'firstRow.name',
+    })
+  })
+
+  it('parses a layout clause into style with layout_ prefix', () => {
+    const src = `form form1 @ root\n  layout area="main" span="6"\n;`
+    const doc = parse(src)
+    expect(doc[0].style?.layout_area).toBe('main')
+    expect(doc[0].style?.layout_span).toBe('6')
+  })
+
+  it('layout clause coexists with style block', () => {
+    const src = `form form1 @ root\n  layout area="main"\n  style { gridX: "0"; }\n;`
+    const doc = parse(src)
+    expect(doc[0].style?.layout_area).toBe('main')
+    expect(doc[0].style?.gridX).toBe('0')
+  })
+
+  it('throws ParseError for on clause missing arrow', () => {
+    expect(() => parse('button btn @ root\n  on clicked target.run\n;')).toThrow(ParseError)
+  })
+
+  it('throws ParseError for input clause missing source dot separator', () => {
+    expect(() => parse('text t @ root\n  input content <- nodewithoutdot\n;')).toThrow(ParseError)
+  })
+})
+
+describe('inline link grammar — round-trip serialize/parse', () => {
+  it('round-trips a node with on clause', () => {
+    const src = `button btn1 @ root\n  on clicked -> mut1.run\n;`
+    const doc1 = parse(src)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
+
+  it('round-trips a node with input and output clauses', () => {
+    const src = [
+      'step:query sq1 @ root',
+      '  input params <- form1.values',
+      '  output rows -> tbl1.setRows',
+      ';',
+    ].join('\n')
+    const doc1 = parse(src)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
+
+  it('round-trips a node with layout clause', () => {
+    const src = `form form1 @ root\n  layout area="sidebar" span="3"\n;`
+    const doc1 = parse(src)
+    const src2 = serialize(doc1)
+    const doc2 = parse(src2)
+    expect(doc2[0].style?.layout_area).toBe('sidebar')
+    expect(doc2[0].style?.layout_span).toBe('3')
+    expect(doc2).toEqual(doc1)
+  })
+
+  it('layout_* keys in style are emitted as layout clause, not inside style block', () => {
+    const doc = parse(`form f1 @ root\n  layout area="main"\n;`)
+    const src = serialize(doc)
+    expect(src).toContain('layout area=')
+    expect(src).not.toContain('layout_area')
+  })
+
+  it('regular style keys are still emitted inside style block', () => {
+    const src = `table t @ root\n  style { gridX: "0"; gridW: "6"; }\n;`
+    const doc1 = parse(src)
+    const src2 = serialize(doc1)
+    expect(src2).toContain('style {')
+    expect(src2).toContain('gridX')
+    const doc2 = parse(src2)
+    expect(doc2).toEqual(doc1)
+  })
+})
+
+// ---- normalizeInlineLinks (Commit 3) ---------------------------------------
+
+describe('normalizeInlineLinks', () => {
+  function makeDoc(nodes: import('../src/index').AuraNode[], edges: AuraEdge[] = []): AuraDocumentV2 {
+    return { nodes, edges }
+  }
+
+  // Case 1: button on clicked -> mutation_step.run → async edge
+  it('case 1: button on clicked -> mutation_step.run produces async edge', () => {
+    const doc = makeDoc([
+      { element: 'button', id: 'btn1', parentId: 'root', inlineLinks: [
+        { direction: 'on', myPort: 'clicked', targetNodeId: 'mutation_step', targetPort: 'run' },
+      ]},
+      { element: 'step:mutation', id: 'mutation_step', parentId: 'root' },
+    ])
+    const { doc: result, warnings } = normalizeInlineLinks(doc)
+    expect(warnings).toHaveLength(0)
+    expect(result.edges).toHaveLength(1)
+    expect(result.edges[0]).toMatchObject({
+      id: 'e_btn1_clicked_mutation_step_run',
+      fromNodeId: 'btn1', fromPort: 'clicked',
+      toNodeId: 'mutation_step', toPort: 'run',
+      edgeType: 'async',
+    })
+    expect(result.nodes[0].inlineLinks).toBeUndefined()
+  })
+
+  // Case 2: form on submitted -> mutation_step.run → async edge
+  it('case 2: form on submitted -> mutation_step.run produces async edge', () => {
+    const doc = makeDoc([
+      { element: 'form', id: 'form1', parentId: 'root', inlineLinks: [
+        { direction: 'on', myPort: 'submitted', targetNodeId: 'mutation_step', targetPort: 'run' },
+      ]},
+      { element: 'step:mutation', id: 'mutation_step', parentId: 'root' },
+    ])
+    const { doc: result, warnings } = normalizeInlineLinks(doc)
+    expect(warnings).toHaveLength(0)
+    expect(result.edges).toHaveLength(1)
+    expect(result.edges[0]).toMatchObject({
+      fromNodeId: 'form1', fromPort: 'submitted',
+      toNodeId: 'mutation_step', toPort: 'run',
+      edgeType: 'async',
+    })
+  })
+
+  // Case 3: step output result -> table (widget) → reactive edge
+  it('case 3: step output result -> widget table produces reactive edge', () => {
+    const doc = makeDoc([
+      { element: 'step:query', id: 'sq1', parentId: 'root', inlineLinks: [
+        { direction: 'output', myPort: 'result', targetNodeId: 'table1', targetPort: 'setRows' },
+      ]},
+      { element: 'table', id: 'table1', parentId: 'root' },
+    ])
+    const { doc: result, warnings } = normalizeInlineLinks(doc)
+    expect(warnings).toHaveLength(0)
+    expect(result.edges[0]).toMatchObject({
+      fromNodeId: 'sq1', fromPort: 'result',
+      toNodeId: 'table1', toPort: 'setRows',
+      edgeType: 'reactive',
+    })
+  })
+
+  // Case 4: step output result -> next_step (step:query) → async edge
+  it('case 4: step output result -> step:query target produces async edge', () => {
+    const doc = makeDoc([
+      { element: 'step:query', id: 'sq1', parentId: 'root', inlineLinks: [
+        { direction: 'output', myPort: 'result', targetNodeId: 'sq2', targetPort: 'run' },
+      ]},
+      { element: 'step:query', id: 'sq2', parentId: 'root' },
+    ])
+    const { doc: result } = normalizeInlineLinks(doc)
+    expect(result.edges[0]).toMatchObject({
+      fromNodeId: 'sq1', fromPort: 'result',
+      toNodeId: 'sq2', toPort: 'run',
+      edgeType: 'async',
+    })
+  })
+
+  // Case 5: condition trueBranch + falseBranch → two async edges
+  it('case 5: condition node with two output clauses produces two async edges', () => {
+    const doc = makeDoc([
+      { element: 'step:condition', id: 'cond1', parentId: 'root', inlineLinks: [
+        { direction: 'output', myPort: 'trueBranch', targetNodeId: 'approve_step', targetPort: 'run' },
+        { direction: 'output', myPort: 'falseBranch', targetNodeId: 'reject_step', targetPort: 'run' },
+      ]},
+      { element: 'step:mutation', id: 'approve_step', parentId: 'root' },
+      { element: 'step:mutation', id: 'reject_step', parentId: 'root' },
+    ])
+    const { doc: result } = normalizeInlineLinks(doc)
+    expect(result.edges).toHaveLength(2)
+    expect(result.edges[0]).toMatchObject({ fromPort: 'trueBranch', toNodeId: 'approve_step', edgeType: 'async' })
+    expect(result.edges[1]).toMatchObject({ fromPort: 'falseBranch', toNodeId: 'reject_step', edgeType: 'async' })
+  })
+
+  // Case 6: widget input with composite port name (dot in source port)
+  it('case 6: widget input <- step.firstRow.name produces reactive edge with composite port name', () => {
+    const doc = makeDoc([
+      { element: 'text', id: 'txt1', parentId: 'root', inlineLinks: [
+        { direction: 'input', myPort: 'content', targetNodeId: 'sq1', targetPort: 'firstRow.name' },
+      ]},
+      { element: 'step:query', id: 'sq1', parentId: 'root' },
+    ])
+    const { doc: result, warnings } = normalizeInlineLinks(doc)
+    expect(warnings).toHaveLength(0)
+    expect(result.edges[0]).toMatchObject({
+      id: 'e_sq1_firstRow.name_txt1_content',
+      fromNodeId: 'sq1', fromPort: 'firstRow.name',
+      toNodeId: 'txt1', toPort: 'content',
+      edgeType: 'reactive',
+    })
+  })
+
+  // Case 7: two nodes linking to same target → two distinct edges, no dup
+  it('case 7: two nodes linking to same target produce two distinct edges', () => {
+    const doc = makeDoc([
+      { element: 'button', id: 'btn1', parentId: 'root', inlineLinks: [
+        { direction: 'on', myPort: 'clicked', targetNodeId: 'mut1', targetPort: 'run' },
+      ]},
+      { element: 'form', id: 'form1', parentId: 'root', inlineLinks: [
+        { direction: 'on', myPort: 'submitted', targetNodeId: 'mut1', targetPort: 'run' },
+      ]},
+      { element: 'step:mutation', id: 'mut1', parentId: 'root' },
+    ])
+    const { doc: result } = normalizeInlineLinks(doc)
+    expect(result.edges).toHaveLength(2)
+    const ids = result.edges.map((e) => e.id)
+    expect(new Set(ids).size).toBe(2) // no duplicates
+  })
+
+  // Case 8: unknown target node → warning emitted, edge still present
+  it('case 8: link to unknown node produces warning and dangling edge', () => {
+    const doc = makeDoc([
+      { element: 'button', id: 'btn1', parentId: 'root', inlineLinks: [
+        { direction: 'on', myPort: 'clicked', targetNodeId: 'ghost_node', targetPort: 'run' },
+      ]},
+    ])
+    const { doc: result, warnings } = normalizeInlineLinks(doc)
+    expect(warnings.length).toBeGreaterThan(0)
+    expect(warnings[0]).toContain('ghost_node')
+    expect(result.edges).toHaveLength(1) // edge still emitted
+    expect(result.edges[0]).toMatchObject({
+      fromNodeId: 'btn1', fromPort: 'clicked',
+      toNodeId: 'ghost_node', toPort: 'run',
+    })
+  })
+
+  // Case 9: round-trip through parseV2/serializeV2
+  it('case 9: round-trip normalizeInlineLinks(parseV2(serializeV2(doc))).doc equals pre-serialization doc', () => {
+    const preDoc: AuraDocumentV2 = {
+      nodes: [
+        { element: 'button', id: 'btn1', parentId: 'root' },
+        { element: 'step:mutation', id: 'mut1', parentId: 'root' },
+      ],
+      edges: [
+        { id: 'e_btn1_clicked_mut1_run', fromNodeId: 'btn1', fromPort: 'clicked', toNodeId: 'mut1', toPort: 'run', edgeType: 'async' },
+      ],
+    }
+    const serialized = serializeV2(preDoc)
+    const parsed = parseV2(serialized) // parseV2 calls normalizeInlineLinks internally
+    const { doc: result } = normalizeInlineLinks(parsed) // second call is a no-op
+    expect(result.nodes).toEqual(preDoc.nodes)
+    expect(result.edges).toEqual(preDoc.edges)
+  })
+
+  // Deduplication: existing edge with same ID is not duplicated
+  it('does not duplicate an edge if the same ID already exists in doc.edges', () => {
+    const existingEdge: AuraEdge = {
+      id: 'e_btn1_clicked_mut1_run',
+      fromNodeId: 'btn1', fromPort: 'clicked',
+      toNodeId: 'mut1', toPort: 'run',
+      edgeType: 'async',
+    }
+    const doc = makeDoc([
+      { element: 'button', id: 'btn1', parentId: 'root', inlineLinks: [
+        { direction: 'on', myPort: 'clicked', targetNodeId: 'mut1', targetPort: 'run' },
+      ]},
+      { element: 'step:mutation', id: 'mut1', parentId: 'root' },
+    ], [existingEdge])
+    const { doc: result } = normalizeInlineLinks(doc)
+    expect(result.edges).toHaveLength(1) // not duplicated
   })
 })

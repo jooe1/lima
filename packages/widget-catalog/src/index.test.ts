@@ -7,6 +7,16 @@ import {
   type StepNodeType,
 } from './index'
 
+describe('form widget submitted port', () => {
+  it('has a port named submitted with direction output and dataType trigger', () => {
+    const formPorts = WIDGET_REGISTRY['form'].ports
+    const submitted = formPorts.find(p => p.name === 'submitted')
+    expect(submitted).toBeDefined()
+    expect(submitted?.direction).toBe('output')
+    expect(submitted?.dataType).toBe('trigger')
+  })
+})
+
 describe('WIDGET_REGISTRY ports', () => {
   const widgetTypes = Object.keys(WIDGET_REGISTRY) as WidgetType[]
 

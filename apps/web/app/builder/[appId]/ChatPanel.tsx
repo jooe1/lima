@@ -36,6 +36,22 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastMsgIdRef = useRef<string | null>(null)
 
+  const applyAssistantPatch = useCallback((msg: ThreadMessage): boolean => {
+    if (!msg.dsl_patch?.new_source) return false
+
+    try {
+      parseV2(msg.dsl_patch.new_source) // validate before marking as applied
+      onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
+      setError('')
+      return true
+    } catch (err) {
+      console.error('[ChatPanel] DSL patch parse error', err)
+      onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
+      setError(err instanceof Error ? `AI generation produced invalid DSL: ${err.message}` : 'AI generation produced invalid DSL — patch ignored')
+      return false
+    }
+  }, [onDSLUpdate])
+
   // -- Thread bootstrap ---------------------------------------------------
   const ensureThread = useCallback(async (): Promise<ConversationThread> => {
     if (thread) return thread
@@ -65,12 +81,8 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
         const newlyApplied: string[] = []
         for (const msg of newMsgs) {
           if (msg.role === 'assistant' && msg.dsl_patch?.new_source) {
-            try {
-              parseV2(msg.dsl_patch.new_source) // validate before applying
-              onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
+            if (applyAssistantPatch(msg)) {
               newlyApplied.push(msg.id)
-            } catch (err) {
-              console.warn('[ChatPanel] DSL patch parse error — patch ignored', err)
             }
           }
         }
@@ -86,7 +98,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
     } catch {
       // Silently ignore poll errors; the UI is not broken.
     }
-  }, [workspaceId, appId, onDSLUpdate])
+  }, [workspaceId, appId, onDSLUpdate, applyAssistantPatch])
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -124,20 +136,6 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
             setMessages(msgs)
             if (msgs.length > 0) {
               lastMsgIdRef.current = msgs[msgs.length - 1].id
-              // Apply the latest DSL patch so the canvas reflects prior generations
-              // when the chat panel mounts after a generation has already completed.
-              for (let i = msgs.length - 1; i >= 0; i--) {
-                const msg = msgs[i]
-                if (msg.role === 'assistant' && msg.dsl_patch?.new_source) {
-                  try {
-                    parseV2(msg.dsl_patch.new_source)
-                    onDSLUpdate(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
-                  } catch (err) {
-                    console.warn('[ChatPanel] initial DSL patch parse error — patch ignored', err)
-                  }
-                  break // only apply the most recent patch
-                }
-              }
             }
           }
         }
@@ -147,7 +145,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
     }
     init()
     return () => { cancelled = true }
-  }, [workspaceId, appId])
+  }, [workspaceId, appId, applyAssistantPatch])
 
   // Scroll to bottom when messages change.
   useEffect(() => {
