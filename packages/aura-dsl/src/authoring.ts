@@ -134,6 +134,17 @@ export interface AuraAuthoringValidationError {
   id?: string
 }
 
+export interface AuraAuthoringCompileConnector {
+  id: string
+  name?: string
+  type?: string
+  columns?: string[]
+}
+
+export interface AuraAuthoringCompileOptions {
+  connectors?: AuraAuthoringCompileConnector[]
+}
+
 export class AuraAuthoringParseError extends Error {
   constructor(message: string) {
     super(message)
@@ -165,11 +176,30 @@ const AUTHORING_ACTION_KIND_TO_STEP: Record<string, AuraNode['element']> = {
 
 const AUTHORING_ACTION_SOURCE_EVENTS = new Set(['success', 'error', 'done', 'approved', 'rejected'])
 const AUTHORING_PAGE_SOURCE_EVENTS = new Set(['loaded'])
+const AUTHORING_KEYWORDS = new Set([
+  'app',
+  'entity',
+  'page',
+  'stack',
+  'grid',
+  'slot',
+  'widget',
+  'field',
+  'column',
+  'option',
+  'action',
+  'bind',
+  'run',
+  'effect',
+  'set',
+  'note',
+])
+const AUTHORING_WITH_MERGE_KEYWORDS = new Set(['app', 'entity', 'page', 'stack', 'grid', 'slot', 'widget', 'action'])
 
 export function parseAuthoring(source: string): AuraAuthoringDocument {
   const statements: AuraAuthoringStatement[] = []
 
-  for (const rawLine of source.split(/\r?\n/)) {
+  for (const rawLine of repairAuthoringCommonSyntax(source).split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line || line === '---' || line.startsWith('#')) continue
     statements.push(parseAuthoringLine(line))
@@ -274,14 +304,21 @@ export function validateAuthoring(doc: AuraAuthoringDocument): AuraAuthoringVali
         }
         break
       case 'run':
-        if (!refIds.has(statement.source.id)) {
+        if (statement.source.id === 'page' && pageIds.size !== 1) {
+          errors.push({
+            message: `run source '${statement.source.id}.${statement.source.port}' requires exactly one declared page or an explicit page id`,
+            statementType: 'run',
+            id: statement.source.id,
+          })
+        }
+        if (statement.source.id !== 'page' && !refIds.has(statement.source.id)) {
           errors.push({ message: `run source '${statement.source.id}' not found`, statementType: 'run', id: statement.source.id })
         }
         if (!actionMap.has(statement.targetId)) {
           errors.push({ message: `run target '${statement.targetId}' must be a declared action`, statementType: 'run', id: statement.targetId })
         }
-        if (refIds.has(statement.source.id)) {
-          const sourceError = validateSourceRef(statement.source, widgetMap, actionMap, pageIds, fieldsByWidgetId, columnsByWidgetId, { allowPage: true })
+        if (statement.source.id === 'page' || refIds.has(statement.source.id)) {
+          const sourceError = validateSourceRef(resolvePageAliasRef(statement.source, pageIds), widgetMap, actionMap, pageIds, fieldsByWidgetId, columnsByWidgetId, { allowPage: true })
           if (sourceError) {
             errors.push({ message: sourceError, statementType: 'run', id: statement.source.id })
           }
@@ -315,7 +352,7 @@ export function validateAuthoring(doc: AuraAuthoringDocument): AuraAuthoringVali
   return errors
 }
 
-export function lowerAuthoring(doc: AuraAuthoringDocument): AuraDocumentV2 {
+export function lowerAuthoring(doc: AuraAuthoringDocument, options: AuraAuthoringCompileOptions = {}): AuraDocumentV2 {
   const authoringErrors = validateAuthoring(doc)
   if (authoringErrors.length > 0) {
     throw new Error(authoringErrors.map((error) => error.message).join('; '))
@@ -428,6 +465,13 @@ export function lowerAuthoring(doc: AuraAuthoringDocument): AuraDocumentV2 {
 
   applyWidgetGrid(widgetNodes, widgetOrder, widgetPlacements)
   nodes.push(...widgetNodes)
+  const widgetNodeMap = new Map(widgetNodes.map((node) => [node.id, node]))
+
+  const syntheticEdges: Array<{
+    source: { nodeId: string; port: string }
+    target: { nodeId: string; port: string }
+    edgeType: AuraEdge['edgeType']
+  }> = []
 
   let actionIndex = 0
   for (const statement of doc.statements) {
@@ -440,7 +484,7 @@ export function lowerAuthoring(doc: AuraAuthoringDocument): AuraDocumentV2 {
       flowY: String(80 + (actionIndex * 140)),
     }
 
-    const entityId = readStringAttr(statement.attrs.entity)
+    const entityId = readAuthoringActionEntityId(statement)
     if (entityId) {
       const entity = entityMap.get(entityId)
       if (entity) {
@@ -453,6 +497,9 @@ export function lowerAuthoring(doc: AuraAuthoringDocument): AuraDocumentV2 {
     }
 
     applySetStatements(setStatementsByTargetId.get(statement.id) ?? [], withMap, style)
+    if (lowerActionElement(statement) === 'step:query') {
+      lowerQueryAuthoringAction(statement, withMap, widgetNodeMap, columnsByWidgetId, syntheticEdges, options)
+    }
     nodes.push({
       element: lowerActionElement(statement),
       id: statement.id,
@@ -476,7 +523,7 @@ export function lowerAuthoring(doc: AuraAuthoringDocument): AuraDocumentV2 {
         break
       }
       case 'run': {
-        const source = lowerRef(statement.source, 'source', widgetMap, actionMap)
+        const source = lowerRef(resolvePageAliasRef(statement.source, pageMap.keys()), 'source', widgetMap, actionMap)
         addEdge(edges, edgeIds, source, { nodeId: statement.targetId, port: 'run' }, 'async')
         break
       }
@@ -492,11 +539,75 @@ export function lowerAuthoring(doc: AuraAuthoringDocument): AuraDocumentV2 {
     }
   }
 
+  for (const syntheticEdge of syntheticEdges) {
+    addEdge(edges, edgeIds, syntheticEdge.source, syntheticEdge.target, syntheticEdge.edgeType)
+  }
+
   return { nodes, edges }
 }
 
-export function compileAuthoring(source: string): AuraDocumentV2 {
-  return lowerAuthoring(parseAuthoring(source))
+export function compileAuthoring(source: string, options: AuraAuthoringCompileOptions = {}): AuraDocumentV2 {
+  return lowerAuthoring(parseAuthoring(source), options)
+}
+
+function repairAuthoringCommonSyntax(source: string): string {
+  if (!source.trim()) return source
+
+  const rawLines = source.split(/\r?\n/)
+  const repaired: string[] = []
+
+  for (let index = 0; index < rawLines.length; index++) {
+    const trimmed = rawLines[index].trim()
+    if (!trimmed || trimmed === '---' || trimmed.startsWith('#')) {
+      repaired.push(rawLines[index])
+      continue
+    }
+
+    if (isStandaloneAuthoringWithLine(trimmed)) {
+      const mergeTargetIndex = findAuthoringWithMergeTargetIndex(repaired)
+      if (mergeTargetIndex >= 0) {
+        const payloadParts: string[] = []
+        const inlinePayload = trimmed.slice('with'.length).trim()
+        if (inlinePayload) payloadParts.push(inlinePayload)
+
+        while (index + 1 < rawLines.length) {
+          const nextLine = rawLines[index + 1].trim()
+          if (!nextLine || nextLine === '---' || nextLine.startsWith('#')) break
+          const nextTokens = tokenizeAuthoringLine(nextLine)
+          if (nextTokens.length > 0 && AUTHORING_KEYWORDS.has(nextTokens[0])) break
+          if (isStandaloneAuthoringWithLine(nextLine)) break
+          payloadParts.push(nextLine)
+          index += 1
+        }
+
+        if (payloadParts.length > 0) {
+          repaired[mergeTargetIndex] = `${repaired[mergeTargetIndex].trim()} ${payloadParts.join(' ')}`
+          continue
+        }
+      }
+    }
+
+    repaired.push(rawLines[index])
+  }
+
+  return repaired.join('\n')
+}
+
+function isStandaloneAuthoringWithLine(line: string): boolean {
+  return line === 'with' || line.startsWith('with ') || line.startsWith('with\t')
+}
+
+function findAuthoringWithMergeTargetIndex(lines: string[]): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const trimmed = lines[index].trim()
+    if (!trimmed || trimmed === '---' || trimmed.startsWith('#')) continue
+    const tokens = tokenizeAuthoringLine(trimmed)
+    if (tokens.length > 0 && AUTHORING_WITH_MERGE_KEYWORDS.has(tokens[0])) {
+      return index
+    }
+    break
+  }
+  return -1
 }
 
 function parseAuthoringLine(line: string): AuraAuthoringStatement {
@@ -565,20 +676,36 @@ function parseParentedStatement(
 }
 
 function parseWidgetStatement(tokens: string[]): AuraAuthoringWidgetStatement {
-  const widgetType = expectToken(tokens, 1, 'widget')
+  let widgetType = expectToken(tokens, 1, 'widget')
+  let id = expectToken(tokens, 2, 'widget')
+  let parentTokenIndex = 3
+
+  if (widgetType.startsWith('type=')) {
+    widgetType = decodeInlineToken(widgetType.slice('type='.length))
+    id = expectToken(tokens, 3, 'widget')
+    parentTokenIndex = 4
+  } else if (id.startsWith('type=')) {
+    const declaredType = decodeInlineToken(id.slice('type='.length))
+    if (!AUTHORING_WIDGET_TYPES.has(declaredType)) {
+      throw new AuraAuthoringParseError(`unknown widget type '${declaredType}'`)
+    }
+    widgetType = declaredType
+    id = expectToken(tokens, 3, 'widget')
+    parentTokenIndex = 4
+  }
+
   if (!AUTHORING_WIDGET_TYPES.has(widgetType)) {
     throw new AuraAuthoringParseError(`unknown widget type '${widgetType}'`)
   }
-  const id = expectToken(tokens, 2, 'widget')
-  if (tokens[3] !== '@') {
+  if (tokens[parentTokenIndex] !== '@') {
     throw new AuraAuthoringParseError(`widget '${id}' must include '@ parentId'`)
   }
   return {
     statementType: 'widget',
     widgetType,
     id,
-    parentId: expectToken(tokens, 4, 'widget'),
-    attrs: parseAttrTokens(tokens, 5),
+    parentId: expectToken(tokens, parentTokenIndex + 1, 'widget'),
+    attrs: parseAttrTokens(tokens, parentTokenIndex + 2),
   }
 }
 
@@ -895,6 +1022,241 @@ function stringifyScalar(value: AuraAuthoringScalar): string {
 
 function readStringAttr(value: AuraAuthoringScalar | undefined): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+function readAuthoringActionEntityId(statement: AuraAuthoringActionStatement): string | undefined {
+  return readStringAttr(statement.attrs.entity) ?? readStringAttr(statement.attrs.source)
+}
+
+function resolveAuthoringQueryConnector(
+  connectors: AuraAuthoringCompileConnector[],
+  withMap: Record<string, string>,
+  entityId: string | undefined,
+): AuraAuthoringCompileConnector | undefined {
+  if (connectors.length === 0) return undefined
+
+  const connectorId = withMap.connector_id?.trim() || withMap.connector?.trim()
+  const connectorType = withMap.connectorType?.trim() || withMap.connector_type?.trim()
+  if (connectorId) {
+    const exact = connectors.find((connector) => connector.id === connectorId)
+    if (exact && (!connectorType || !exact.type || exact.type === connectorType)) {
+      return exact
+    }
+  }
+
+  const hints = [connectorId, entityId, withMap.table, withMap.source_table]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value))
+
+  for (const hint of hints) {
+    const normalizedHint = normalizeAuthoringConnectorHint(hint)
+    const match = connectors.find((connector) => {
+      if (connectorType && connector.type && connector.type !== connectorType) return false
+      return [connector.id, connector.name]
+        .filter((value): value is string => Boolean(value))
+        .some((value) => normalizeAuthoringConnectorHint(value) === normalizedHint)
+    })
+    if (match) return match
+  }
+
+  if (connectorType) {
+    const typedMatches = connectors.filter((connector) => !connector.type || connector.type === connectorType)
+    if (typedMatches.length === 1) return typedMatches[0]
+  }
+
+  if (connectors.length === 1) {
+    const [onlyConnector] = connectors
+    if (!connectorType || !onlyConnector.type || onlyConnector.type === connectorType) {
+      return onlyConnector
+    }
+  }
+
+  return undefined
+}
+
+function normalizeAuthoringConnectorHint(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+function resolvePageAliasRef(
+  ref: AuraAuthoringRef,
+  pageIds: Iterable<string>,
+): AuraAuthoringRef {
+  if (ref.id !== 'page') return ref
+  const [pageId] = Array.from(pageIds)
+  return pageId ? { id: pageId, port: ref.port } : ref
+}
+
+function lowerQueryAuthoringAction(
+  statement: AuraAuthoringActionStatement,
+  withMap: Record<string, string>,
+  widgetNodeMap: Map<string, AuraNode>,
+  columnsByWidgetId: Map<string, string[]>,
+  syntheticEdges: Array<{
+    source: { nodeId: string; port: string }
+    target: { nodeId: string; port: string }
+    edgeType: AuraEdge['edgeType']
+  }>,
+  options: AuraAuthoringCompileOptions,
+): void {
+  const resolvedConnector = resolveAuthoringQueryConnector(
+    options.connectors ?? [],
+    withMap,
+    readAuthoringActionEntityId(statement),
+  )
+
+  if (withMap.connector_id === undefined && resolvedConnector?.id) {
+    withMap.connector_id = resolvedConnector.id
+  }
+  if (withMap.connector_id === undefined && withMap.connector !== undefined) {
+    withMap.connector_id = withMap.connector
+  }
+  if (withMap.connectorType === undefined && resolvedConnector?.type) {
+    withMap.connectorType = resolvedConnector.type
+  }
+  if (withMap.connectorType === undefined && withMap.connector_type !== undefined) {
+    withMap.connectorType = withMap.connector_type
+  }
+
+  const targetId = readStringAttr(statement.attrs.target)
+  if (!targetId) return
+
+  const targetNode = widgetNodeMap.get(targetId)
+  if (!targetNode) return
+
+  const widgetWith: Record<string, string> = { ...(targetNode.with ?? {}), queryAction: statement.id }
+  targetNode.with = widgetWith
+
+  const availableColumns = mergeAuthoringColumns(
+    columnsByWidgetId.get(targetId) ?? [],
+    splitAuthoringCSV(withMap.resultColumns),
+    resolvedConnector?.columns ?? [],
+  )
+  if (withMap.resultColumns === undefined && availableColumns.length > 0) {
+    withMap.resultColumns = availableColumns.join(',')
+  }
+  if (withMap.sql === undefined) {
+    const defaultSql = defaultAuthoringQuerySQL(
+      withMap.connectorType,
+      withMap.table ?? withMap.source_table ?? withMap.connector ?? readStringAttr(statement.attrs.source) ?? readStringAttr(statement.attrs.entity),
+      splitAuthoringCSV(withMap.resultColumns),
+    )
+    if (defaultSql !== undefined) {
+      withMap.sql = defaultSql
+    }
+  }
+
+  if (targetNode.element === 'table') {
+    syntheticEdges.push({
+      source: { nodeId: statement.id, port: 'rows' },
+      target: { nodeId: targetId, port: 'setRows' },
+      edgeType: 'reactive',
+    })
+    return
+  }
+
+  if (targetNode.element === 'chart') {
+    const inferred = inferAuthoringQueryChartColumns(withMap.profile, splitAuthoringCSV(withMap.resultColumns))
+    if (widgetWith.labelCol === undefined && inferred.labelCol) {
+      widgetWith.labelCol = inferred.labelCol
+    }
+    if (widgetWith.valueCol === undefined && inferred.valueCol) {
+      widgetWith.valueCol = inferred.valueCol
+    }
+    if (widgetWith.aggregate === undefined && withMap.profile === 'time_series') {
+      widgetWith.aggregate = 'sum'
+    }
+    syntheticEdges.push({
+      source: { nodeId: statement.id, port: 'rows' },
+      target: { nodeId: targetId, port: 'setData' },
+      edgeType: 'reactive',
+    })
+  }
+}
+
+function mergeAuthoringColumns(...groups: string[][]): string[] {
+  const seen = new Set<string>()
+  const merged: string[] = []
+  for (const group of groups) {
+    for (const column of group) {
+      const normalized = column.trim()
+      if (!normalized || seen.has(normalized)) continue
+      seen.add(normalized)
+      merged.push(normalized)
+    }
+  }
+  return merged
+}
+
+function splitAuthoringCSV(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean)
+}
+
+function defaultAuthoringQuerySQL(
+  connectorType: string | undefined,
+  tableHint: string | undefined,
+  preferredColumns: string[],
+): string | undefined {
+  const normalizedType = connectorType?.trim()
+  if (!normalizedType) return undefined
+  if (normalizedType === 'managed') return ''
+  if (normalizedType === 'csv') {
+    const selectList = authoringQuerySelectList(preferredColumns)
+    return selectList === '*'
+      ? 'SELECT * FROM csv'
+      : `SELECT ${selectList} FROM csv`
+  }
+  if (normalizedType === 'rest') return '/'
+  if (normalizedType === 'postgres' || normalizedType === 'mysql' || normalizedType === 'mssql') {
+    const tableName = authoringQueryIdentifier(tableHint)
+    if (!tableName) return undefined
+    return `SELECT ${authoringQuerySelectList(preferredColumns)} FROM ${tableName}`
+  }
+  return undefined
+}
+
+function authoringQuerySelectList(columns: string[]): string {
+  const normalized = columns
+    .map(authoringQueryIdentifier)
+    .filter((value): value is string => Boolean(value))
+  if (normalized.length === 0 || normalized.length !== columns.length) return '*'
+  return normalized.join(', ')
+}
+
+function authoringQueryIdentifier(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+  for (let index = 0; index < trimmed.length; index++) {
+    const char = trimmed[index]
+    const isAlpha = (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
+    const isDigit = char >= '0' && char <= '9'
+    if (isAlpha || char === '_' || (index > 0 && isDigit)) continue
+    return undefined
+  }
+  return trimmed
+}
+
+function inferAuthoringQueryChartColumns(
+  profile: string | undefined,
+  columns: string[],
+): { labelCol?: string; valueCol?: string } {
+  const timePatterns = ['date', 'month', 'time', 'day', 'week', 'year', 'period', 'created', 'updated']
+  const labelPatterns = ['name', 'label', 'status', 'category', 'type']
+  const valuePatterns = ['amount', 'revenue', 'total', 'value', 'count', 'sum', 'sales', 'price', 'cost', 'qty', 'quantity', 'score']
+  const orderedLabelPatterns = profile?.trim() === 'time_series'
+    ? [...timePatterns, ...labelPatterns]
+    : labelPatterns
+
+  const labelCol = columns.find(column => orderedLabelPatterns.some(pattern => column.toLowerCase().includes(pattern))) ?? columns[0]
+  const valueCol = columns.find(column => column !== labelCol && valuePatterns.some(pattern => column.toLowerCase().includes(pattern)))
+    ?? columns.find(column => column !== labelCol)
+    ?? labelCol
+
+  return { labelCol, valueCol }
 }
 
 function extractWidgetText(widgetType: string, withMap: Record<string, string>): string | undefined {

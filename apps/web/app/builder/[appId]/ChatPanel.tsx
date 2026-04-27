@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { type AuraEdge } from '@lima/aura-dsl'
 import {
+  type Connector,
   type ConversationThread,
   type ThreadMessage,
   createThread,
@@ -17,11 +18,12 @@ const POLL_INTERVAL_MS = 2500
 interface Props {
   workspaceId: string
   appId: string
+  connectors?: Connector[]
   /** Called when the assistant returns a new DSL to apply to the canvas. */
   onDSLUpdate: (newSource: string, newEdges?: AuraEdge[]) => void
 }
 
-export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
+export function ChatPanel({ workspaceId, appId, connectors, onDSLUpdate }: Props) {
   const [thread, setThread] = useState<ConversationThread | null>(null)
   const [threads, setThreads] = useState<ConversationThread[]>([])
   const [threadListOpen, setThreadListOpen] = useState(false)
@@ -41,7 +43,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
     if (!msg.dsl_patch?.new_source) return false
 
     try {
-      const normalized = normalizeAssistantDSL(msg.dsl_patch.new_source, msg.dsl_patch.new_edges)
+      const normalized = normalizeAssistantDSL(msg.dsl_patch.new_source, msg.dsl_patch.new_edges, { connectors })
       onDSLUpdate(normalized.source, normalized.edges)
       setError('')
       return true
@@ -50,7 +52,7 @@ export function ChatPanel({ workspaceId, appId, onDSLUpdate }: Props) {
       setError(err instanceof Error ? `AI generation produced invalid DSL: ${err.message}` : 'AI generation produced invalid DSL — patch ignored')
       return false
     }
-  }, [onDSLUpdate])
+  }, [connectors, onDSLUpdate])
 
   // -- Thread bootstrap ---------------------------------------------------
   const ensureThread = useCallback(async (): Promise<ConversationThread> => {

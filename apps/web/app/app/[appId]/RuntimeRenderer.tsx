@@ -215,10 +215,11 @@ export function FlowEngineProvider({
         } else if (stepType === 'step:query') {
           try {
             const connectorId = String(w.connector_id ?? '')
-            const sql = String(w.sql ?? '')
-            if (connectorId && sql) {
+            const connectorType = String(w.connectorType ?? w.connector_type ?? '')
+            const querySql = getConnectorQuerySQL(connectorType, String(w.sql ?? ''))
+            if (connectorId && querySql !== null) {
               const { runConnectorQuery: runQuery } = await import('../../../lib/api')
-              const res = await runQuery(workspaceIdRef.current, connectorId, { sql })
+              const res = await runQuery(workspaceIdRef.current, connectorId, { sql: querySql })
               const rows = res.rows ?? []
               await firePort(targetNode.id, 'rows', rows)
               await firePort(targetNode.id, 'firstRow', rows[0] ?? null)
@@ -290,6 +291,13 @@ export function FlowEngineProvider({
       }
     }
   }, [setPort])
+
+  useEffect(() => {
+    for (const node of nodes) {
+      if (node.with?.authoring_type !== 'page') continue
+      firePort(node.id, 'loaded', true).catch(() => {})
+    }
+  }, [nodes, firePort])
 
   const engine = useMemo(() => ({ portValues, firePort }), [portValues, firePort])
 

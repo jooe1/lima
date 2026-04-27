@@ -400,7 +400,10 @@ func buildGraphSystemPrompt(portManifest string) string {
 		"",
 		"Use inline step:* nodes for workflows unless the plan explicitly says managed CRUD behavior will be synthesized for you.",
 		"Do NOT emit a \"page\" element.",
-		"Exception: if you are intentionally returning a layout-only flat authoring document, you may emit page/widget/field/column/option/bind lines, but only when no run/effect lines or query-style action kinds are needed.",
+		"For flat authoring widget lines, follow the pattern 'widget text headline @ main': widget type first, then widget id, then '@ parentId'. Do NOT add a redundant 'type=...' token to widget lines.",
+		"For flat authoring, keep attrs on the same statement line. Do NOT emit a standalone 'with ...' clause or a bare 'with' block.",
+		"Exception: if you are intentionally returning a layout-only flat authoring document, you may emit page/widget/field/column/option/bind lines, but only when no executable actions are needed.",
+		"Exception: if you are intentionally returning a read-only dashboard, you may emit the flat query authoring subset with page/widget/column/option/action/run/effect lines using kind=query and target=<widgetId>. The worker will lower page.loaded triggers, executable query steps, and target data wiring.",
 		"Exception: if the managed CRUD plan context explicitly authorizes flat authoring Aura, that plan override wins and you may emit page/widget/field/column/action lines for the managed CRUD subset.",
 		"Do NOT emit a separate edges section.",
 		"Do NOT emit flowX, flowY, flowW, or flowH style keys.",
@@ -466,8 +469,12 @@ func buildGraphCopilotPrompt(
 	builder.WriteString("\nRules:\n")
 	builder.WriteString("- Do not use square-bracket metadata.\n")
 	builder.WriteString("- do not emit a page wrapper node.\n")
+	builder.WriteString("- For flat authoring widget lines, follow the pattern 'widget text headline @ main': widget type first, then widget id, then '@ parentId'. Do not emit a redundant 'type=...' token.\n")
+	builder.WriteString("- For flat authoring, keep attrs on the same statement line. Do not emit a standalone 'with ...' clause or a bare 'with' block.\n")
 	if plan != nil && plan.isCRUD() && plan.ConnectorType == "managed" {
 		builder.WriteString("- For managed CRUD plans, you may use the flat authoring subset with page/widget/field/column/action lines. Prefer that format for first-generation CRUD screens and focus on layout, field lists, and widget IDs. The worker synthesizes the managed data binding and save step.\n")
+	} else if plan != nil && !plan.isCRUD() && strings.TrimSpace(plan.ConnectorID) != "" {
+		builder.WriteString("- For read-only dashboards, you may use the flat query authoring subset with page/widget/column/option/action/run/effect lines. Prefer kind=query actions with source=<entity> target=<widgetId>. The worker lowers page.loaded triggers, executable query steps, and target data wiring.\n")
 	} else {
 		builder.WriteString("- For layout-only screens or widget-to-widget wiring with no executable actions, you may use the flat authoring subset with page/widget/field/column/option/bind lines. Otherwise use inline step:* nodes and inline links, not legacy flow action references.\n")
 	}
@@ -680,6 +687,8 @@ func buildPlanContextBlock(plan *appPlan) string {
 	}
 	if plan.isCRUD() && plan.ConnectorType == "managed" {
 		sb.WriteString("For managed CRUD plans, you may return the flat managed CRUD authoring subset instead of canonical runtime Aura. Prefer that authoring form for first-generation CRUD screens. Use page/widget/field/column/action lines, focus on the planned layout only, place delete/danger buttons where needed, and do not emit managed save step nodes or legacy flow action syntax. Example authoring lines: page main title=\"Orders\" and action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders. The worker will lower that subset. The worker will synthesize the managed table binding, save behavior, and delete-button wiring.\n")
+	} else if !plan.isCRUD() && plan.ConnectorID != "" {
+		sb.WriteString("For read-only dashboard plans, you may return the flat query authoring subset instead of canonical runtime Aura. Prefer that authoring form for first-generation dashboards. Use page/widget/column/option/action/run/effect lines with kind=query and target=<widgetId>. Example authoring lines: page main title=\"Revenue Dashboard\", widget table orders @ main title=\"Recent Orders\", and action load_orders @ main kind=query source=order profile=list target=orders. The worker will lower page.loaded triggers, executable query steps, and target data wiring.\n")
 	} else {
 		sb.WriteString("If the app needs write behavior, model it with explicit step:* nodes and inline on/input/output links, not legacy flow action syntax.\n")
 	}
@@ -1359,7 +1368,9 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 		// ── Stage 2: normalize inline links → edges ────────────────────────────────
 		// Parse the DSL into structured statements, extract inline on/input/output
 		// link clauses and convert them into canonical dslEdge entries.
-		compiledAuthoringDSL, authoringNotes, compiledAuthoring, authoringErr := compileManagedCRUDAuthoringRuntimeDSL(newDSL)
+		var stashedCompilerEdges []dslEdge
+
+		compiledAuthoringDSL, authoringEdges, authoringNotes, compiledAuthoring, authoringErr := compileManagedCRUDAuthoringRuntimeDSL(newDSL, plan, connectors)
 		if authoringErr != nil {
 			log.Warn("flat authoring compile failed after graph stage",
 				zap.String("thread_id", payload.ThreadID),
@@ -1370,6 +1381,7 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 		}
 		if compiledAuthoring {
 			newDSL = compiledAuthoringDSL
+			stashedCompilerEdges = append(stashedCompilerEdges, authoringEdges...)
 			for _, note := range authoringNotes {
 				log.Info("authoring compiler note",
 					zap.String("thread_id", payload.ThreadID),
@@ -1389,8 +1401,6 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 			newDSL = repairedDSL
 		}
 
-		var stashedCompilerEdges []dslEdge
-
 		compiledDSL, compilerEdges, compileNotes, compiledManaged, compileErr := compileManagedCRUDAuthoringDSL(newDSL, plan, connectors)
 		if compileErr != nil {
 			log.Warn("managed crud compile skipped after graph stage",
@@ -1405,7 +1415,7 @@ func handleGeneration(cfg *config.Config, pool *pgxpool.Pool, log *zap.Logger) j
 					zap.String("note", note),
 				)
 			}
-			stashedCompilerEdges = compilerEdges
+			stashedCompilerEdges = append(stashedCompilerEdges, compilerEdges...)
 		}
 
 		stmts, parseErr := parseDSLStatementsStructured(newDSL)

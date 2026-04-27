@@ -61,4 +61,37 @@ describe('normalizeAssistantDSL', () => {
     expect(normalized.edges).toHaveLength(1)
     expect(normalized.edges[0].id).toBe('e_submit_button_clicked_save_order_run')
   })
+
+  it('uses builder connector context to compile query authoring without explicit connector metadata', () => {
+    const source = [
+      'app revenue_dashboard',
+      'page main title="Revenue Dashboard"',
+      'widget table orders @ main title="Recent Orders"',
+      'action load_orders @ main kind=query source=orders target=orders',
+      'run page.loaded -> load_orders',
+    ].join('\n')
+
+    const normalized = normalizeAssistantDSL(source, undefined, {
+      connectors: [{
+        id: 'conn_orders',
+        workspace_id: 'ws_1',
+        name: 'Orders',
+        type: 'managed',
+        schema_cache: { columns: ['OrderID', 'Amount'] },
+        created_by: 'user_1',
+        created_at: '2026-04-27T00:00:00Z',
+        updated_at: '2026-04-27T00:00:00Z',
+        owner_scope: 'workspace',
+      }],
+    })
+
+    const loadOrders = normalized.document.nodes.find((node) => node.id === 'load_orders')
+    expect(normalized.mode).toBe('authoring')
+    expect(loadOrders?.with).toMatchObject({
+      connector_id: 'conn_orders',
+      connectorType: 'managed',
+      resultColumns: 'OrderID,Amount',
+      sql: '',
+    })
+  })
 })

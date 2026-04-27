@@ -52,11 +52,20 @@ func TestBuildGraphSystemPrompt_UsesCanonicalAuraSyntax(t *testing.T) {
 	if !strings.Contains(prompt, "Do NOT emit a \"page\" element") {
 		t.Fatalf("buildGraphSystemPrompt() should explicitly forbid a page wrapper node: %q", prompt)
 	}
+	if !strings.Contains(prompt, "widget text headline @ main") || !strings.Contains(prompt, "Do NOT add a redundant 'type=...' token") {
+		t.Fatalf("buildGraphSystemPrompt() should explicitly constrain flat authoring widget header syntax: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Do NOT emit a standalone 'with ...' clause") {
+		t.Fatalf("buildGraphSystemPrompt() should explicitly forbid standalone with clauses inside flat authoring: %q", prompt)
+	}
 	if !strings.Contains(prompt, "layout-only flat authoring document") {
 		t.Fatalf("buildGraphSystemPrompt() should document the layout-only flat-authoring exception: %q", prompt)
 	}
 	if !strings.Contains(prompt, "managed CRUD plan context explicitly authorizes flat authoring Aura") {
 		t.Fatalf("buildGraphSystemPrompt() should document the managed CRUD flat-authoring override: %q", prompt)
+	}
+	if !strings.Contains(prompt, "read-only dashboard") || !strings.Contains(prompt, "kind=query") {
+		t.Fatalf("buildGraphSystemPrompt() should document the flat query-authoring exception: %q", prompt)
 	}
 	if strings.Contains(prompt, "{{flow:") {
 		t.Fatalf("buildGraphSystemPrompt() should not mention legacy flow reference syntax: %q", prompt)
@@ -76,6 +85,12 @@ func TestBuildGraphCopilotPrompt_RejectsLegacySyntax(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "do not emit a page wrapper node") {
 		t.Fatalf("buildGraphCopilotPrompt() should forbid page wrapper nodes: %q", prompt)
+	}
+	if !strings.Contains(prompt, "widget text headline @ main") || !strings.Contains(prompt, "type=...") {
+		t.Fatalf("buildGraphCopilotPrompt() should explicitly constrain flat authoring widget header syntax: %q", prompt)
+	}
+	if !strings.Contains(prompt, "standalone 'with ...' clause") {
+		t.Fatalf("buildGraphCopilotPrompt() should explicitly forbid standalone with clauses inside flat authoring: %q", prompt)
 	}
 	if !strings.Contains(prompt, "not legacy flow action references") {
 		t.Fatalf("buildGraphCopilotPrompt() should forbid legacy flow action references: %q", prompt)
@@ -146,5 +161,34 @@ func TestBuildGraphCopilotPrompt_ManagedCRUDAllowsFlatAuthoring(t *testing.T) {
 
 	if !strings.Contains(prompt, "flat authoring subset with page/widget/field/column/action lines") {
 		t.Fatalf("buildGraphCopilotPrompt() should allow the flat managed CRUD authoring subset: %q", prompt)
+	}
+}
+
+func TestBuildPlanContextBlock_ReadOnlyDashboardUsesQueryCompilerInstruction(t *testing.T) {
+	t.Parallel()
+
+	ctx := buildPlanContextBlock(&appPlan{Intent: "dashboard", ConnectorID: "conn_orders", ConnectorType: "managed", Entity: "order"})
+
+	if !strings.Contains(ctx, "flat query authoring subset") {
+		t.Fatalf("buildPlanContextBlock() should authorize flat query authoring: %q", ctx)
+	}
+	if !strings.Contains(ctx, "action load_orders @ main kind=query") {
+		t.Fatalf("buildPlanContextBlock() should include a concrete flat query-authoring example: %q", ctx)
+	}
+	if !strings.Contains(ctx, "target data wiring") {
+		t.Fatalf("buildPlanContextBlock() should explain query compiler ownership: %q", ctx)
+	}
+}
+
+func TestBuildGraphCopilotPrompt_ReadOnlyDashboardAllowsFlatQueryAuthoring(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildGraphCopilotPrompt("", "show revenue dashboard", nil, nil, nil, &appPlan{Intent: "dashboard", ConnectorID: "conn_orders", ConnectorType: "managed", Entity: "order"})
+
+	if !strings.Contains(prompt, "flat query authoring subset") {
+		t.Fatalf("buildGraphCopilotPrompt() should allow the flat query authoring subset: %q", prompt)
+	}
+	if !strings.Contains(prompt, "kind=query") {
+		t.Fatalf("buildGraphCopilotPrompt() should steer dashboard generation toward query actions: %q", prompt)
 	}
 }

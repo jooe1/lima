@@ -231,4 +231,74 @@ describe('FlowEngineProvider — binding edge / mutation trigger', () => {
       expect(inputs[2].value).toBe('alice@example.com')
     })
   })
+
+  it('Test 8: page.loaded triggers a managed query step and pushes rows into a query-driven table', async () => {
+    mockRunConnectorQuery.mockResolvedValue({
+      rows: [{ OrderID: 'A-100', Amount: 42 }],
+      columns: ['OrderID', 'Amount'],
+    })
+
+    const pageNode: AuraNode = {
+      id: 'main',
+      element: 'container',
+      parentId: 'root',
+      with: { authoring_type: 'page' },
+      style: { gridX: '0', gridY: '0', gridW: '12', gridH: '8' },
+    }
+
+    const queryNode: AuraNode = {
+      id: 'load_orders',
+      element: 'step:query',
+      parentId: 'main',
+      with: {
+        connector_id: 'conn_orders',
+        connectorType: 'managed',
+        sql: '',
+        resultColumns: 'OrderID,Amount',
+      },
+    }
+
+    const tableNode: AuraNode = {
+      id: 'orders',
+      element: 'table',
+      parentId: 'main',
+      with: { queryAction: 'load_orders' },
+      style: { gridX: '0', gridY: '0', gridW: '8', gridH: '4' },
+    }
+
+    const edges: AuraEdge[] = [
+      {
+        id: 'e_main_loaded_load_orders_run',
+        fromNodeId: 'main',
+        fromPort: 'loaded',
+        toNodeId: 'load_orders',
+        toPort: 'run',
+        edgeType: 'async',
+      },
+      {
+        id: 'e_load_orders_rows_orders_setRows',
+        fromNodeId: 'load_orders',
+        fromPort: 'rows',
+        toNodeId: 'orders',
+        toPort: 'setRows',
+        edgeType: 'reactive',
+      },
+    ]
+
+    render(
+      <RuntimeRenderer
+        doc={[pageNode, queryNode, tableNode]}
+        edges={edges}
+        workspaceId="ws1"
+        appId="app1"
+      />,
+    )
+
+    await waitFor(() => {
+      expect(mockRunConnectorQuery).toHaveBeenCalledWith('ws1', 'conn_orders', { sql: '' })
+    })
+
+    expect(await screen.findByText('A-100')).toBeTruthy()
+    expect(screen.getByText('42')).toBeTruthy()
+  })
 })

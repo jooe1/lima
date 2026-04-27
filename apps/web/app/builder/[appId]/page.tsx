@@ -8,9 +8,10 @@ import { WIDGET_REGISTRY, type WidgetType } from '@lima/widget-catalog'
 import { useAuth } from '../../../lib/auth'
 import {
   getApp, patchApp, publishApp, deleteApp,
+  listConnectors,
   listCompanyGroups, createPublication,
   listPublications, archivePublication, listPublicationAudiences,
-  type App, type AppPublication, type CompanyGroup,
+  type App, type AppPublication, type CompanyGroup, type Connector,
   type PublicationAudience, type PublicationCapability,
 } from '../../../lib/api'
 import { useDocumentHistory } from './hooks/useDocumentHistory'
@@ -39,6 +40,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   const { appId } = use(params)
   const { workspace, company, user, token } = useAuth()
   const [app, setApp] = useState<App | null>(null)
+  const [connectors, setConnectors] = useState<Connector[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -87,7 +89,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
   }, [sseLastEvent]) // eslint-disable-line react-hooks/exhaustive-deps
   // docRef.current and reactiveStore are stable refs — intentionally omitted
 
-  function hydrateLoadedApp(nextApp: App) {
+  function hydrateLoadedApp(nextApp: App, nextConnectors: Connector[] = []) {
     setApp(nextApp)
     setNodeMetadata(nextApp.node_metadata ?? {})
 
@@ -98,7 +100,7 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     }
 
     try {
-      const normalized = normalizeAssistantDSL(nextApp.dsl_source, nextApp.dsl_edges)
+      const normalized = normalizeAssistantDSL(nextApp.dsl_source, nextApp.dsl_edges, { connectors: nextConnectors })
       history.reset(normalized.document)
       setLoadError('')
     } catch (error: unknown) {
@@ -113,10 +115,15 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
     let cancelled = false
     setLoading(true)
     setLoadError('')
-    getApp(workspace.id, appId)
-      .then(a => {
+    Promise.all([
+      getApp(workspace.id, appId),
+      listConnectors(workspace.id).catch(() => ({ connectors: [] as Connector[] })),
+    ])
+      .then(([a, connectorResult]) => {
         if (cancelled) return
-        hydrateLoadedApp(a)
+        const nextConnectors = connectorResult.connectors ?? []
+        setConnectors(nextConnectors)
+        hydrateLoadedApp(a, nextConnectors)
       })
       .catch((error: unknown) => {
         if (cancelled) return
@@ -711,10 +718,11 @@ export default function AppEditorPage({ params }: { params: Promise<{ appId: str
             <ChatPanel
               workspaceId={workspace.id}
               appId={appId}
+              connectors={connectors}
               onDSLUpdate={(src, newEdges) => {
                 try {
                   setLoadError('')
-                  const normalized = normalizeAssistantDSL(src, newEdges)
+                  const normalized = normalizeAssistantDSL(src, newEdges, { connectors })
                   history.set(normalized.document)
                 } catch (err) {
                   console.error('[Builder] AI-generated DSL failed to parse:', err)

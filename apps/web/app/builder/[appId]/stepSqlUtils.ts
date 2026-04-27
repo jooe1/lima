@@ -6,8 +6,8 @@
  */
 
 export type WhereOp = '=' | '!=' | 'LIKE' | '>' | '<' | '>=' | '<='
-export interface WhereClause { col: string; op: WhereOp; val: string }
-export interface SetClause { col: string; val: string }
+export interface WhereClause { col: string; op: WhereOp; val: string; quoted?: boolean }
+export interface SetClause { col: string; val: string; quoted?: boolean }
 export type MutationOp = 'INSERT' | 'UPDATE' | 'DELETE'
 
 export interface GuidedState {
@@ -23,6 +23,26 @@ export function defaultGuided(): GuidedState {
   return { table: '', whereClauses: [], limit: '50', mutationOp: 'INSERT', setClauses: [{ col: '', val: '' }] }
 }
 
+function trimSQLIdentifier(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function parseGuidedSQLValue(raw: string): { value: string; quoted: boolean } {
+  const trimmed = raw.trim()
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return { value: trimmed.slice(1, -1), quoted: true }
+  }
+  return { value: trimmed, quoted: false }
+}
+
+function formatGuidedSQLValue(value: string, quoted = false): string {
+  return quoted ? `'${value}'` : value
+}
+
 export function sqlFromGuided(state: GuidedState, isQuery: boolean): string {
   const { table, whereClauses, limit, mutationOp, setClauses } = state
   if (!table) return ''
@@ -30,10 +50,8 @@ export function sqlFromGuided(state: GuidedState, isQuery: boolean): string {
   const validWhereClauses = whereClauses.filter(w => w.col)
   const whereStr = validWhereClauses.length > 0
     ? ' WHERE ' + validWhereClauses
-        .map(w => {
-          const val = w.val.startsWith('{{') ? w.val : `'${w.val}'`
-          return `${w.col} ${w.op} ${val}`
-        }).join(' AND ')
+        .map(w => `${w.col} ${w.op} ${formatGuidedSQLValue(w.val, w.quoted ?? !isQuery)}`)
+        .join(' AND ')
     : ''
 
   if (isQuery) {
@@ -46,23 +64,29 @@ export function sqlFromGuided(state: GuidedState, isQuery: boolean): string {
   const validSets = setClauses.filter(s => s.col)
   if (mutationOp === 'INSERT') {
     const cols = validSets.map(s => s.col).join(', ')
-    const vals = validSets.map(s => s.val.startsWith('{{') ? s.val : `'${s.val}'`).join(', ')
+    const vals = validSets.map(s => formatGuidedSQLValue(s.val, s.quoted ?? true)).join(', ')
     return cols ? `INSERT INTO ${table} (${cols}) VALUES (${vals})` : `INSERT INTO ${table} DEFAULT VALUES`
   }
 
   // UPDATE
-  const setStr = validSets.map(s => `${s.col} = ${s.val.startsWith('{{') ? s.val : `'${s.val}'`}`).join(', ')
+  const setStr = validSets.map(s => `${s.col} = ${formatGuidedSQLValue(s.val, s.quoted ?? true)}`).join(', ')
   return setStr ? `UPDATE ${table} SET ${setStr}${whereStr}` : ''
 }
 
-const WHERE_CLAUSE_RE = /(\w+)\s*(=|!=|LIKE|>=|<=|>|<)\s*('([^']*)'|({{[^}]+}}))/gi
+const WHERE_CLAUSE_RE = /((?:"[^"]+"|\w+))\s*(=|!=|LIKE|>=|<=|>|<)\s*('([^']*)'|({{[^}]+}})|([^\s]+))/gi
 
 function whereMatch(str: string): WhereClause[] {
   const result: WhereClause[] = []
   let m
   const re = new RegExp(WHERE_CLAUSE_RE.source, 'gi')
   while ((m = re.exec(str)) !== null) {
-    result.push({ col: m[1], op: m[2] as WhereOp, val: m[4] !== undefined ? m[4] : m[5] })
+    const rawValue = m[3] ?? ''
+    result.push({
+      col: trimSQLIdentifier(m[1]),
+      op: m[2] as WhereOp,
+      val: m[4] !== undefined ? m[4] : m[5] !== undefined ? m[5] : (m[6] ?? ''),
+      quoted: rawValue.trim().startsWith("'"),
+    })
   }
   return result
 }
@@ -97,8 +121,12 @@ export function tryParseSQL(sql: string, isQuery: boolean): GuidedState | null {
   if (ins) {
     const table = ins[1]
     const cols = ins[2].split(',').map(c => c.trim())
-    const vals = ins[3].split(',').map(v => v.trim().replace(/^'|'$/g, ''))
-    const setClauses: SetClause[] = cols.map((col, i) => ({ col, val: vals[i] ?? '' }))
+    const vals = ins[3].split(',').map(v => parseGuidedSQLValue(v))
+    const setClauses: SetClause[] = cols.map((col, i) => ({
+      col: trimSQLIdentifier(col),
+      val: vals[i]?.value ?? '',
+      quoted: vals[i]?.quoted ?? false,
+    }))
     return { table, setClauses, whereClauses: [], limit: '50', mutationOp: 'INSERT' }
   }
 
@@ -108,7 +136,12 @@ export function tryParseSQL(sql: string, isQuery: boolean): GuidedState | null {
     const table = upd[1]
     const setClauses: SetClause[] = upd[2].split(',').map(part => {
       const eq = part.indexOf('=')
-      return { col: part.slice(0, eq).trim(), val: part.slice(eq + 1).trim().replace(/^'|'$/g, '') }
+      const parsedValue = parseGuidedSQLValue(part.slice(eq + 1))
+      return {
+        col: trimSQLIdentifier(part.slice(0, eq)),
+        val: parsedValue.value,
+        quoted: parsedValue.quoted,
+      }
     })
     const whereClauses = upd[3] ? whereMatch(upd[3]) : []
     return { table, setClauses, whereClauses, limit: '50', mutationOp: 'UPDATE' }

@@ -39,9 +39,12 @@ effect save_order.success -> orders.refresh
 effect save_order.success -> order_form.reset
 effect delete_order_action.success -> orders.refresh`
 
-	runtime, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src)
+	runtime, compilerEdges, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src, nil, nil)
 	if err != nil {
 		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() error = %v", err)
+	}
+	if len(compilerEdges) != 0 {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() compilerEdges = %+v, want none for managed CRUD pre-lowering", compilerEdges)
 	}
 	if !changed {
 		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() changed = false, want true")
@@ -119,20 +122,23 @@ func TestCompileManagedCRUDAuthoringRuntimeDSL_RejectsUnsupportedActionKinds(t *
 
 	src := `page main title="Revenue Dashboard"
 widget chart revenue_chart @ main title="Revenue"
-action load_revenue @ main kind=query source=order target=revenue_chart
+action load_revenue @ main kind=approval source=order target=revenue_chart
 run page.loaded -> load_revenue`
 
-	compiled, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src)
+	compiled, compilerEdges, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src, nil, nil)
 	if err == nil {
 		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() error = nil, want unsupported action kind error")
 	}
 	if changed {
 		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() changed = true, want false\ncompiled:\n%s", compiled)
 	}
+	if len(compilerEdges) != 0 {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() compilerEdges = %+v, want empty on failure", compilerEdges)
+	}
 	if len(notes) != 0 {
 		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() notes = %q, want empty on failure", notes)
 	}
-	if !strings.Contains(err.Error(), "managed_crud and delete_selected") {
+	if !strings.Contains(err.Error(), "managed_crud, delete_selected, and query") {
 		t.Fatalf("error = %q, want managed CRUD support message", err.Error())
 	}
 }
@@ -152,9 +158,12 @@ field order_form Status
 bind status_filter.value -> orders.filter.Status
 bind orders.selected_row.Status -> order_form.values.Status`
 
-	runtime, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src)
+	runtime, compilerEdges, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src, nil, nil)
 	if err != nil {
 		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() error = %v", err)
+	}
+	if len(compilerEdges) != 0 {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() compilerEdges = %+v, want none for layout-only lowering", compilerEdges)
 	}
 	if !changed {
 		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() changed = false, want true")
@@ -173,6 +182,197 @@ bind orders.selected_row.Status -> order_form.values.Status`
 	}
 	if err := validateDSL(runtime); err != nil {
 		t.Fatalf("validateDSL(runtime) error = %v\nruntime:\n%s", err, runtime)
+	}
+}
+
+func TestCompileManagedCRUDAuthoringRuntimeDSL_RepairsSplitColumnLines(t *testing.T) {
+	t.Parallel()
+
+	src := `page main title="Orders"
+widget table orders @ main title="Orders"
+column orders
+OrderID
+column orders
+Status`
+
+	runtime, compilerEdges, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src, nil, nil)
+	if err != nil {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() error = %v", err)
+	}
+	if len(compilerEdges) != 0 {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() compilerEdges = %+v, want none for layout-only lowering", compilerEdges)
+	}
+	if !changed {
+		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() changed = false, want true")
+	}
+	if len(notes) == 0 {
+		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() notes empty, want compiler note")
+	}
+	if got := mustLastWithValue(t, runtime, "orders", "columns"); got != "OrderID,Status" {
+		t.Fatalf("effective orders columns = %q, want %q\nruntime:\n%s", got, "OrderID,Status", runtime)
+	}
+	if err := validateDSL(runtime); err != nil {
+		t.Fatalf("validateDSL(runtime) error = %v\nruntime:\n%s", err, runtime)
+	}
+}
+
+func TestCompileManagedCRUDAuthoringRuntimeDSL_ToleratesRedundantWidgetTypeToken(t *testing.T) {
+	t.Parallel()
+
+	src := `page main title="Orders"
+widget text type=text headline @ main content="Order Operations"`
+
+	runtime, compilerEdges, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src, nil, nil)
+	if err != nil {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() error = %v", err)
+	}
+	if len(compilerEdges) != 0 {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() compilerEdges = %+v, want none for layout-only lowering", compilerEdges)
+	}
+	if !changed {
+		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() changed = false, want true")
+	}
+	if len(notes) == 0 {
+		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() notes empty, want compiler note")
+	}
+	if !strings.Contains(runtime, `text headline @ main`) {
+		t.Fatalf("runtime DSL missing lowered text widget with repaired id:\n%s", runtime)
+	}
+	if err := validateDSL(runtime); err != nil {
+		t.Fatalf("validateDSL(runtime) error = %v\nruntime:\n%s", err, runtime)
+	}
+}
+
+func TestCompileManagedCRUDAuthoringRuntimeDSL_RepairsStandaloneWithClauses(t *testing.T) {
+	t.Parallel()
+
+	src := `entity order
+with connector=orders primary_key=OrderID
+page main
+with title="Order Dashboard"
+widget table orders @ main
+with title="Recent Orders"
+column orders OrderID
+action load_orders @ main
+with kind=query source=order profile=list target=orders
+run page.loaded -> load_orders`
+
+	connectors := []genConnector{{
+		id:      "orders",
+		name:    "Orders",
+		cType:   "managed",
+		columns: []string{"OrderID"},
+	}}
+
+	runtime, compilerEdges, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src, nil, connectors)
+	if err != nil {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() error = %v", err)
+	}
+	if len(compilerEdges) != 2 {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() compilerEdges = %+v, want 2 query edges", compilerEdges)
+	}
+	if !changed {
+		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() changed = false, want true")
+	}
+	if len(notes) == 0 {
+		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() notes empty, want repair/compiler notes")
+	}
+	if !strings.Contains(runtime, `text "Order Dashboard"`) {
+		t.Fatalf("runtime DSL missing repaired page title:\n%s", runtime)
+	}
+	if !strings.Contains(runtime, `text "Recent Orders"`) {
+		t.Fatalf("runtime DSL missing repaired widget title:\n%s", runtime)
+	}
+	if !strings.Contains(runtime, `step:query load_orders @ main`) {
+		t.Fatalf("runtime DSL missing lowered query action from repaired with clause:\n%s", runtime)
+	}
+	if err := validateDSL(runtime); err != nil {
+		t.Fatalf("validateDSL(runtime) error = %v\nruntime:\n%s", err, runtime)
+	}
+}
+
+func TestCompileManagedCRUDAuthoringRuntimeDSL_LowersQueryAuthoringIntoExecutableStepsAndEdges(t *testing.T) {
+	t.Parallel()
+
+	src := `app revenue_dashboard
+entity order connector=orders primary_key=OrderID
+page main title="Revenue Dashboard"
+widget chart revenue_chart @ main title="Revenue by Month"
+widget table orders @ main title="Recent Orders"
+column orders OrderID
+column orders OrderDate
+column orders Amount
+column orders Status
+action load_revenue @ main kind=query source=order profile=time_series target=revenue_chart
+action load_orders @ main kind=query source=order profile=list target=orders
+run page.loaded -> load_revenue
+run page.loaded -> load_orders`
+
+	plan := &appPlan{
+		Intent:        "dashboard",
+		ConnectorID:   "conn_orders",
+		ConnectorType: "managed",
+		Entity:        "order",
+		TableFields:   []string{"OrderID", "OrderDate", "Amount", "Status"},
+	}
+	connectors := []genConnector{{
+		id:      "conn_orders",
+		name:    "Orders",
+		cType:   "managed",
+		columns: []string{"OrderID", "OrderDate", "Amount", "Status"},
+	}}
+
+	runtime, compilerEdges, notes, changed, err := compileManagedCRUDAuthoringRuntimeDSL(src, plan, connectors)
+	if err != nil {
+		t.Fatalf("compileManagedCRUDAuthoringRuntimeDSL() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() changed = false, want true")
+	}
+	if len(notes) == 0 {
+		t.Fatal("compileManagedCRUDAuthoringRuntimeDSL() notes empty, want compiler note")
+	}
+	if !strings.Contains(runtime, `container main @ root`) {
+		t.Fatalf("runtime DSL missing lowered page container:\n%s", runtime)
+	}
+	if !strings.Contains(runtime, `with authoring_type="page"`) {
+		t.Fatalf("runtime DSL missing lowered page authoring_type metadata:\n%s", runtime)
+	}
+	if !strings.Contains(runtime, `step:query load_orders @ main`) {
+		t.Fatalf("runtime DSL missing lowered query action:\n%s", runtime)
+	}
+	if got := mustLastWithValue(t, runtime, "load_orders", "connector_id"); got != "conn_orders" {
+		t.Fatalf("load_orders connector_id = %q, want %q\nruntime:\n%s", got, "conn_orders", runtime)
+	}
+	if got := mustLastWithValue(t, runtime, "load_orders", "connectorType"); got != "managed" {
+		t.Fatalf("load_orders connectorType = %q, want %q\nruntime:\n%s", got, "managed", runtime)
+	}
+	if got := mustLastWithValue(t, runtime, "load_orders", "resultColumns"); got != "OrderID,OrderDate,Amount,Status" {
+		t.Fatalf("load_orders resultColumns = %q, want %q\nruntime:\n%s", got, "OrderID,OrderDate,Amount,Status", runtime)
+	}
+	if got := mustLastWithValue(t, runtime, "revenue_chart", "labelCol"); got != "OrderDate" {
+		t.Fatalf("revenue_chart labelCol = %q, want %q\nruntime:\n%s", got, "OrderDate", runtime)
+	}
+	if got := mustLastWithValue(t, runtime, "revenue_chart", "valueCol"); got != "Amount" {
+		t.Fatalf("revenue_chart valueCol = %q, want %q\nruntime:\n%s", got, "Amount", runtime)
+	}
+	if got := mustLastWithValue(t, runtime, "revenue_chart", "aggregate"); got != "sum" {
+		t.Fatalf("revenue_chart aggregate = %q, want %q\nruntime:\n%s", got, "sum", runtime)
+	}
+	if err := validateDSL(runtime); err != nil {
+		t.Fatalf("validateDSL(runtime) error = %v\nruntime:\n%s", err, runtime)
+	}
+	if !hasEdge(compilerEdges, "main", "loaded", "load_revenue", "run", "async") {
+		t.Fatalf("compiler edges missing page.loaded -> load_revenue.run:\n%+v", compilerEdges)
+	}
+	if !hasEdge(compilerEdges, "main", "loaded", "load_orders", "run", "async") {
+		t.Fatalf("compiler edges missing page.loaded -> load_orders.run:\n%+v", compilerEdges)
+	}
+	if !hasEdge(compilerEdges, "load_revenue", "rows", "revenue_chart", "setData", "reactive") {
+		t.Fatalf("compiler edges missing load_revenue.rows -> revenue_chart.setData:\n%+v", compilerEdges)
+	}
+	if !hasEdge(compilerEdges, "load_orders", "rows", "orders", "setRows", "reactive") {
+		t.Fatalf("compiler edges missing load_orders.rows -> orders.setRows:\n%+v", compilerEdges)
 	}
 }
 
@@ -519,6 +719,15 @@ func hasInlineLink(src, nodeID, direction, myPort, targetNodeID, targetPort stri
 func hasBindingEdge(edges []dslEdge, fromNodeID, fromPort, toNodeID, toPort string) bool {
 	for _, edge := range edges {
 		if edge.EdgeType == "binding" && edge.FromNodeID == fromNodeID && edge.FromPort == fromPort && edge.ToNodeID == toNodeID && edge.ToPort == toPort {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEdge(edges []dslEdge, fromNodeID, fromPort, toNodeID, toPort, edgeType string) bool {
+	for _, edge := range edges {
+		if edge.EdgeType == edgeType && edge.FromNodeID == fromNodeID && edge.FromPort == fromPort && edge.ToNodeID == toNodeID && edge.ToPort == toPort {
 			return true
 		}
 	}

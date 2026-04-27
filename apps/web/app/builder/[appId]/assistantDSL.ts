@@ -1,4 +1,6 @@
 import { compileAuthoring, parseV2, serializeV2, type AuraDocumentV2, type AuraEdge } from '@lima/aura-dsl'
+import { type Connector } from '../../../lib/api'
+import { getConnectorSchemaColumns } from '../../../lib/tableBinding'
 
 export interface NormalizedAssistantDSL {
   source: string
@@ -7,7 +9,25 @@ export interface NormalizedAssistantDSL {
   document: AuraDocumentV2
 }
 
-export function normalizeAssistantDSL(source: string, newEdges?: AuraEdge[]): NormalizedAssistantDSL {
+export interface NormalizeAssistantDSLOptions {
+  connectors?: Connector[]
+}
+
+function toAuthoringCompileOptions(options: NormalizeAssistantDSLOptions | undefined) {
+  const connectors = options?.connectors ?? []
+  if (connectors.length === 0) return undefined
+
+  return {
+    connectors: connectors.map((connector) => ({
+      id: connector.id,
+      name: connector.name,
+      type: connector.type,
+      columns: getConnectorSchemaColumns(connector),
+    })),
+  }
+}
+
+export function normalizeAssistantDSL(source: string, newEdges?: AuraEdge[], options?: NormalizeAssistantDSLOptions): NormalizedAssistantDSL {
   try {
     const parsed = parseV2(source)
     return {
@@ -18,7 +38,7 @@ export function normalizeAssistantDSL(source: string, newEdges?: AuraEdge[]): No
     }
   } catch (runtimeError) {
     try {
-      const compiled = compileAuthoring(source)
+      const compiled = compileAuthoring(source, toAuthoringCompileOptions(options))
       return {
         source: serializeV2(compiled),
         edges: compiled.edges,

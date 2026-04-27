@@ -43,6 +43,7 @@ export function isProductionReadyWidget(element: string): boolean {
 }
 
 export function hasConnectorBinding(node: AuraNode): boolean {
+  if (node.with?.queryAction?.trim()) return true
   const connectorId = node.with?.connector?.trim()
   if (!connectorId) return false
   if (node.with?.connectorType?.trim() === 'csv') return true

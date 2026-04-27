@@ -1272,12 +1272,12 @@ function FlowCanvasInner({ doc, selectedId, onSelect, onChange, workspaceId: _wo
         let updatedGuided = guided
         if (slotType === 'set') {
           const setClauses = guided.setClauses.map((c, i) =>
-            i === slotIdx ? { ...c, val: binding } : c,
+            i === slotIdx ? { ...c, val: binding, quoted: true } : c,
           )
           updatedGuided = { ...guided, setClauses }
         } else if (slotType === 'where') {
           const whereClauses = guided.whereClauses.map((c, i) =>
-            i === slotIdx ? { ...c, val: binding } : c,
+            i === slotIdx ? { ...c, val: binding, quoted: true } : c,
           )
           updatedGuided = { ...guided, whereClauses }
         }

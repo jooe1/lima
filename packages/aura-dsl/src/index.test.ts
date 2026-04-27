@@ -1273,6 +1273,51 @@ describe('Aura Authoring', () => {
     expect(validateAuthoring(doc)).toHaveLength(0)
   })
 
+  it('tolerates widget lines with a redundant type token', () => {
+    const doc = parseAuthoring([
+      'app order_admin',
+      'page main title="Orders"',
+      'widget text type=text headline @ main content="Order Operations"',
+    ].join('\n'))
+
+    expect(doc.statements).toContainEqual(expect.objectContaining({
+      statementType: 'widget',
+      widgetType: 'text',
+      id: 'headline',
+      parentId: 'main',
+    }))
+  })
+
+  it('repairs standalone with clauses into the preceding authoring statement', () => {
+    const lowered = compileAuthoring([
+      'entity order',
+      'with connector=orders primary_key=OrderID',
+      'page main',
+      'with title="Order Dashboard"',
+      'widget table orders @ main',
+      'with title="Recent Orders"',
+      'column orders OrderID',
+      'action load_orders @ main',
+      'with kind=query source=order profile=list target=orders',
+      'run page.loaded -> load_orders',
+    ].join('\n'))
+
+    const page = lowered.nodes.find((node) => node.id === 'main')
+    const table = lowered.nodes.find((node) => node.id === 'orders')
+    const action = lowered.nodes.find((node) => node.id === 'load_orders')
+
+    expect(page).toMatchObject({ element: 'container', text: 'Order Dashboard' })
+    expect(table).toMatchObject({ element: 'table', text: 'Recent Orders' })
+    expect(action?.element).toBe('step:query')
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'load_orders',
+      fromPort: 'rows',
+      toNodeId: 'orders',
+      toPort: 'setRows',
+      edgeType: 'reactive',
+    }))
+  })
+
   it('lowers CRUD authoring into runtime-safe form, table, step, and edges', () => {
     const src = [
       'app order_admin',
@@ -1401,6 +1446,77 @@ describe('Aura Authoring', () => {
       fromPort: 'result',
       toNodeId: 'revenue_chart',
       toPort: 'refresh',
+      edgeType: 'reactive',
+    }))
+  })
+
+  it('lowers query authoring with page alias into executable table query wiring', () => {
+    const src = [
+      'app revenue_dashboard',
+      'entity order connector=conn_orders connector_type=managed primary_key=OrderID',
+      'page main title="Revenue Dashboard"',
+      'widget table orders @ main title="Recent Orders"',
+      'column orders OrderID',
+      'column orders Amount',
+      'action load_orders @ main kind=query source=order profile=list target=orders',
+      'run page.loaded -> load_orders',
+    ].join('\n')
+
+    const lowered = compileAuthoring(src)
+    const loadOrders = lowered.nodes.find((node) => node.id === 'load_orders')
+    const orders = lowered.nodes.find((node) => node.id === 'orders')
+
+    expect(loadOrders?.with).toMatchObject({
+      connector_id: 'conn_orders',
+      connectorType: 'managed',
+      resultColumns: 'OrderID,Amount',
+      sql: '',
+    })
+    expect(orders?.with).toMatchObject({
+      columns: 'OrderID,Amount',
+      queryAction: 'load_orders',
+    })
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'main',
+      fromPort: 'loaded',
+      toNodeId: 'load_orders',
+      toPort: 'run',
+      edgeType: 'async',
+    }))
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'load_orders',
+      fromPort: 'rows',
+      toNodeId: 'orders',
+      toPort: 'setRows',
+      edgeType: 'reactive',
+    }))
+  })
+
+  it('uses connector compile context to lower query authoring without explicit connector metadata', () => {
+    const src = [
+      'app revenue_dashboard',
+      'page main title="Revenue Dashboard"',
+      'widget table orders @ main title="Recent Orders"',
+      'action load_orders @ main kind=query source=orders target=orders',
+      'run page.loaded -> load_orders',
+    ].join('\n')
+
+    const lowered = compileAuthoring(src, {
+      connectors: [{ id: 'conn_orders', name: 'Orders', type: 'managed', columns: ['OrderID', 'Amount'] }],
+    })
+    const loadOrders = lowered.nodes.find((node) => node.id === 'load_orders')
+
+    expect(loadOrders?.with).toMatchObject({
+      connector_id: 'conn_orders',
+      connectorType: 'managed',
+      resultColumns: 'OrderID,Amount',
+      sql: '',
+    })
+    expect(lowered.edges).toContainEqual(expect.objectContaining({
+      fromNodeId: 'load_orders',
+      fromPort: 'rows',
+      toNodeId: 'orders',
+      toPort: 'setRows',
       edgeType: 'reactive',
     }))
   })

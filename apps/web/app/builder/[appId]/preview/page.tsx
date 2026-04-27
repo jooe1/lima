@@ -3,7 +3,7 @@
 import { use, useEffect, useState } from 'react'
 import { type AuraDocument, type AuraEdge } from '@lima/aura-dsl'
 import { useAuth } from '../../../../lib/auth'
-import { previewDraftApp, type App, ApiError } from '../../../../lib/api'
+import { previewDraftApp, listConnectors, type App, type Connector, ApiError } from '../../../../lib/api'
 import { RuntimeRenderer } from '../../../app/[appId]/RuntimeRenderer'
 import { normalizeAssistantDSL } from '../assistantDSL'
 
@@ -12,6 +12,7 @@ export default function DraftPreviewPage({ params }: { params: Promise<{ appId: 
   const { workspace, token, isLoading: authLoading } = useAuth()
 
   const [app, setApp] = useState<App | null>(null)
+  const [connectors, setConnectors] = useState<Connector[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -23,9 +24,14 @@ export default function DraftPreviewPage({ params }: { params: Promise<{ appId: 
     setLoading(true)
     setError(null)
 
-    previewDraftApp(workspace.id, appId)
-      .then(a => {
-        if (!cancelled) setApp(a)
+    Promise.all([
+      previewDraftApp(workspace.id, appId),
+      listConnectors(workspace.id).catch(() => ({ connectors: [] as Connector[] })),
+    ])
+      .then(([a, connectorResult]) => {
+        if (cancelled) return
+        setApp(a)
+        setConnectors(connectorResult.connectors ?? [])
       })
       .catch((e: unknown) => {
         if (cancelled) return
@@ -76,7 +82,7 @@ export default function DraftPreviewPage({ params }: { params: Promise<{ appId: 
   let edges: AuraEdge[] = []
   try {
     if (app.dsl_source) {
-      const normalized = normalizeAssistantDSL(app.dsl_source, app.dsl_edges)
+      const normalized = normalizeAssistantDSL(app.dsl_source, app.dsl_edges, { connectors })
       doc = normalized.document.nodes
       edges = normalized.edges
     }
