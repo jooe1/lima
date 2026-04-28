@@ -130,6 +130,7 @@ export interface AuraAuthoringDocument {
 
 export interface AuraAuthoringValidationError {
   message: string
+  severity?: 'error' | 'warning'
   statementType?: AuraAuthoringStatement['statementType']
   id?: string
 }
@@ -247,7 +248,6 @@ export function validateAuthoring(doc: AuraAuthoringDocument): AuraAuthoringVali
     switch (statement.statementType) {
       case 'layout':
       case 'widget':
-      case 'action':
         if (!containerIds.has(statement.parentId)) {
           errors.push({
             message: `${statement.statementType} '${statement.id}' references unknown parent '${statement.parentId}'`,
@@ -256,6 +256,55 @@ export function validateAuthoring(doc: AuraAuthoringDocument): AuraAuthoringVali
           })
         }
         break
+      case 'action': {
+        if (!containerIds.has(statement.parentId)) {
+          errors.push({
+            message: `action '${statement.id}' references unknown parent '${statement.parentId}'`,
+            statementType: 'action',
+            id: statement.id,
+          })
+        }
+        const actionKind = stringifyScalar(statement.attrs.kind ?? 'managed_crud')
+        if (actionKind === 'managed_crud') {
+          errors.push({
+            message: `Warning: action '${statement.id}': kind=managed_crud is deprecated. Use create_record or update_record instead.`,
+            severity: 'warning',
+            statementType: 'action',
+            id: statement.id,
+          })
+        }
+        const sourceAttr = readStringAttr(statement.attrs.source)
+        const formAttr = readStringAttr(statement.attrs.form)
+        if ((actionKind === 'update_record' || actionKind === 'delete_selected') && !sourceAttr) {
+          errors.push({
+            message: `action '${statement.id}': kind=${actionKind} requires a source attribute`,
+            statementType: 'action',
+            id: statement.id,
+          })
+        }
+        if (sourceAttr && !widgetMap.has(sourceAttr)) {
+          errors.push({
+            message: `action '${statement.id}': source '${sourceAttr}' is not a known widget`,
+            statementType: 'action',
+            id: statement.id,
+          })
+        }
+        if ((actionKind === 'create_record' || actionKind === 'update_record') && !formAttr) {
+          errors.push({
+            message: `action '${statement.id}': kind=${actionKind} requires a form attribute`,
+            statementType: 'action',
+            id: statement.id,
+          })
+        }
+        if (formAttr && (!widgetMap.has(formAttr) || widgetMap.get(formAttr)?.widgetType !== 'form')) {
+          errors.push({
+            message: `action '${statement.id}': form '${formAttr}' must reference a form widget`,
+            statementType: 'action',
+            id: statement.id,
+          })
+        }
+        break
+      }
       case 'field': {
         const target = widgetMap.get(statement.targetId)
         if (!target) {
@@ -354,8 +403,9 @@ export function validateAuthoring(doc: AuraAuthoringDocument): AuraAuthoringVali
 
 export function lowerAuthoring(doc: AuraAuthoringDocument, options: AuraAuthoringCompileOptions = {}): AuraDocumentV2 {
   const authoringErrors = validateAuthoring(doc)
-  if (authoringErrors.length > 0) {
-    throw new Error(authoringErrors.map((error) => error.message).join('; '))
+  const hardErrors = authoringErrors.filter((e) => !e.severity || e.severity === 'error')
+  if (hardErrors.length > 0) {
+    throw new Error(hardErrors.map((error) => error.message).join('; '))
   }
 
   const pageMap = new Map<string, AuraAuthoringPageStatement>()
@@ -499,6 +549,10 @@ export function lowerAuthoring(doc: AuraAuthoringDocument, options: AuraAuthorin
     applySetStatements(setStatementsByTargetId.get(statement.id) ?? [], withMap, style)
     if (lowerActionElement(statement) === 'step:query') {
       lowerQueryAuthoringAction(statement, withMap, widgetNodeMap, columnsByWidgetId, syntheticEdges, options)
+    }
+    const actionKind = stringifyScalar(statement.attrs.kind ?? 'managed_crud')
+    if (actionKind === 'create_record' || actionKind === 'update_record' || actionKind === 'delete_selected') {
+      lowerMutationAuthoringAction(statement, withMap, syntheticEdges)
     }
     nodes.push({
       element: lowerActionElement(statement),
@@ -1171,6 +1225,63 @@ function lowerQueryAuthoringAction(
       target: { nodeId: targetId, port: 'setData' },
       edgeType: 'reactive',
     })
+  }
+}
+
+function lowerMutationAuthoringAction(
+  statement: AuraAuthoringActionStatement,
+  withMap: Record<string, string>,
+  syntheticEdges: Array<{
+    source: { nodeId: string; port: string }
+    target: { nodeId: string; port: string }
+    edgeType: AuraEdge['edgeType']
+  }>,
+): void {
+  const kind = stringifyScalar(statement.attrs.kind ?? 'managed_crud')
+  const sourceId = readStringAttr(statement.attrs.source)
+  const formId = readStringAttr(statement.attrs.form)
+
+  if (kind === 'create_record') {
+    if (withMap.operation === undefined) withMap.operation = 'insert'
+    if (formId) {
+      syntheticEdges.push({
+        source: { nodeId: formId, port: 'submitted' },
+        target: { nodeId: statement.id, port: 'bind:values' },
+        edgeType: 'binding',
+      })
+    }
+    return
+  }
+
+  if (kind === 'update_record') {
+    if (withMap.operation === undefined) withMap.operation = 'update'
+    if (sourceId) {
+      syntheticEdges.push({
+        source: { nodeId: sourceId, port: 'selectedRow' },
+        target: { nodeId: statement.id, port: 'bind:where:0' },
+        edgeType: 'binding',
+      })
+    }
+    if (formId) {
+      syntheticEdges.push({
+        source: { nodeId: formId, port: 'submitted' },
+        target: { nodeId: statement.id, port: 'bind:values' },
+        edgeType: 'binding',
+      })
+    }
+    return
+  }
+
+  if (kind === 'delete_selected') {
+    if (withMap.operation === undefined) withMap.operation = 'delete'
+    if (sourceId) {
+      syntheticEdges.push({
+        source: { nodeId: sourceId, port: 'selectedRow' },
+        target: { nodeId: statement.id, port: 'bind:where:0' },
+        edgeType: 'binding',
+      })
+    }
+    return
   }
 }
 

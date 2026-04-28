@@ -571,8 +571,8 @@ Output a JSON object with exactly these keys:
   "entity": "<lowercase singular entity name, e.g. order, lead, contact>",
   "form_fields": ["<column>", ...],
   "table_fields": ["<column>", ...],
-  "crud_mode": "insert" | "update" | "upsert" | "",
-  "primary_key_field": "<column used as row identifier for update/upsert, or empty>",
+  "crud_mode": "insert" | "update" | "insert_and_update" | "",
+  "primary_key_field": "<column used as row identifier for update/delete, or empty>",
   "workflow_name": "<Human readable name, e.g. Save Order>",
   "workflow_ref": "<camelCase slug matching workflow_name, e.g. saveOrder>"
 }
@@ -582,8 +582,8 @@ Rules:
 - If the request involves saving, creating, updating, or deleting data and a matching connector exists, set intent to "crud".
 - form_fields and table_fields must be column names from that connector's columns list.
 - If intent is not "crud", set connector_id, form_fields, table_fields, crud_mode, primary_key_field, workflow_name, workflow_ref all to empty string or empty array.
-- For managed connectors: if a column is obviously a primary key (named id, ID, OrderID, row_id, etc.), set crud_mode to "upsert" and primary_key_field to that column. Otherwise set crud_mode to "insert".
-- For update/upsert CRUD plans, form_fields MUST include primary_key_field so the submitted values object contains the row identifier.
+- For managed connectors: set crud_mode to "insert" when the user wants to add new records, "update" when they want to edit existing records, or "insert_and_update" when they want both. Never use "upsert". primary_key_field names the row identifier column used in WHERE clauses for update/delete. For insert-only apps, primary_key_field may be empty.
+- For update or insert_and_update CRUD plans, form_fields MUST include primary_key_field so the submitted values object contains the row identifier.
 - Output JSON only. No other text before or after.
 `
 
@@ -615,7 +615,7 @@ func normalizeAppPlan(plan *appPlan) {
 	if plan == nil || !plan.isCRUD() || plan.PrimaryKeyField == "" {
 		return
 	}
-	if plan.CRUDMode != "update" && plan.CRUDMode != "upsert" {
+	if plan.CRUDMode != "update" && plan.CRUDMode != "upsert" && plan.CRUDMode != "insert_and_update" {
 		return
 	}
 	for _, field := range plan.FormFields {
@@ -675,8 +675,8 @@ func buildPlanContextBlock(plan *appPlan) string {
 	}
 	if plan.PrimaryKeyField != "" {
 		fmt.Fprintf(&sb, "primary_key_field: %s\n", plan.PrimaryKeyField)
-		if plan.CRUDMode == "update" || plan.CRUDMode == "upsert" {
-			fmt.Fprintf(&sb, "For update/upsert forms, include %s in form_fields so the submitted values object carries the row identifier.\n", plan.PrimaryKeyField)
+		if plan.CRUDMode == "update" || plan.CRUDMode == "upsert" || plan.CRUDMode == "insert_and_update" {
+			fmt.Fprintf(&sb, "For update/insert_and_update forms, include %s in form_fields so the submitted values object carries the row identifier.\n", plan.PrimaryKeyField)
 		}
 	}
 	if plan.WorkflowRef != "" {
@@ -686,7 +686,7 @@ func buildPlanContextBlock(plan *appPlan) string {
 		fmt.Fprintf(&sb, "workflow_name: %s\n", plan.WorkflowName)
 	}
 	if plan.isCRUD() && plan.ConnectorType == "managed" {
-		sb.WriteString("For managed CRUD plans, you may return the flat managed CRUD authoring subset instead of canonical runtime Aura. Prefer that authoring form for first-generation CRUD screens. Use page/widget/field/column/action lines, focus on the planned layout only, place delete/danger buttons where needed, and do not emit managed save step nodes or legacy flow action syntax. Example authoring lines: page main title=\"Orders\" and action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders. The worker will lower that subset. The worker will synthesize the managed table binding, save behavior, and delete-button wiring.\n")
+		sb.WriteString("For managed CRUD plans, you may return the flat managed CRUD authoring subset instead of canonical runtime Aura. Prefer that authoring form for first-generation CRUD screens. Use page/widget/field/column/action lines, focus on the planned layout only, place delete/danger buttons where needed, and do not emit managed save step nodes or legacy flow action syntax. Example authoring lines: page main title=\"Orders\" and action save_order @ main kind=managed_crud entity=order mode=insert form=order_form table=orders. The worker will lower that subset. The worker will synthesize the managed table binding, save behavior, and delete-button wiring.\n")
 	} else if !plan.isCRUD() && plan.ConnectorID != "" {
 		sb.WriteString("For read-only dashboard plans, you may return the flat query authoring subset instead of canonical runtime Aura. Prefer that authoring form for first-generation dashboards. Use page/widget/column/option/action/run/effect lines with kind=query and target=<widgetId>. Example authoring lines: page main title=\"Revenue Dashboard\", widget table orders @ main title=\"Recent Orders\", and action load_orders @ main kind=query source=order profile=list target=orders. The worker will lower page.loaded triggers, executable query steps, and target data wiring.\n")
 	} else {

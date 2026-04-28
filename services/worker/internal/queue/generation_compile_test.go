@@ -106,8 +106,8 @@ effect delete_order_action.success -> orders.refresh`
 	if !hasInlineLink(compiled, "orders", "output", "selectedRow", "order_form", "setValues") {
 		t.Fatalf("compiled DSL missing deterministic selectedRow -> form.setValues wiring:\n%s", compiled)
 	}
-	if !hasInlineLink(compiled, "order_form", "on", "submitted", "managed_has_order_key", "value") {
-		t.Fatalf("compiled DSL missing deterministic submit -> upsert condition wiring:\n%s", compiled)
+	if !hasInlineLink(compiled, "order_form", "on", "submitted", "managed_save_order", "run") {
+		t.Fatalf("compiled DSL missing deterministic submit -> insert step wiring:\n%s", compiled)
 	}
 	if !hasBindingEdge(edges, "orders", "selectedRow.OrderID", "managed_delete_order", "bind:where:0") {
 		t.Fatalf("compiler edges missing selected row -> delete binding:\n%+v", edges)
@@ -516,17 +516,14 @@ step:mutation save_order @ root
 	if !strings.Contains(compiled, `connector="conn_orders" connectorType="managed" sql="SELECT \"OrderID\", \"CustomerName\", \"Amount\" FROM Orders"`) {
 		t.Fatalf("compiled DSL missing inferred managed table binding:\n%s", compiled)
 	}
-	if !strings.Contains(compiled, `on submitted -> managed_has_order_key.value`) {
-		t.Fatalf("compiled DSL missing canonical inferred submit trigger:\n%s", compiled)
+	if !strings.Contains(compiled, `on submitted -> managed_save_order.run`) {
+		t.Fatalf("compiled DSL missing direct insert trigger for inferred insert mode:\n%s", compiled)
 	}
-	if !strings.Contains(compiled, `step:condition managed_has_order_key @ root`) {
-		t.Fatalf("compiled DSL missing synthesized inferred upsert condition step:\n%s", compiled)
+	if !strings.Contains(compiled, `step:mutation managed_save_order @ root`) {
+		t.Fatalf("compiled DSL missing synthesized insert step for inferred plan:\n%s", compiled)
 	}
-	if !strings.Contains(compiled, `step:mutation managed_update_order @ root`) {
-		t.Fatalf("compiled DSL missing synthesized inferred update step:\n%s", compiled)
-	}
-	if !strings.Contains(compiled, `step:mutation managed_insert_order @ root`) {
-		t.Fatalf("compiled DSL missing synthesized inferred insert step:\n%s", compiled)
+	if strings.Contains(compiled, `step:condition`) {
+		t.Fatalf("compiled DSL unexpectedly contains a condition step:\n%s", compiled)
 	}
 	if err := validateDSL(compiled); err != nil {
 		t.Fatalf("validateDSL(compiled) error = %v\ncompiled:\n%s", err, compiled)
@@ -588,26 +585,85 @@ table orders_table @ page_shell
 	if !hasInlineLink(compiled, "orders_table", "output", "selectedRow", "order_form", "setValues") {
 		t.Fatalf("compiled DSL missing deterministic selectedRow -> form.setValues wiring:\n%s", compiled)
 	}
-	if !hasInlineLink(compiled, "order_form", "on", "submitted", "managed_has_order_key", "value") {
-		t.Fatalf("compiled DSL missing deterministic submit -> upsert condition wiring:\n%s", compiled)
+	if !hasInlineLink(compiled, "order_form", "on", "submitted", "managed_save_order", "run") {
+		t.Fatalf("compiled DSL missing deterministic submit -> insert step wiring:\n%s", compiled)
 	}
-	if !hasInlineLink(compiled, "managed_has_order_key", "output", "trueBranch", "managed_update_order", "run") {
-		t.Fatalf("compiled DSL missing deterministic true branch -> update wiring:\n%s", compiled)
+	if !strings.Contains(compiled, `step:mutation managed_save_order @ root`) {
+		t.Fatalf("compiled DSL missing synthesized insert step (upsert maps to insert):\n%s", compiled)
 	}
-	if !hasInlineLink(compiled, "managed_has_order_key", "output", "falseBranch", "managed_insert_order", "run") {
-		t.Fatalf("compiled DSL missing deterministic false branch -> insert wiring:\n%s", compiled)
+	if strings.Contains(compiled, `step:condition`) {
+		t.Fatalf("compiled DSL unexpectedly contains condition step (upsert should map to insert):\n%s", compiled)
 	}
-	if !strings.Contains(compiled, `step:condition managed_has_order_key @ root`) {
-		t.Fatalf("compiled DSL missing synthesized upsert condition step:\n%s", compiled)
+	if err := validateDSL(compiled); err != nil {
+		t.Fatalf("validateDSL(compiled) error = %v\ncompiled:\n%s", err, compiled)
 	}
-	if !strings.Contains(compiled, `step:mutation managed_update_order @ root`) {
-		t.Fatalf("compiled DSL missing synthesized update step:\n%s", compiled)
+}
+
+func TestCompileManagedCRUDAuthoringDSL_InsertAndUpdateMode(t *testing.T) {
+	t.Parallel()
+
+	src := `container page_shell @ root
+  layout direction="column" gap="16"
+;
+
+form order_form @ page_shell
+  text "Order Form"
+  with fields="OrderID,CustomerName,Amount"
+  on submitted -> save_order.params
+;
+
+table orders_table @ page_shell
+  with columns="OrderID,CustomerName,Amount"
+  input setRows <- load_orders.rows
+;
+
+step:mutation save_order @ root
+  text "Save Order"
+;`
+
+	plan := &appPlan{
+		Intent:          "crud",
+		ConnectorID:     "conn_orders",
+		ConnectorType:   "managed",
+		Entity:          "order",
+		FormFields:      []string{"OrderID", "CustomerName", "Amount"},
+		TableFields:     []string{"OrderID", "CustomerName", "Amount"},
+		CRUDMode:        "insert_and_update",
+		PrimaryKeyField: "OrderID",
+		WorkflowName:    "Save Order",
+		WorkflowRef:     "saveOrder",
 	}
-	if !strings.Contains(compiled, `with connector_id="conn_orders" sql="UPDATE Orders SET \"CustomerName\"='{{CustomerName}}', \"Amount\"='{{Amount}}' WHERE \"OrderID\"='{{OrderID}}'"`) {
-		t.Fatalf("compiled DSL missing concrete managed update SQL:\n%s", compiled)
+	connectors := []genConnector{{
+		id:      "conn_orders",
+		name:    "Orders",
+		cType:   "managed",
+		columns: []string{"OrderID", "CustomerName", "Amount"},
+	}}
+
+	compiled, edges, notes, changed, err := compileManagedCRUDAuthoringDSL(src, plan, connectors)
+	if err != nil {
+		t.Fatalf("compileManagedCRUDAuthoringDSL() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("compileManagedCRUDAuthoringDSL() changed = false, want true")
+	}
+	if len(notes) == 0 {
+		t.Fatal("compileManagedCRUDAuthoringDSL() notes empty, want compiler note")
 	}
 	if !strings.Contains(compiled, `step:mutation managed_insert_order @ root`) {
-		t.Fatalf("compiled DSL missing synthesized insert step for upsert fallback:\n%s", compiled)
+		t.Fatalf("compiled DSL missing insert step for insert_and_update mode:\n%s", compiled)
+	}
+	if !strings.Contains(compiled, `step:mutation managed_update_order @ root`) {
+		t.Fatalf("compiled DSL missing update step for insert_and_update mode:\n%s", compiled)
+	}
+	if strings.Contains(compiled, `step:condition`) {
+		t.Fatalf("compiled DSL unexpectedly contains condition step for insert_and_update mode:\n%s", compiled)
+	}
+	if !strings.Contains(compiled, `on submitted -> managed_insert_order.run`) {
+		t.Fatalf("compiled DSL missing direct insert trigger for insert_and_update mode:\n%s", compiled)
+	}
+	if !hasBindingEdge(edges, "orders_table", "selectedRow.OrderID", "managed_update_order", "bind:where:0") {
+		t.Fatalf("compiler edges missing selectedRow -> update WHERE binding:\n%+v", edges)
 	}
 	if err := validateDSL(compiled); err != nil {
 		t.Fatalf("validateDSL(compiled) error = %v\ncompiled:\n%s", err, compiled)

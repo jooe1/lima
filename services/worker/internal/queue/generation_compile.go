@@ -129,8 +129,9 @@ func compileManagedCRUDAuthoringDSL(src string, plan *appPlan, connectors []genC
 
 	if formIndex != -1 && len(effectivePlan.FormFields) > 0 {
 		compiled[formIndex].text = stripStatementClauses(compiled[formIndex].text, "on", "input", "output", "action")
-		saveStatements, triggerTarget, saveNotes := buildManagedSaveStatements(existingIDs, connector, effectivePlan, tableID, formID)
+		saveStatements, saveEdges, triggerTarget, saveNotes := buildManagedSaveStatements(existingIDs, connector, effectivePlan, tableID, formID)
 		notes = append(notes, saveNotes...)
+		compilerEdges = append(compilerEdges, saveEdges...)
 		if triggerTarget != "" {
 			compiled[formIndex].text = appendClauseLine(compiled[formIndex].text, fmt.Sprintf("on submitted -> %s", triggerTarget))
 		}
@@ -258,11 +259,7 @@ func deriveManagedCompilePlan(src string, plan *appPlan, connectors []genConnect
 		effective.PrimaryKeyField = inferManagedPrimaryKeyField(effective.FormFields, effective.TableFields, connector.columns)
 	}
 	if effective.CRUDMode == "" {
-		if effective.PrimaryKeyField != "" {
-			effective.CRUDMode = "upsert"
-		} else {
-			effective.CRUDMode = "insert"
-		}
+		effective.CRUDMode = "insert" // default is always insert; never infer upsert
 	}
 	if effective.WorkflowName == "" && effective.Entity != "" {
 		effective.WorkflowName = "Save " + strings.Title(effective.Entity)
@@ -552,7 +549,7 @@ func buildManagedDeleteArtifacts(existingIDs map[string]bool, connector genConne
 	return []compiledStatement{statement}, edges, []string{"synthesized managed delete flow from delete button and selected table row"}
 }
 
-func buildManagedSaveStatements(existingIDs map[string]bool, connector genConnector, plan *appPlan, tableID, formID string) ([]compiledStatement, string, []string) {
+func buildManagedSaveStatements(existingIDs map[string]bool, connector genConnector, plan *appPlan, tableID, formID string) ([]compiledStatement, []dslEdge, string, []string) {
 	slug := managedCompileSlug(plan.Entity, plan.WorkflowRef, plan.ConnectorID)
 	mode := strings.TrimSpace(plan.CRUDMode)
 	if mode == "" {
@@ -577,20 +574,49 @@ func buildManagedSaveStatements(existingIDs map[string]bool, connector genConnec
 
 	switch mode {
 	case "update":
+		// Single UPDATE step using slot.where.0 for WHERE (bound from table selection)
 		stepID := uniqueNodeID(existingIDs, "managed_update_"+slug)
-		return []compiledStatement{{text: buildManagedUpdateStepStatement(stepID, connector, plan, tableID != "", tableID, formID)}}, stepID + ".run", nil
-	case "upsert":
-		conditionID := uniqueNodeID(existingIDs, "managed_has_"+slug+"_key")
-		updateID := uniqueNodeID(existingIDs, "managed_update_"+slug)
+		var edges []dslEdge
+		if tableID != "" && hasPrimaryKey {
+			edges = []dslEdge{{
+				ID:         fmt.Sprintf("e_%s_%s_%s_%s", tableID, "selectedRow."+plan.PrimaryKeyField, stepID, "bind:where:0"),
+				FromNodeID: tableID,
+				FromPort:   "selectedRow." + plan.PrimaryKeyField,
+				ToNodeID:   stepID,
+				ToPort:     "bind:where:0",
+				EdgeType:   "binding",
+			}}
+		}
+		return []compiledStatement{{text: buildManagedUpdateStepStatement(stepID, connector, plan, tableID != "", tableID, formID)}}, edges, stepID + ".run", nil
+
+	case "insert_and_update":
+		// Two separate steps: one insert (for new records) + one update (for editing selected)
 		insertID := uniqueNodeID(existingIDs, "managed_insert_"+slug)
+		updateID := uniqueNodeID(existingIDs, "managed_update_"+slug)
+		var edges []dslEdge
+		if tableID != "" && hasPrimaryKey {
+			edges = []dslEdge{{
+				ID:         fmt.Sprintf("e_%s_%s_%s_%s", tableID, "selectedRow."+plan.PrimaryKeyField, updateID, "bind:where:0"),
+				FromNodeID: tableID,
+				FromPort:   "selectedRow." + plan.PrimaryKeyField,
+				ToNodeID:   updateID,
+				ToPort:     "bind:where:0",
+				EdgeType:   "binding",
+			}}
+		}
 		return []compiledStatement{
-			{text: buildManagedUpsertConditionStatement(conditionID, updateID, insertID, plan)},
-			{text: buildManagedUpdateStepStatement(updateID, connector, plan, tableID != "", tableID, formID)},
 			{text: buildManagedInsertStepStatement(insertID, connector, plan, tableID != "", tableID, formID)},
-		}, conditionID + ".value", nil
-	default:
+			{text: buildManagedUpdateStepStatement(updateID, connector, plan, tableID != "", tableID, formID)},
+		}, edges, insertID + ".run", nil
+
+	case "upsert":
+		// Backward compat only: treat as insert. Do NOT synthesize condition branch.
 		stepID := uniqueNodeID(existingIDs, "managed_save_"+slug)
-		return []compiledStatement{{text: buildManagedInsertStepStatement(stepID, connector, plan, tableID != "", tableID, formID)}}, stepID + ".run", nil
+		return []compiledStatement{{text: buildManagedInsertStepStatement(stepID, connector, plan, tableID != "", tableID, formID)}}, nil, stepID + ".run", nil
+
+	default: // "insert" or anything else
+		stepID := uniqueNodeID(existingIDs, "managed_save_"+slug)
+		return []compiledStatement{{text: buildManagedInsertStepStatement(stepID, connector, plan, tableID != "", tableID, formID)}}, nil, stepID + ".run", nil
 	}
 }
 
@@ -664,20 +690,6 @@ func buildManagedDeleteStepStatement(stepID string, connector genConnector, plan
 	return strings.Join(lines, "\n")
 }
 
-func buildManagedUpsertConditionStatement(stepID, updateStepID, insertStepID string, plan *appPlan) string {
-	primaryKey := strings.TrimSpace(plan.PrimaryKeyField)
-	lines := []string{
-		fmt.Sprintf("step:condition %s @ root", stepID),
-		fmt.Sprintf("  text %q", managedSaveLabel("condition", plan)),
-		"  with " + formatWithEntries([]withEntry{{key: "expression", value: buildManagedPrimaryKeyPresenceExpression(primaryKey)}}),
-		fmt.Sprintf("  output trueBranch -> %s.run", updateStepID),
-		fmt.Sprintf("  output falseBranch -> %s.run", insertStepID),
-		`  style { flowX: "420"; flowY: "80" }`,
-		";",
-	}
-	return strings.Join(lines, "\n")
-}
-
 func managedSaveLabel(kind string, plan *appPlan) string {
 	entity := strings.TrimSpace(plan.Entity)
 	if entity == "" {
@@ -688,18 +700,12 @@ func managedSaveLabel(kind string, plan *appPlan) string {
 		return "Update " + strings.Title(entity)
 	case "delete":
 		return "Delete " + strings.Title(entity)
-	case "condition":
-		return "Existing " + strings.Title(entity) + "?"
 	default:
 		if label := strings.TrimSpace(plan.WorkflowName); label != "" {
 			return label
 		}
 		return "Save " + strings.Title(entity)
 	}
-}
-
-func buildManagedPrimaryKeyPresenceExpression(primaryKeyField string) string {
-	return fmt.Sprintf(`$input.%s != null && String($input.%s).trim() !== ""`, primaryKeyField, primaryKeyField)
 }
 
 func buildManagedSelectSQL(connectorName string, preferredColumns, fallbackColumns []string) string {
@@ -745,7 +751,7 @@ func buildManagedUpdateSQL(connectorName string, fields []string, primaryKeyFiel
 	if len(assignments) == 0 && strings.TrimSpace(primaryKeyField) != "" {
 		assignments = append(assignments, fmt.Sprintf("%s='{{%s}}'", quoteSQLIdentifier(primaryKeyField), primaryKeyField))
 	}
-	return fmt.Sprintf("UPDATE %s SET %s WHERE %s='{{%s}}'", managedRuntimeTableName(connectorName), strings.Join(assignments, ", "), quoteSQLIdentifier(primaryKeyField), primaryKeyField)
+	return fmt.Sprintf("UPDATE %s SET %s WHERE %s='{{slot.where.0}}'", managedRuntimeTableName(connectorName), strings.Join(assignments, ", "), quoteSQLIdentifier(primaryKeyField))
 }
 
 func dedupeFields(fields []string) []string {

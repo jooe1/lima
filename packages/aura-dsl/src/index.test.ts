@@ -1270,7 +1270,9 @@ describe('Aura Authoring', () => {
 
     const doc = parseAuthoring(src)
     expect(doc.statements).toHaveLength(12)
-    expect(validateAuthoring(doc)).toHaveLength(0)
+    const validation = validateAuthoring(doc)
+    expect(validation).toHaveLength(1)
+    expect(validation[0].severity).toBe('warning')
   })
 
   it('tolerates widget lines with a redundant type token', () => {
@@ -1298,7 +1300,7 @@ describe('Aura Authoring', () => {
       'with title="Recent Orders"',
       'column orders OrderID',
       'action load_orders @ main',
-      'with kind=query source=order profile=list target=orders',
+      'with kind=query entity=order profile=list target=orders',
       'run page.loaded -> load_orders',
     ].join('\n'))
 
@@ -1458,7 +1460,7 @@ describe('Aura Authoring', () => {
       'widget table orders @ main title="Recent Orders"',
       'column orders OrderID',
       'column orders Amount',
-      'action load_orders @ main kind=query source=order profile=list target=orders',
+      'action load_orders @ main kind=query entity=order profile=list target=orders',
       'run page.loaded -> load_orders',
     ].join('\n')
 
@@ -1567,5 +1569,56 @@ describe('Aura Authoring', () => {
     const errors = validateAuthoring(parseAuthoring(src))
     expect(errors.some((error) => error.message.includes("main.ready"))).toBe(true)
     expect(errors.some((error) => error.message.includes("load_revenue.clicked"))).toBe(true)
+  })
+
+  it('lowers create_record to a single insert step without condition', () => {
+    const src = [
+      'app order_admin',
+      'page main title="Orders"',
+      'widget form order_form @ main title="Order Form"',
+      'field order_form OrderID',
+      'field order_form CustomerName',
+      'action save_order @ main kind=create_record form=order_form',
+      'run order_form.submitted -> save_order',
+    ].join('\n')
+    const result = lowerAuthoring(parseAuthoring(src))
+    const mutationSteps = result.nodes.filter((n) => n.element === 'step:mutation')
+    expect(mutationSteps).toHaveLength(1)
+    const conditionSteps = result.nodes.filter((n) => n.element === 'step:condition')
+    expect(conditionSteps).toHaveLength(0)
+  })
+
+  it('lowers update_record to a single update step with slot WHERE binding', () => {
+    const src = [
+      'app order_admin',
+      'page main title="Orders"',
+      'widget table orders_table @ main title="Orders"',
+      'widget form order_form @ main title="Order Form"',
+      'field order_form CustomerName',
+      'action edit_order @ main kind=update_record form=order_form source=orders_table',
+      'run order_form.submitted -> edit_order',
+    ].join('\n')
+    const result = lowerAuthoring(parseAuthoring(src))
+    const conditionSteps = result.nodes.filter((n) => n.element === 'step:condition')
+    expect(conditionSteps).toHaveLength(0)
+    const mutationSteps = result.nodes.filter((n) => n.element === 'step:mutation')
+    expect(mutationSteps).toHaveLength(1)
+    const slotEdges = result.edges.filter((e) => e.toPort.includes('bind:where:0'))
+    expect(slotEdges.length).toBeGreaterThan(0)
+  })
+
+  it('validates managed_crud with a deprecation warning', () => {
+    const src = [
+      'app order_admin',
+      'page main title="Orders"',
+      'widget form order_form @ main title="Order Form"',
+      'field order_form OrderID',
+      'action save_order @ main kind=managed_crud mode=upsert form=order_form',
+      'run order_form.submitted -> save_order',
+    ].join('\n')
+    const warnings = validateAuthoring(parseAuthoring(src))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].severity).toBe('warning')
+    expect(warnings[0].message).toContain('deprecated')
   })
 })

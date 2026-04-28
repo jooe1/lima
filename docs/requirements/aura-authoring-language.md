@@ -109,12 +109,12 @@ column orders CustomerName
 column orders Amount
 column orders Status
 
-action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders
+action create_order @ main kind=create_record entity=order form=order_form
 
 bind orders.selected_row -> order_form.values
-run order_form.submitted -> save_order
-effect save_order.success -> orders.refresh
-effect save_order.success -> order_form.reset
+run order_form.submitted -> create_order
+effect create_order.success -> orders.refresh
+effect create_order.success -> order_form.reset
 ```
 
 ---
@@ -263,7 +263,8 @@ Benefits:
 ### 7.6 Actions
 
 ```aura
-action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders
+action create_order @ main kind=create_record entity=order form=order_form
+action update_order @ main kind=update_record entity=order form=order_form source=orders_table
 action delete_order_action @ main kind=delete_selected entity=order source=orders
 action load_revenue @ main kind=query source=revenue_chart profile=time_series
 action approve_request @ main kind=approval entity=approval source=request_form
@@ -274,14 +275,39 @@ Purpose:
 - let the compiler choose the runtime graph shape
 
 Preferred `kind` values for first generation:
-- `managed_crud`
-- `create_record`
-- `update_record`
-- `delete_selected`
+- `create_record` — always inserts a new row using form values; a PK field in the form is permitted and used directly
+- `update_record` — updates the row currently selected in `source` table; WHERE uses the selected row's PK identity, not form field values
+- `delete_selected` — deletes the row currently selected in `source` table
+- `managed_crud` (**deprecated** — use `create_record` or `update_record` instead; `mode=upsert` is no longer generated)
 - `query`
 - `approval`
 - `notify`
 - `http_request`
+
+### 7.6a Create vs Update Distinction
+
+The `action` kind declares the author's **explicit intent**. Form field values are never inspected at compile time to infer whether a row is new or existing.
+
+- Use `create_record` when the user is adding a new row. The compiler always lowers to INSERT. It is acceptable for the form to contain a user-entered PK field — it will be inserted as-is.
+- Use `update_record source=<table_id>` when the user is editing the row currently selected in the named table. The compiler lowers to UPDATE with `WHERE <pk> = {{slot.where.0}}`, where `{{slot.where.0}}` is bound to `<table_id>.selectedRow.<pk>`. The form fields determine the SET clause.
+
+**Why explicit intent matters:** An heuristic that inspects whether a PK form field is non-empty to choose INSERT vs UPDATE will silently fail when the PK field carries a value from a previous selection but the user intends a fresh row. Explicit intent removes this ambiguity entirely.
+
+**Authoring pattern for apps that need both create and update:**
+
+```aura
+action create_order @ main kind=create_record entity=order form=order_form
+action update_order @ main kind=update_record entity=order form=order_form source=orders_table
+
+widget button add_btn @ shell label="Add New"
+widget button save_btn @ shell label="Save Changes"
+run add_btn.clicked -> create_order
+run save_btn.clicked -> update_order
+bind orders_table.selected_row -> order_form.values
+effect create_order.success -> orders_table.refresh
+effect create_order.success -> order_form.reset
+effect update_order.success -> orders_table.refresh
+```
 
 ### 7.7 Bindings
 
@@ -441,18 +467,37 @@ effect save_order.success -> order_form.reset
 Lowers to:
 - runtime output edges from the generated action success event to table `refresh` and form `reset`
 
-### 9.5 Managed action lowering
+### 9.5 Managed action lowering (deprecated)
 
 ```aura
-action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders
+# deprecated — use create_record or update_record instead
+action save_order @ main kind=managed_crud entity=order form=order_form table=orders
+```
+
+`managed_crud` with `mode=upsert` is no longer generated. Existing authoring that uses `managed_crud` will continue to compile, but the heuristic upsert output is not correct when the form contains a PK field for a new row. Use `create_record` or `update_record` with explicit intent instead.
+
+### 9.6 create_record lowering
+
+```aura
+action create_order @ main kind=create_record entity=order form=order_form
 ```
 
 Lowers to:
-- the managed CRUD compiler's deterministic internal step graph
-- generated query/mutation/condition nodes as needed
-- generated binding and refresh/reset effects
+- a single `step:mutation` node with INSERT SQL derived from the entity definition and the declared form fields
+- no condition step; insertion is unconditional
 
-This is the preferred path for first-generation CRUD apps.
+### 9.7 update_record lowering
+
+```aura
+action update_order @ main kind=update_record entity=order form=order_form source=orders_table
+```
+
+Lowers to:
+- a single `step:mutation` node with UPDATE SQL derived from the entity definition and the declared form fields
+- WHERE clause uses `{{slot.where.0}}`, bound to `orders_table.selectedRow.<pk>` via a compiler-synthesized binding edge
+- no condition step; the WHERE binding is the only guard
+
+The compiler synthesizes the binding edge `orders_table.selectedRow.<pk> -> update_order.slot.where.0` automatically. The author does not need to declare it explicitly.
 
 ---
 
@@ -479,16 +524,21 @@ column orders CustomerName
 column orders Amount
 column orders Status
 
+widget button add_btn @ shell label="Add New"
+widget button save_btn @ shell label="Save Changes"
 widget button delete_order @ shell label="Delete" variant=danger
 
-action save_order @ main kind=managed_crud entity=order mode=upsert form=order_form table=orders
+action create_order @ main kind=create_record entity=order form=order_form
+action update_order @ main kind=update_record entity=order form=order_form source=orders
 action delete_order_action @ main kind=delete_selected entity=order source=orders
 
 bind orders.selected_row -> order_form.values
-run order_form.submitted -> save_order
+run add_btn.clicked -> create_order
+run save_btn.clicked -> update_order
 run delete_order.clicked -> delete_order_action
-effect save_order.success -> orders.refresh
-effect save_order.success -> order_form.reset
+effect create_order.success -> orders.refresh
+effect create_order.success -> order_form.reset
+effect update_order.success -> orders.refresh
 effect delete_order_action.success -> orders.refresh
 ```
 
@@ -559,7 +609,7 @@ The Aura Authoring validator SHOULD enforce:
 4. `bind` source and target references use known authoring vocabulary.
 5. `run` targets refer to declared actions.
 6. `effect` sources refer to valid action events.
-7. `action kind=managed_crud` has compatible `entity`, `form`, and `table` references.
+7. `action kind=create_record` has compatible `entity` and `form` references. `action kind=update_record` has compatible `entity`, `form`, and `source` (table) references. `action kind=managed_crud` is deprecated; a warning is emitted and the author is advised to migrate to `create_record` or `update_record`.
 8. Unknown advanced `set` keys are warnings, not fatal errors, unless they conflict with reserved keys.
 
 ---

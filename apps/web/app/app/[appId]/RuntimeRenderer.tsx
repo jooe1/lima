@@ -30,11 +30,15 @@ interface FlowEngine {
   portValues: PortValues
   /** Fire an output port (widget click, form submit, step output) and run downstream. */
   firePort: (nodeId: string, portName: string, value: unknown) => Promise<void>
+  runtimeError: string | null
+  setRuntimeError: (message: string) => void
 }
 
 const FlowEngineContext = React.createContext<FlowEngine>({
   portValues: {},
   firePort: async () => {},
+  runtimeError: null,
+  setRuntimeError: () => {},
 })
 
 export function useFlowEngine() {
@@ -142,6 +146,14 @@ export function FlowEngineProvider({
   children: React.ReactNode
 }) {
   const [portValues, setPortValues] = useState<PortValues>({})
+  const [runtimeError, setRuntimeError] = useState<string | null>(null)
+
+  // Auto-clear runtime error toast after 5 seconds
+  useEffect(() => {
+    if (!runtimeError) return
+    const t = setTimeout(() => setRuntimeError(null), 5000)
+    return () => clearTimeout(t)
+  }, [runtimeError])
 
   // Build a lookup: "nodeId.portName" -> edges leaving that port
   const edgeMap = useMemo(() => {
@@ -179,7 +191,7 @@ export function FlowEngineProvider({
     }))
   }, [])
 
-  const firePort = useCallback(async (nodeId: string, portName: string, value: unknown): Promise<void> => {
+  const firePort = useCallback(async (nodeId: string, portName: string, value: unknown): Promise<void> => { // eslint-disable-line react-hooks/exhaustive-deps
     const downstreamEdges = edgeMapRef.current.get(`${nodeId}.${portName}`) ?? []
     for (const edge of downstreamEdges) {
       const targetNode = nodeMapRef.current.get(edge.toNodeId)
@@ -234,7 +246,12 @@ export function FlowEngineProvider({
                 }
               }
             }
-          } catch { /* step error — stop chain */ }
+          } catch (err) {
+            console.error('[Aura] step:query error:', err)
+            await firePort(targetNode.id, 'error', err instanceof Error ? err.message : String(err)).catch(() => {})
+            setRuntimeError(`Failed to load data: ${err instanceof Error ? err.message : 'server error'}`)
+            throw err
+          }
 
         } else if (stepType === 'step:mutation') {
           // Only execute when triggered by the `run` port or a legacy async edge.
@@ -249,10 +266,20 @@ export function FlowEngineProvider({
               const resolvedSql = resolveSqlTemplate(sqlTemplate, value, slotBag)
               const { runConnectorMutation } = await import('../../../lib/api')
               const res = await runConnectorMutation(workspaceIdRef.current, connectorId, { sql: resolvedSql })
+              if (res.affected_rows === 0) {
+                console.warn('[Aura] step:mutation: 0 rows affected — update or delete matched no rows')
+                await firePort(targetNode.id, 'noRowsAffected', true).catch(() => {})
+                setRuntimeError('No rows were updated. Make sure a row is selected.')
+              }
               await firePort(targetNode.id, 'affectedRows', res.affected_rows)
               await firePort(targetNode.id, 'result', [{ affected_rows: res.affected_rows }])
             }
-          } catch { /* step error — stop chain */ }
+          } catch (err) {
+            console.error('[Aura] step:mutation error:', err)
+            await firePort(targetNode.id, 'error', err instanceof Error ? err.message : String(err)).catch(() => {})
+            setRuntimeError(`Failed to save: ${err instanceof Error ? err.message : 'server error'}`)
+            throw err
+          }
 
         } else if (stepType === 'step:http') {
           try {
@@ -299,7 +326,7 @@ export function FlowEngineProvider({
     }
   }, [nodes, firePort])
 
-  const engine = useMemo(() => ({ portValues, firePort }), [portValues, firePort])
+  const engine = useMemo(() => ({ portValues, firePort, runtimeError, setRuntimeError }), [portValues, firePort, runtimeError, setRuntimeError])
 
   return (
     <FlowEngineContext.Provider value={engine}>
@@ -349,6 +376,7 @@ export function RuntimeRenderer({ doc, edges, workspaceId, appId }: Props) {
 
   return (
     <FlowEngineProvider nodes={doc} edges={edges} workspaceId={workspaceId}>
+    <RuntimeErrorToast />
     <DashboardFilterProvider>
       <div
         style={{
@@ -401,6 +429,34 @@ interface WidgetProps {
   node: AuraNode
   workspaceId: string
   appId: string
+}
+
+function RuntimeErrorToast() {
+  const { runtimeError } = useFlowEngine()
+  if (!runtimeError) return null
+  return (
+    <div
+      className="text-red-500 text-sm"
+      style={{
+        position: 'fixed',
+        bottom: '1.5rem',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        background: '#1a0505',
+        border: '1px solid #7f1d1d',
+        borderRadius: 6,
+        padding: '0.5rem 1rem',
+        zIndex: 9999,
+        color: '#f87171',
+        fontSize: '0.85rem',
+        pointerEvents: 'none',
+        maxWidth: '90vw',
+        textAlign: 'center',
+      }}
+    >
+      {runtimeError}
+    </div>
+  )
 }
 
 export function RuntimeStateMessage({ tone, message }: { tone: 'muted' | 'warning' | 'error'; message: string }): React.JSX.Element {
